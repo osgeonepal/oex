@@ -1,5 +1,3 @@
-## Config
-::: overture2hdx.Config
+# API Reference
 
-## Exporter
-::: overture2hdx.Exporter
+::: oex

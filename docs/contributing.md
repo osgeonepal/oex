@@ -1,12 +1,19 @@
 # Contributing
 
-We welcome contributions to the Overture2HDX project. Please follow these guidelines when contributing:
+```bash
+just setup         # uv sync + install hooks
+just lint          # ruff + ty + file hygiene
+just test          # unit tests (skips integration)
+```
 
-1. Fork the repository.
-2. Create a new branch for your feature or bugfix.
-3. Make your changes.
-4. Submit a pull request.
+Conventional commits are enforced via commitizen on `commit-msg`.
 
-## Code of Conduct
+## Releasing
 
-Please adhere to the [Contributor Covenant Code of Conduct](https://www.contributor-covenant.org/version/2/0/code_of_conduct/).
+```bash
+uv run cz bump
+git push --follow-tags
+```
+
+The `Release` workflow builds with `uv build` and publishes to PyPI via
+`uv publish` using `PYPI_API_TOKEN` from the `pypi` GitHub environment.

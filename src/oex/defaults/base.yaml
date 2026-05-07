@@ -1,0 +1,372 @@
+# Default configuration for oex.
+#
+# A user YAML can override any of these keys. The `categories` list, when
+# provided in a user YAML, fully replaces this default list (instead of
+# merging by index, which would silently mismatch).
+
+iso3: ""
+key: ""
+dataset_name: null
+subnational: false
+frequency: yearly
+
+boundary:
+  geom: null
+  geoboundaries_release: CGAZ
+  geoboundaries_level: ADM0
+
+output:
+  dir: output
+  formats:
+    - gpkg
+    - shp
+
+parallel:
+  enabled: true
+  threads: null
+  memory_gb: null
+
+duckdb:
+  http_retries: 8
+  http_retry_wait_ms: 500
+  http_retry_backoff: 2.0
+  http_timeout_ms: 120000
+  temp_dir: /tmp/duckdb_temp
+  enable_object_cache: true
+
+logging:
+  level: INFO
+  fmt: null
+
+hdx:
+  push: false
+  site: demo
+  api_key: null
+  owner_org: null
+  maintainer: null
+  user_agent: oex
+  methodology: Other
+  methodology_other: Open Source Geographic information
+
+source:
+  overture:
+    enabled: true
+    engine: duckdb
+    release: latest
+    s3_region: us-west-2
+    s3_bucket: overturemaps-us-west-2
+  osm:
+    enabled: true
+    cache_dir: data/osm
+    snapshot: latest
+    pbf_url: https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf
+    md5_url: https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf.md5
+    keep_pbf: false
+
+categories:
+  - name: Buildings
+    formats: null
+    hdx:
+      title: null
+      notes: >-
+        Building footprints, sourced from Overture (OSM + Microsoft + Google +
+        Esri) or directly from OpenStreetMap depending on the source.
+      tags:
+        - geodata
+        - buildings
+        - infrastructure
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: >-
+        Building data may contain errors and is verified at the community
+        level only.
+    overture:
+      enabled: true
+      theme: buildings
+      feature_type: building
+      select:
+        - id
+        - names.primary AS name
+        - names.common->'en' AS name_en
+        - class
+        - subtype
+        - height
+        - level
+        - num_floors
+        - num_floors_underground
+        - is_underground
+        - has_parts
+        - roof_material
+        - roof_shape
+        - roof_color
+        - sources[1].dataset AS source
+      where: []
+    osm:
+      enabled: true
+      filter:
+        building: true
+      select:
+        - feature_id AS id
+        - tags['name'][1] AS name
+        - tags['name:en'][1] AS name_en
+        - tags['building'][1] AS building
+        - tags['building:material'][1] AS material
+        - tags['building:levels'][1] AS levels
+        - tags['height'][1] AS height
+        - tags['roof:shape'][1] AS roof_shape
+        - tags['roof:material'][1] AS roof_material
+      where: []
+
+  - name: Roads
+    hdx:
+      notes: >-
+        Road network sourced from Overture (OSM + TomTom) or OpenStreetMap.
+      tags:
+        - geodata
+        - transportation
+        - roads
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Road data may contain errors and is community verified.
+    overture:
+      theme: transportation
+      feature_type: segment
+      select:
+        - id
+        - names.primary AS name
+        - names.common->'en' AS name_en
+        - class
+        - subclass
+        - subtype
+        - road_surface[1].value AS road_surface
+        - sources[1].dataset AS source
+      where: []
+    osm:
+      filter:
+        highway: true
+      select:
+        - feature_id AS id
+        - tags['name'][1] AS name
+        - tags['name:en'][1] AS name_en
+        - tags['highway'][1] AS highway
+        - tags['surface'][1] AS surface
+        - tags['maxspeed'][1] AS maxspeed
+        - tags['lanes'][1] AS lanes
+        - tags['oneway'][1] AS oneway
+      where: []
+
+  - name: Hospitals
+    hdx:
+      notes: Health POIs (hospitals, clinics).
+      tags:
+        - health
+      license: CDLA Permissive 2.0
+      license_url: https://cdla.dev/permissive-2-0/
+      caveats: Health POI data may contain errors and is community verified.
+    overture:
+      theme: places
+      feature_type: place
+      select:
+        - id
+        - names.primary AS name
+        - names.common->'en' AS name_en
+        - categories.primary AS category
+        - addresses[1].freeform AS address
+        - phones[1] AS phone
+        - emails[1] AS email
+        - websites[1] AS website
+        - confidence
+        - sources[1].dataset AS source
+      where:
+        - "categories.primary IN ('hospital', 'clinic')"
+    osm:
+      filter:
+        amenity: ["hospital", "clinic", "doctors"]
+        healthcare: true
+      select:
+        - feature_id AS id
+        - tags['name'][1] AS name
+        - tags['name:en'][1] AS name_en
+        - tags['amenity'][1] AS amenity
+        - tags['healthcare'][1] AS healthcare
+        - tags['operator'][1] AS operator
+        - tags['phone'][1] AS phone
+        - tags['website'][1] AS website
+      where: []
+
+  - name: Schools
+    hdx:
+      notes: Educational POIs (schools, universities).
+      tags:
+        - education
+      license: CDLA Permissive 2.0
+      license_url: https://cdla.dev/permissive-2-0/
+      caveats: Education POI data may contain errors.
+    overture:
+      theme: places
+      feature_type: place
+      select:
+        - id
+        - names.primary AS name
+        - names.common->'en' AS name_en
+        - categories.primary AS category
+        - addresses[1].freeform AS address
+        - phones[1] AS phone
+        - websites[1] AS website
+        - confidence
+        - sources[1].dataset AS source
+      where:
+        - "categories.primary IN ('school', 'university', 'college')"
+    osm:
+      filter:
+        amenity: ["school", "college", "university", "kindergarten"]
+      select:
+        - feature_id AS id
+        - tags['name'][1] AS name
+        - tags['name:en'][1] AS name_en
+        - tags['amenity'][1] AS amenity
+        - tags['operator'][1] AS operator
+        - tags['website'][1] AS website
+      where: []
+
+  - name: Rivers
+    hdx:
+      notes: Rivers, lakes and other water features.
+      tags:
+        - environment
+        - water
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Hydrography from OSM via Overture or directly from OSM.
+    overture:
+      theme: base
+      feature_type: water
+      select:
+        - id
+        - names.primary AS name
+        - names.common->'en' AS name_en
+        - subtype
+        - class
+        - is_salt
+        - wikidata
+        - sources[1].dataset AS source
+      where:
+        - "class NOT IN ('dam', 'weir', 'breakwater', 'fountain', 'drinking_water')"
+    osm:
+      filter:
+        waterway: ["river", "stream", "canal"]
+        natural: ["water"]
+      select:
+        - feature_id AS id
+        - tags['name'][1] AS name
+        - tags['name:en'][1] AS name_en
+        - tags['waterway'][1] AS waterway
+        - tags['natural'][1] AS natural_class
+        - tags['water'][1] AS water_type
+      where: []
+
+  - name: Land Use
+    hdx:
+      notes: Land use polygons (farmland, forest, residential, etc).
+      tags:
+        - environment
+        - landuse
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Land use data from OSM via Overture or directly from OSM.
+    overture:
+      theme: base
+      feature_type: land_use
+      select:
+        - id
+        - names.primary AS name
+        - names.common->'en' AS name_en
+        - subtype
+        - class
+        - surface
+        - wikidata
+        - sources[1].dataset AS source
+      where: []
+    osm:
+      filter:
+        landuse: true
+      select:
+        - feature_id AS id
+        - tags['name'][1] AS name
+        - tags['name:en'][1] AS name_en
+        - tags['landuse'][1] AS landuse
+        - tags['surface'][1] AS surface
+      where: []
+
+  - name: Transportation Hubs
+    hdx:
+      notes: Airports, train stations, bus stations, ferry terminals.
+      tags:
+        - transportation
+        - logistics
+      license: CDLA Permissive 2.0
+      license_url: https://cdla.dev/permissive-2-0/
+      caveats: Transport POI data may contain errors.
+    overture:
+      theme: places
+      feature_type: place
+      select:
+        - id
+        - names.primary AS name
+        - names.common->'en' AS name_en
+        - categories.primary AS category
+        - addresses[1].freeform AS address
+        - websites[1] AS website
+        - confidence
+        - sources[1].dataset AS source
+      where:
+        - "categories.primary IN ('airport', 'train_station', 'bus_station', 'light_rail_and_subway_station', 'ferry_terminal')"
+    osm:
+      filter:
+        aeroway: ["aerodrome", "terminal"]
+        railway: ["station", "halt"]
+        amenity: ["bus_station", "ferry_terminal"]
+        public_transport: ["station"]
+      select:
+        - feature_id AS id
+        - tags['name'][1] AS name
+        - tags['name:en'][1] AS name_en
+        - tags['aeroway'][1] AS aeroway
+        - tags['railway'][1] AS railway
+        - tags['amenity'][1] AS amenity
+        - tags['public_transport'][1] AS public_transport
+      where: []
+
+  - name: Settlements
+    hdx:
+      notes: Populated places (cities, towns, villages, hamlets).
+      tags:
+        - population
+        - settlements
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Locality data from Overture divisions or OSM.
+    overture:
+      theme: divisions
+      feature_type: division
+      select:
+        - id
+        - names.primary AS name
+        - names.common->'en' AS name_en
+        - population
+        - region
+        - wikidata
+        - sources[1].dataset AS source
+      where:
+        - "subtype = 'locality'"
+    osm:
+      filter:
+        place: ["city", "town", "village", "hamlet", "suburb"]
+      select:
+        - feature_id AS id
+        - tags['name'][1] AS name
+        - tags['name:en'][1] AS name_en
+        - tags['place'][1] AS place
+        - tags['population'][1] AS population
+        - tags['wikidata'][1] AS wikidata
+      where: []

@@ -1,0 +1,143 @@
+"""Typed run configuration."""
+
+from dataclasses import dataclass, field
+from typing import Any
+
+OsmTagFilter = dict[str, Any]
+
+
+@dataclass
+class HdxConfig:
+    push: bool = False
+    site: str = "demo"
+    api_key: str | None = None
+    owner_org: str | None = None
+    maintainer: str | None = None
+    user_agent: str = "oex"
+    methodology: str = "Other"
+    methodology_other: str = "Open Source Geographic information"
+
+
+@dataclass
+class DuckdbConfig:
+    # 8 retries / 500 ms initial / 2x backoff and a 120 s timeout absorb
+    # transient S3 blips so a 200-country batch doesn't abort on one shard.
+    http_retries: int = 8
+    http_retry_wait_ms: int = 500
+    http_retry_backoff: float = 2.0
+    http_timeout_ms: int = 120_000
+    temp_dir: str = "/tmp/duckdb_temp"
+    enable_object_cache: bool = True
+
+
+@dataclass
+class LoggingConfig:
+    level: str = "INFO"
+    fmt: str | None = None
+
+
+@dataclass
+class OutputConfig:
+    dir: str = "output"
+    formats: list[str] = field(default_factory=lambda: ["gpkg", "shp"])
+    metadata: bool = False
+
+
+@dataclass
+class ParallelConfig:
+    enabled: bool = True
+    threads: int | None = None
+    memory_gb: int | None = None
+
+
+@dataclass
+class BoundaryConfig:
+    geom: str | None = None
+    geoboundaries_release: str = "CGAZ"
+    geoboundaries_level: str = "ADM0"
+
+
+@dataclass
+class OvertureSourceConfig:
+    enabled: bool = True
+    engine: str = "duckdb"
+    release: str = "latest"
+    s3_region: str = "us-west-2"
+    s3_bucket: str = "overturemaps-us-west-2"
+
+
+@dataclass
+class OsmSourceConfig:
+    enabled: bool = True
+    engine: str = "geofabrik"
+    cache_dir: str = "data/osm"
+    snapshot: str = "latest"
+    keep_pbf: bool = False
+    pbf_url: str = "https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf"
+    md5_url: str = "https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf.md5"
+    geofabrik_index_url: str = "https://download.geofabrik.de/index-v1.json"
+    geofabrik_clip_to_boundary: bool = True
+
+
+@dataclass
+class CategoryHdx:
+    title: str | None = None
+    notes: str = "Vector data export."
+    tags: list[str] = field(default_factory=lambda: ["geodata"])
+    license: str = "hdx-odc-odbl"
+    license_url: str | None = None
+    caveats: str = (
+        "Data may contain errors. Verified at the community level only; "
+        "individual features may need correction."
+    )
+
+
+@dataclass
+class CategoryOverture:
+    enabled: bool = True
+    theme: str = ""
+    feature_type: str = ""
+    select: list[str] = field(default_factory=list)
+    where: list[str] = field(default_factory=list)
+
+
+@dataclass
+class CategoryOsm:
+    # `filter` is the quackosm tag filter applied at parquet BUILD time.
+    # `where` is SQL applied at QUERY time over the already-built parquet.
+    enabled: bool = True
+    select: list[str] = field(default_factory=list)
+    where: list[str] = field(default_factory=list)
+    filter: OsmTagFilter = field(default_factory=dict)
+
+
+@dataclass
+class CategoryConfig:
+    name: str = ""
+    formats: list[str] | None = None
+    hdx: CategoryHdx = field(default_factory=CategoryHdx)
+    overture: CategoryOverture = field(default_factory=CategoryOverture)
+    osm: CategoryOsm = field(default_factory=CategoryOsm)
+
+
+@dataclass
+class RootConfig:
+    iso3: str = ""
+    key: str = ""
+    dataset_name: str | None = None
+    subnational: bool = False
+    frequency: str = "yearly"
+    categories_file: str | None = None
+    boundary: BoundaryConfig = field(default_factory=BoundaryConfig)
+    output: OutputConfig = field(default_factory=OutputConfig)
+    parallel: ParallelConfig = field(default_factory=ParallelConfig)
+    duckdb: DuckdbConfig = field(default_factory=DuckdbConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
+    hdx: HdxConfig = field(default_factory=HdxConfig)
+    source: dict[str, Any] = field(
+        default_factory=lambda: {
+            "overture": OvertureSourceConfig(),
+            "osm": OsmSourceConfig(),
+        }
+    )
+    categories: list[CategoryConfig] = field(default_factory=list)

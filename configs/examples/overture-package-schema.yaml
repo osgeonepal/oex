@@ -1,0 +1,363 @@
+# Overture data-package schema: one dataset per Overture (theme, feature_type)
+# pair, preserving the upstream theme/category structure verbatim. Useful for
+# republishing Overture data as-is for a country.
+#
+# Coverage of Overture's release/<release>/theme=*/type=* prefixes (as of
+# the 2026-04-15.0 release):
+#   - addresses/address
+#   - base/{bathymetry, infrastructure, land, land_cover, land_use, water}
+#   - buildings/{building, building_part}
+#   - divisions/{boundary, division, division_area}
+#   - places/place
+#   - transportation/{connector, segment}
+#
+# OSM has no clean 1:1 equivalent for most of these (the structure is
+# Overture-specific), so `osm.enabled: false` everywhere except a few common
+# ones where you might still want both.
+#
+# Use as:
+#   iso3: NPL
+#   key: overture_pkg
+#   categories_file: configs/examples/overture-package-schema.yaml
+
+categories:
+  # ---------------- addresses --------------------------------------------------
+  - name: addresses
+    hdx:
+      notes: Address points (Overture addresses theme).
+      tags: [geodata, addresses]
+      license: CDLA Permissive 2.0
+      license_url: https://cdla.dev/permissive-2-0/
+      caveats: Direct re-export of Overture addresses/address.
+    overture:
+      enabled: true
+      theme: addresses
+      feature_type: address
+      select:
+        - id
+        - country
+        - postcode
+        - street
+        - "number AS housenumber"
+        - unit
+        - sources[1].dataset AS source
+      where: []
+    osm:
+      enabled: false
+
+  # ---------------- base/bathymetry --------------------------------------------
+  - name: bathymetry
+    hdx:
+      notes: Bathymetry features (Overture base theme).
+      tags: [environment, ocean]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+    overture:
+      enabled: true
+      theme: base
+      feature_type: bathymetry
+      select:
+        - id
+        - depth
+        - sources[1].dataset AS source
+      where: []
+    osm:
+      enabled: false
+
+  # ---------------- base/infrastructure ----------------------------------------
+  - name: infrastructure
+    hdx:
+      notes: Infrastructure features (Overture base theme).
+      tags: [infrastructure]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+    overture:
+      enabled: true
+      theme: base
+      feature_type: infrastructure
+      select:
+        - id
+        - names.primary AS name
+        - subtype
+        - class
+        - sources[1].dataset AS source
+      where: []
+    osm:
+      enabled: false
+
+  # ---------------- base/land --------------------------------------------------
+  - name: land
+    hdx:
+      notes: Natural land features (Overture base theme).
+      tags: [environment, land]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+    overture:
+      enabled: true
+      theme: base
+      feature_type: land
+      select:
+        - id
+        - names.primary AS name
+        - subtype
+        - class
+        - sources[1].dataset AS source
+      where: []
+    osm:
+      enabled: false
+
+  # ---------------- base/land_cover --------------------------------------------
+  - name: land_cover
+    hdx:
+      notes: Land cover (Overture base theme).
+      tags: [environment, landcover]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+    overture:
+      enabled: true
+      theme: base
+      feature_type: land_cover
+      select:
+        - id
+        - subtype
+        - cartography.min_zoom AS min_zoom
+        - cartography.max_zoom AS max_zoom
+        - sources[1].dataset AS source
+      where: []
+    osm:
+      enabled: false
+
+  # ---------------- base/land_use ----------------------------------------------
+  - name: land_use
+    hdx:
+      notes: Land use polygons (Overture base theme).
+      tags: [environment, landuse]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+    overture:
+      enabled: true
+      theme: base
+      feature_type: land_use
+      select:
+        - id
+        - names.primary AS name
+        - subtype
+        - class
+        - surface
+        - sources[1].dataset AS source
+      where: []
+    osm:
+      enabled: false
+
+  # ---------------- base/water -------------------------------------------------
+  - name: water
+    hdx:
+      notes: Water features - rivers, lakes, etc (Overture base theme).
+      tags: [environment, water]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+    overture:
+      enabled: true
+      theme: base
+      feature_type: water
+      select:
+        - id
+        - names.primary AS name
+        - names.common->'en' AS name_en
+        - subtype
+        - class
+        - is_salt
+        - wikidata
+        - sources[1].dataset AS source
+      where: []
+    osm:
+      enabled: false
+
+  # ---------------- buildings/building ----------------------------------------
+  - name: buildings
+    hdx:
+      notes: Building footprints (Overture buildings theme).
+      tags: [geodata, buildings]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+    overture:
+      enabled: true
+      theme: buildings
+      feature_type: building
+      select:
+        - id
+        - names.primary AS name
+        - names.common->'en' AS name_en
+        - class
+        - subtype
+        - height
+        - num_floors
+        - num_floors_underground
+        - is_underground
+        - has_parts
+        - roof_material
+        - roof_shape
+        - roof_color
+        - sources[1].dataset AS source
+      where: []
+    osm:
+      enabled: false
+
+  # ---------------- buildings/building_part -----------------------------------
+  - name: building_parts
+    hdx:
+      notes: Building parts (Overture buildings theme).
+      tags: [geodata, buildings]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+    overture:
+      enabled: true
+      theme: buildings
+      feature_type: building_part
+      select:
+        - id
+        - names.primary AS name
+        - height
+        - num_floors
+        - sources[1].dataset AS source
+      where: []
+    osm:
+      enabled: false
+
+  # ---------------- divisions/division_boundary -------------------------------
+  # Note: Overture renamed `boundary` to `division_boundary` in the
+  # 2026-04-15.0 release. Both the type and the local dataset name follow
+  # the upstream naming.
+  - name: division_boundaries
+    hdx:
+      notes: Administrative boundary lines (Overture divisions theme).
+      tags: [boundaries, admin]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+    overture:
+      enabled: true
+      theme: divisions
+      feature_type: division_boundary
+      select:
+        - id
+        - subtype
+        - class
+        - sources[1].dataset AS source
+      where: []
+    osm:
+      enabled: false
+
+  # ---------------- divisions/division ----------------------------------------
+  - name: divisions
+    hdx:
+      notes: Division points (Overture divisions theme).
+      tags: [admin, settlements]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+    overture:
+      enabled: true
+      theme: divisions
+      feature_type: division
+      select:
+        - id
+        - names.primary AS name
+        - names.common->'en' AS name_en
+        - subtype
+        - country
+        - region
+        - population
+        - wikidata
+        - sources[1].dataset AS source
+      where: []
+    osm:
+      enabled: false
+
+  # ---------------- divisions/division_area -----------------------------------
+  - name: division_areas
+    hdx:
+      notes: Division polygons - admin areas (Overture divisions theme).
+      tags: [admin, boundaries]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+    overture:
+      enabled: true
+      theme: divisions
+      feature_type: division_area
+      select:
+        - id
+        - names.primary AS name
+        - names.common->'en' AS name_en
+        - subtype
+        - country
+        - region
+        - sources[1].dataset AS source
+      where: []
+    osm:
+      enabled: false
+
+  # ---------------- places/place ----------------------------------------------
+  - name: places
+    hdx:
+      notes: Generic places of interest (Overture places theme).
+      tags: [poi, places]
+      license: CDLA Permissive 2.0
+      license_url: https://cdla.dev/permissive-2-0/
+    overture:
+      enabled: true
+      theme: places
+      feature_type: place
+      select:
+        - id
+        - names.primary AS name
+        - names.common->'en' AS name_en
+        - categories.primary AS category
+        - addresses[1].freeform AS address
+        - phones[1] AS phone
+        - websites[1] AS website
+        - confidence
+        - sources[1].dataset AS source
+      where: []
+    osm:
+      enabled: false
+
+  # ---------------- transportation/connector ----------------------------------
+  - name: connectors
+    hdx:
+      notes: Transportation graph connectors (Overture transportation theme).
+      tags: [transportation, network]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+    overture:
+      enabled: true
+      theme: transportation
+      feature_type: connector
+      select:
+        - id
+        - sources[1].dataset AS source
+      where: []
+    osm:
+      enabled: false
+
+  # ---------------- transportation/segment ------------------------------------
+  - name: segments
+    hdx:
+      notes: Road and rail segments (Overture transportation theme).
+      tags: [transportation, roads]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+    overture:
+      enabled: true
+      theme: transportation
+      feature_type: segment
+      select:
+        - id
+        - names.primary AS name
+        - names.common->'en' AS name_en
+        - class
+        - subclass
+        - subtype
+        - road_surface[1].value AS road_surface
+        - sources[1].dataset AS source
+      where: []
+    osm:
+      enabled: false

@@ -1,0 +1,72 @@
+# Example: a custom category set that replaces the bundled defaults.
+#
+# Two themes only (Hospitals, Healthcare POIs) with bespoke select/where.
+# Use it like:
+#
+#   iso3: NPL
+#   key: my_health_run
+#   categories_file: configs/examples/custom-schema.yaml
+#
+# Or paste the categories block directly into your country YAML.
+
+categories:
+  - name: Hospitals
+    formats: [gpkg]
+    hdx:
+      title: Hospitals (custom run)
+      notes: Custom hospital extract.
+      tags: [health]
+      license: CDLA Permissive 2.0
+      license_url: https://cdla.dev/permissive-2-0/
+      caveats: Custom run; verify locally.
+    overture:
+      enabled: true
+      theme: places
+      feature_type: place
+      select:
+        - id
+        - names.primary AS name
+        - categories.primary AS category
+        - addresses[1].freeform AS address
+        - websites[1] AS website
+      where:
+        - "categories.primary IN ('hospital', 'clinic')"
+    osm:
+      enabled: true
+      filter:
+        amenity: ["hospital", "clinic"]
+      select:
+        - feature_id AS id
+        - tags['name'][1] AS name
+        - tags['amenity'][1] AS amenity
+        - tags['operator'][1] AS operator
+      where: []
+
+  - name: Healthcare POIs
+    formats: [gpkg, geojson]
+    hdx:
+      notes: Wider healthcare POI net (pharmacies, dentists, etc).
+      tags: [health]
+      license: ODbL 1.0
+      caveats: Mixed sources; verify locally.
+    overture:
+      enabled: true
+      theme: places
+      feature_type: place
+      select:
+        - id
+        - names.primary AS name
+        - categories.primary AS category
+      where:
+        - "categories.primary IN ('pharmacy', 'dentist', 'doctor')"
+    osm:
+      enabled: true
+      filter:
+        amenity: ["pharmacy", "dentist", "doctors"]
+        healthcare: true
+      select:
+        - feature_id AS id
+        - tags['name'][1] AS name
+        - tags['amenity'][1] AS amenity
+        - tags['healthcare'][1] AS healthcare
+      where: []

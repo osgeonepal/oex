@@ -1,0 +1,17 @@
+# Example country config for Nepal.
+#
+# Defaults from src/oex/defaults/base.yaml supply the eight
+# categories. Below we set the country, key, dataset name and frequency,
+# and let `boundary.geom: null` trigger the geoBoundaries ADM0 lookup.
+iso3: NPL
+key: oex
+dataset_name: Nepal
+subnational: false
+frequency: yearly
+output:
+  dir: output
+  formats:
+    - gpkg
+    - shp
+hdx:
+  push: false

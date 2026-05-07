@@ -1,110 +1,126 @@
+[build-system]
+requires = ["uv_build>=0.11.8,<0.12"]
+build-backend = "uv_build"
+
 [project]
-name = "overture2hdx"
-version = "0.1.1"
-dynamic = ["version"]
-description = "Lib to convert Overture data in GIS formats and upload it to HDX "
-readme = "Readme.md"
-authors = [
-    {name = "Kshitij Raj Sharma", email = "skshitizraj@gmail.com"},
+name = "oex"
+version = "0.2.0"
+description = "Country-scale OSM and Overture Maps vector datasets, exported to GIS formats and optionally published to HDX."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
+authors = [{ name = "Kshitij Raj Sharma", email = "krschap@proton.me" }]
+keywords = [
+    "overture",
+    "openstreetmap",
+    "osm",
+    "hdx",
+    "geoparquet",
+    "duckdb",
+    "humanitarian",
 ]
-license = {text = "GPL-3.0-only"}
-requires-python = ">=3.9,<4.0"
-dependencies = [
-    "geopandas>=1.0.1",
-    "requests>=2.32.3",
-    "duckdb>=1.1.0",
-    "hdx-python-api>=6.3.4",
-    "tqdm (>=4.67.1,<5.0.0)",
-    "psutil (>=7.0.0,<8.0.0)",
-]
-keywords = ["overture", "humanitarian", "duckdb","hdx"]
 classifiers = [
-    "Topic :: Utilities",
-    "Topic :: Scientific/Engineering :: GIS",
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: GIS",
+    "Topic :: Utilities",
+    "Typing :: Typed",
 ]
+dependencies = [
+    "duckdb>=1.5.2",
+    "hdx-python-api>=6.6.7",
+    "omegaconf>=2.3.0",
+    "psutil>=7.0.0",
+    "pycountry>=26.2.16",
+    "quackosm>=0.17.1",
+    "requests>=2.32.0",
+    "shapely>=2.1.0",
+    "tqdm>=4.67.0",
+    "typer>=0.15.0",
+]
+
+[project.scripts]
+oex-cli = "oex.cli:app"
 
 [project.urls]
-homepage = "https://github.com/kshitijrajsharma/overture2hdx"
-documentation = "https://github.com/kshitijrajsharma/overture2hdx"
-repository = "https://github.com/kshitijrajsharma/overture2hdx"
+Homepage = "https://github.com/osgeonepal/oex"
+Documentation = "https://osgeonepal.github.io/oex"
+Repository = "https://github.com/osgeonepal/oex"
+Issues = "https://github.com/osgeonepal/oex/issues"
+Changelog = "https://github.com/osgeonepal/oex/blob/main/CHANGELOG.md"
 
-[project.optional-dependencies]
-test = [
-    "pytest>=7.4.2",
-    "pytest-mock>=3.14.0",
-    "coverage>=7.6.1",
-    "coverage-badge>=1.1.2",
-]
-docs = [
-    "mkdocs>=1.5.3",
-    "mkdocs-material>=9.4.2",
-    "mkdocstrings-python>=1.7.0",
-    "mkdocs-exclude>=1.0.2",
-]
+[tool.uv.build-backend]
+source-include = ["tests/**", "CHANGELOG.md"]
 
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
 
-[build-system]
-requires = ["pdm-pep517>=1.1.4"]
-build-backend = "pdm.pep517.api"
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N", "W"]
+ignore = ["E501"]
+
+[tool.ruff.lint.flake8-bugbear]
+# typer's idiomatic API uses Option(...) / Argument(...) in default positions.
+extend-immutable-calls = ["typer.Argument", "typer.Option"]
+
+[tool.ty.src]
+include = ["src", "tests"]
 
 [tool.pytest.ini_options]
-addopts = "-ra -q -p no:warnings"
-testpaths = [
-    "tests",
+minversion = "8.0"
+addopts = [
+    "-ra",
+    "--strict-config",
+    "--strict-markers",
+    "--cov=oex",
+    "--cov-report=term-missing",
 ]
-pythonpath = "overture2hdx"
+testpaths = ["tests"]
+xfail_strict = true
+markers = [
+    "integration: integration tests that require network or large downloads",
+    "slow: tests that take more than a few seconds",
+]
+
+[tool.coverage.run]
+source = ["src/oex"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
+show_missing = true
 
 [tool.commitizen]
 name = "cz_conventional_commits"
-tag_format = "$version"
-version_scheme = "semver"
-version_provider = "pep621"
+version = "0.2.0"
+version_files = ["pyproject.toml:version", "src/oex/__init__.py:__version__"]
+tag_format = "v$version"
 update_changelog_on_bump = true
-version_files = [
-    "pyproject.toml:version",
-    "overture2hdx/__version__.py",
+major_version_zero = true
+changelog_incremental = true
+
+[dependency-groups]
+dev = [
+    "commitizen>=4.13.0",
+    "pre-commit>=4.6.0",
+    "pytest>=9.0.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.15.0",
+    "ty>=0.0.34",
 ]
-
-[tool.pdm]
-version = {from = "overture2hdx/__version__.py"}
-
-[tool.pdm.build]
-includes = ["overture2hdx"]
-source-includes = ["tests", "LICENSE", "README.md"]
-
-[tool.black]
-line-length = 132
-target-versions = ["py39", "py310", "py311"]
-
-[tool.ruff]
-fix = true
-line-length = 132
-target-version = "py39"
-exclude = [
-    ".git",
-    ".ruff_cache",
-    ".vscode",
-    "__pypackages__",
-    "build",
-    "dist",
-    "overture2hdx/__version__.py",
-]
-
-[tool.ruff.lint]
-select = ["I", "E", "W", "D", "B", "F", "N", "Q"]
-
-[tool.ruff.lint.pydocstyle]
-convention = "google"
-
-[tool.coverage.run]
-source = ["overture2hdx"]
-
-[tool.coverage.report]
-show_missing = true
-[tool.poetry.group.dev.dependencies]
-commitizen = "^4.4.1"
-
+docs = ["mkdocstrings-python>=2.0.0", "zensical>=0.0.39"]

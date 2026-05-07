@@ -1,0 +1,437 @@
+# HOT-OSM HDX schema: 11 layers matching the dataset grid HOT publishes on
+# the Humanitarian Data Exchange (e.g. hotosm_<iso3>_buildings,
+# hotosm_<iso3>_roads, ...).
+#
+# Source of truth: the live HOTOSM HDX exports (verified against Nepal):
+# https://data.humdata.org/dataset?q=hotosm+npl
+#
+# Tag filters and attribute lists below mirror what HOT documents in each
+# dataset's "notes" field. Where a category has a direct Overture equivalent
+# we add an `overture` block with sensible select/where; where it does not
+# (e.g. financial_services, sea_ports, railways), we set
+# `overture.enabled: false` and the runner skips Overture for that category.
+#
+# Use as:
+#   iso3: NPL
+#   key: hotosm
+#   categories_file: configs/examples/hot-schema.yaml
+
+categories:
+  # 1. Buildings ---------------------------------------------------------------
+  - name: buildings
+    hdx:
+      title: null
+      notes: Building footprints from OSM (HOT-style HDX export).
+      tags: [geodata, buildings]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Mirrors HOT's hotosm_<iso3>_buildings layer.
+    osm:
+      enabled: true
+      filter:
+        building: true
+      select:
+        - feature_id AS id
+        - tags['name'][1] AS name
+        - tags['name:en'][1] AS name_en
+        - tags['name:ne'][1] AS name_ne
+        - tags['building'][1] AS building
+        - tags['building:levels'][1] AS building_levels
+        - tags['building:materials'][1] AS building_materials
+        - tags['addr:full'][1] AS addr_full
+        - tags['addr:housenumber'][1] AS addr_housenumber
+        - tags['addr:street'][1] AS addr_street
+        - tags['addr:city'][1] AS addr_city
+        - tags['office'][1] AS office
+        - tags['source'][1] AS source
+      where: []
+    overture:
+      enabled: true
+      theme: buildings
+      feature_type: building
+      select:
+        - id
+        - names.primary AS name
+        - names.common->'en' AS name_en
+        - class AS building
+        - num_floors AS building_levels
+        - roof_material AS building_materials
+        - sources[1].dataset AS source
+      where: []
+
+  # 2. Roads ------------------------------------------------------------------
+  - name: roads
+    hdx:
+      notes: Roads from OSM (HOT-style HDX export).
+      tags: [geodata, transportation, roads]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Mirrors HOT's hotosm_<iso3>_roads layer.
+    osm:
+      enabled: true
+      filter:
+        highway: true
+      select:
+        - feature_id AS id
+        - tags['name'][1] AS name
+        - tags['name:en'][1] AS name_en
+        - tags['name:ne'][1] AS name_ne
+        - tags['highway'][1] AS highway
+        - tags['surface'][1] AS surface
+        - tags['smoothness'][1] AS smoothness
+        - tags['width'][1] AS width
+        - tags['lanes'][1] AS lanes
+        - tags['oneway'][1] AS oneway
+        - tags['bridge'][1] AS bridge
+        - tags['layer'][1] AS layer
+        - tags['source'][1] AS source
+      where: []
+    overture:
+      enabled: true
+      theme: transportation
+      feature_type: segment
+      select:
+        - id
+        - names.primary AS name
+        - names.common->'en' AS name_en
+        - class AS highway
+        - road_surface[1].value AS surface
+        - sources[1].dataset AS source
+      where: []
+
+  # 3. Waterways --------------------------------------------------------------
+  - name: waterways
+    hdx:
+      notes: Waterways and water bodies from OSM (HOT-style HDX export).
+      tags: [environment, water]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Mirrors HOT's hotosm_<iso3>_waterways layer.
+    osm:
+      enabled: true
+      filter:
+        waterway: true
+        water: true
+        natural: [water, wetland, bay]
+      select:
+        - feature_id AS id
+        - tags['name'][1] AS name
+        - tags['name:en'][1] AS name_en
+        - tags['name:ne'][1] AS name_ne
+        - tags['waterway'][1] AS waterway
+        - tags['covered'][1] AS covered
+        - tags['width'][1] AS width
+        - tags['depth'][1] AS depth
+        - tags['layer'][1] AS layer
+        - tags['blockage'][1] AS blockage
+        - tags['tunnel'][1] AS tunnel
+        - tags['natural'][1] AS natural_class
+        - tags['water'][1] AS water
+        - tags['source'][1] AS source
+      where: []
+    overture:
+      enabled: true
+      theme: base
+      feature_type: water
+      select:
+        - id
+        - names.primary AS name
+        - names.common->'en' AS name_en
+        - class AS waterway
+        - sources[1].dataset AS source
+      where: []
+
+  # 4. Railways ---------------------------------------------------------------
+  - name: railways
+    hdx:
+      notes: Railway lines and stations (HOT-style HDX export).
+      tags: [transportation, rail]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Mirrors HOT's hotosm_<iso3>_railways layer.
+    osm:
+      enabled: true
+      filter:
+        railway: [rail, station]
+      select:
+        - feature_id AS id
+        - tags['name'][1] AS name
+        - tags['name:en'][1] AS name_en
+        - tags['name:ne'][1] AS name_ne
+        - tags['railway'][1] AS railway
+        - tags['ele'][1] AS ele
+        - tags['operator:type'][1] AS operator_type
+        - tags['layer'][1] AS layer
+        - tags['addr:full'][1] AS addr_full
+        - tags['addr:city'][1] AS addr_city
+        - tags['source'][1] AS source
+      where: []
+    overture:
+      enabled: false
+
+  # 5. Education facilities ---------------------------------------------------
+  - name: education_facilities
+    hdx:
+      notes: Schools, colleges, universities, kindergartens (HOT-style).
+      tags: [education]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Mirrors HOT's hotosm_<iso3>_education_facilities layer.
+    osm:
+      enabled: true
+      filter:
+        amenity: [kindergarten, school, college, university]
+        building: [kindergarten, school, college, university]
+      select:
+        - feature_id AS id
+        - tags['name'][1] AS name
+        - tags['name:en'][1] AS name_en
+        - tags['name:ne'][1] AS name_ne
+        - tags['amenity'][1] AS amenity
+        - tags['building'][1] AS building
+        - tags['operator:type'][1] AS operator_type
+        - tags['capacity:persons'][1] AS capacity_persons
+        - tags['addr:full'][1] AS addr_full
+        - tags['addr:city'][1] AS addr_city
+        - tags['source'][1] AS source
+      where: []
+    overture:
+      enabled: true
+      theme: places
+      feature_type: place
+      select:
+        - id
+        - names.primary AS name
+        - names.common->'en' AS name_en
+        - categories.primary AS amenity
+        - addresses[1].freeform AS addr_full
+        - sources[1].dataset AS source
+      where:
+        - "categories.primary IN ('school', 'university', 'college', 'kindergarten')"
+
+  # 6. Health facilities ------------------------------------------------------
+  - name: health_facilities
+    hdx:
+      notes: Hospitals, clinics, pharmacies and other healthcare POIs (HOT-style).
+      tags: [health]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Mirrors HOT's hotosm_<iso3>_health_facilities layer.
+    osm:
+      enabled: true
+      filter:
+        healthcare: true
+        amenity: [doctors, dentist, clinic, hospital, pharmacy]
+      select:
+        - feature_id AS id
+        - tags['name'][1] AS name
+        - tags['name:en'][1] AS name_en
+        - tags['name:ne'][1] AS name_ne
+        - tags['amenity'][1] AS amenity
+        - tags['building'][1] AS building
+        - tags['healthcare'][1] AS healthcare
+        - tags['healthcare:speciality'][1] AS healthcare_speciality
+        - tags['operator:type'][1] AS operator_type
+        - tags['capacity:persons'][1] AS capacity_persons
+        - tags['addr:full'][1] AS addr_full
+        - tags['addr:city'][1] AS addr_city
+        - tags['source'][1] AS source
+      where: []
+    overture:
+      enabled: true
+      theme: places
+      feature_type: place
+      select:
+        - id
+        - names.primary AS name
+        - names.common->'en' AS name_en
+        - categories.primary AS amenity
+        - addresses[1].freeform AS addr_full
+        - sources[1].dataset AS source
+      where:
+        - "categories.primary IN ('hospital', 'clinic', 'doctor', 'dentist', 'pharmacy')"
+
+  # 7. Populated places -------------------------------------------------------
+  - name: populated_places
+    hdx:
+      notes: Cities, towns, villages, hamlets and isolated dwellings (HOT-style).
+      tags: [population, settlements]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Mirrors HOT's hotosm_<iso3>_populated_places layer.
+    osm:
+      enabled: true
+      filter:
+        place: [isolated_dwelling, town, village, hamlet, city]
+        landuse: [residential]
+      select:
+        - feature_id AS id
+        - tags['name'][1] AS name
+        - tags['name:en'][1] AS name_en
+        - tags['name:ne'][1] AS name_ne
+        - tags['place'][1] AS place
+        - tags['landuse'][1] AS landuse
+        - tags['population'][1] AS population
+        - tags['is_in'][1] AS is_in
+        - tags['source'][1] AS source
+      where: []
+    overture:
+      enabled: true
+      theme: divisions
+      feature_type: division
+      select:
+        - id
+        - names.primary AS name
+        - names.common->'en' AS name_en
+        - subtype AS place
+        - population
+        - sources[1].dataset AS source
+      where:
+        - "subtype = 'locality'"
+
+  # 8. Financial services -----------------------------------------------------
+  - name: financial_services
+    hdx:
+      notes: Banks, ATMs, money transfer agents, post offices (HOT-style).
+      tags: [services, finance]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Mirrors HOT's hotosm_<iso3>_financial_services layer.
+    osm:
+      enabled: true
+      filter:
+        amenity: [mobile_money_agent, bureau_de_change, bank, microfinance, atm, sacco, money_transfer, post_office]
+      select:
+        - feature_id AS id
+        - tags['name'][1] AS name
+        - tags['name:en'][1] AS name_en
+        - tags['name:ne'][1] AS name_ne
+        - tags['amenity'][1] AS amenity
+        - tags['operator'][1] AS operator
+        - tags['network'][1] AS network
+        - tags['addr:full'][1] AS addr_full
+        - tags['addr:city'][1] AS addr_city
+        - tags['source'][1] AS source
+      where: []
+    overture:
+      enabled: false
+
+  # 9. Airports ---------------------------------------------------------------
+  - name: airports
+    hdx:
+      notes: Aerodromes, terminals, helipads, emergency landing sites (HOT-style).
+      tags: [transportation, aviation]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Mirrors HOT's hotosm_<iso3>_airports layer.
+    osm:
+      enabled: true
+      filter:
+        aeroway: true
+        building: [aerodrome]
+        emergency: [landing_site]
+        emergency:helipad: true
+      select:
+        - feature_id AS id
+        - tags['name'][1] AS name
+        - tags['name:en'][1] AS name_en
+        - tags['name:ne'][1] AS name_ne
+        - tags['aeroway'][1] AS aeroway
+        - tags['building'][1] AS building
+        - tags['emergency'][1] AS emergency
+        - tags['emergency:helipad'][1] AS emergency_helipad
+        - tags['operator:type'][1] AS operator_type
+        - tags['capacity:persons'][1] AS capacity_persons
+        - tags['addr:full'][1] AS addr_full
+        - tags['addr:city'][1] AS addr_city
+        - tags['source'][1] AS source
+      where: []
+    overture:
+      enabled: true
+      theme: places
+      feature_type: place
+      select:
+        - id
+        - names.primary AS name
+        - names.common->'en' AS name_en
+        - categories.primary AS aeroway
+        - addresses[1].freeform AS addr_full
+        - sources[1].dataset AS source
+      where:
+        - "categories.primary IN ('airport', 'heliport')"
+
+  # 10. Sea ports -------------------------------------------------------------
+  - name: sea_ports
+    hdx:
+      notes: Ferry terminals, ports and harbours (HOT-style).
+      tags: [transportation, maritime]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Mirrors HOT's hotosm_<iso3>_sea_ports layer.
+    osm:
+      enabled: true
+      filter:
+        amenity: [ferry_terminal]
+        building: [ferry_terminal]
+        port: true
+      select:
+        - feature_id AS id
+        - tags['name'][1] AS name
+        - tags['name:en'][1] AS name_en
+        - tags['name:ne'][1] AS name_ne
+        - tags['amenity'][1] AS amenity
+        - tags['building'][1] AS building
+        - tags['port'][1] AS port
+        - tags['operator:type'][1] AS operator_type
+        - tags['addr:full'][1] AS addr_full
+        - tags['addr:city'][1] AS addr_city
+        - tags['source'][1] AS source
+      where: []
+    overture:
+      enabled: false
+
+  # 11. Points of interest ----------------------------------------------------
+  - name: points_of_interest
+    hdx:
+      notes: Generic POIs (amenities, shops, tourism, man_made) - HOT-style.
+      tags: [poi]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Mirrors HOT's hotosm_<iso3>_points_of_interest layer.
+    osm:
+      enabled: true
+      filter:
+        amenity: true
+        man_made: true
+        shop: true
+        tourism: true
+      select:
+        - feature_id AS id
+        - tags['name'][1] AS name
+        - tags['name:en'][1] AS name_en
+        - tags['name:ne'][1] AS name_ne
+        - tags['amenity'][1] AS amenity
+        - tags['man_made'][1] AS man_made
+        - tags['shop'][1] AS shop
+        - tags['tourism'][1] AS tourism
+        - tags['opening_hours'][1] AS opening_hours
+        - tags['beds'][1] AS beds
+        - tags['rooms'][1] AS rooms
+        - tags['addr:full'][1] AS addr_full
+        - tags['addr:housenumber'][1] AS addr_housenumber
+        - tags['addr:street'][1] AS addr_street
+        - tags['addr:city'][1] AS addr_city
+        - tags['source'][1] AS source
+      where: []
+    overture:
+      enabled: true
+      theme: places
+      feature_type: place
+      select:
+        - id
+        - names.primary AS name
+        - names.common->'en' AS name_en
+        - categories.primary AS amenity
+        - addresses[1].freeform AS addr_full
+        - sources[1].dataset AS source
+      where: []

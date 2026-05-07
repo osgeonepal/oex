@@ -1,165 +1,233 @@
 # Configuration
 
-The application is configured using a YAML file and environment variables.
+Configuration is layered:
 
-## YAML Configuration
+1. Bundled defaults at `src/oex/defaults/base.yaml`.
+2. A user YAML (passed via `--config` or auto-located at `configs/<iso3>.yaml`).
+3. CLI overrides (`--iso3`, `--hdx-push`, `--output-dir`, etc).
 
+Layers merge with [OmegaConf](https://omegaconf.readthedocs.io/), with one
+deviation: when a user YAML provides a `categories` list, it **replaces** the
+default list rather than element-wise merging.
 
-### YAML Fields
+## Mental model: `filter`, `where`, `select`
 
-- **iso3**: The ISO3 country code. This is a required field.
-- **geom**: The geometry in GeoJSON format. This is used to define the area of interest.
-- **key**: A unique key for the dataset.
-- **subnational**: A boolean indicating whether the data is subnational.
-- **frequency**: The update frequency of the dataset (e.g., yearly, monthly).
-- **categories**: A list of categories to be exported. Each category contains:
-  - **select**: A list of fields to select from the data.
-  - **hdx**: HDX-specific metadata including:
-    - **title**: The title of the dataset.
-    - **notes**: Notes or description of the dataset.
-    - **tags**: A list of tags for the dataset.
-  - **theme**: The theme of the data (e.g., transportation).
-  - **feature_type**: The type of features to export (e.g., segment).
-  - **formats**: A list of formats to export the data in (e.g., gpkg, shp).
+- **`select`** lists the columns to keep in the output. Same on both sources.
+  Pure SQL expressions, e.g. `names.primary AS name` (Overture) or
+  `tags['name'][1] AS name` (OSM).
+- **`where`** is an optional SQL filter on the rows that come out of the
+  source. Combined with the implicit country bbox and boundary clip.
+- **`filter`** (OSM only) is the OSM tag filter passed to quackosm at
+  **parquet build time**. It decides which OSM features ever land in the
+  cache. This is the OSM equivalent of a row filter, but it runs during PBF
+  to GeoParquet conversion, not at DuckDB query time. Most categories only
+  need `filter`; `osm.where` stays empty.
 
-## Environment Variables
+For Overture there is no `filter`: the upstream (theme, feature_type) pair
+already names a partitioned subset, so `where` is the only filter.
 
-The application uses several environment variables to configure its behavior. Below is a list of the environment variables and their descriptions:
+## Output formats
 
-### HDX_SITE
+`output.formats` (or per-category `formats`) accepts any subset of:
 
-- **Description**: The HDX site to use.
-- **Default**: `demo`
-- **Example**: `export HDX_SITE=prod`
+| Format    | Notes                                                                                              |
+| --------- | -------------------------------------------------------------------------------------------------- |
+| `gpkg`    | GeoPackage. Single file, all geometry types together. Recommended default.                         |
+| `shp`     | ESRI Shapefile. Split by geometry type. Field names truncated to 10 chars.                         |
+| `geojson` | Single-file text. Easy to inspect, can be large.                                                   |
+| `kml`     | Opens in Google Earth and most desktop GIS. Single XML file; prefer gpkg above ~1M features.       |
 
-### HDX_API_KEY
+Default is `[gpkg, shp]`.
 
-- **Description**: The API key for accessing HDX.
-- **Required**: Yes
-- **Example**: `export HDX_API_KEY=your_hdx_api_key`
+## Top-level keys
 
-### HDX_OWNER_ORG
+| Key            | Type                | Notes                                         |
+| -------------- | ------------------- | --------------------------------------------- |
+| `iso3`         | string              | Required. ISO3 country code.                  |
+| `key`          | string              | Required. Slug for HDX dataset names.         |
+| `dataset_name` | string \| null      | Pretty country/region name in HDX titles.     |
+| `subnational`  | bool                | Sets HDX `subnational` flag.                  |
+| `frequency`    | string              | HDX expected update frequency.                |
+| `boundary`     | block               | See `BoundaryConfig`.                         |
+| `output`       | block               | Output directory and format list.             |
+| `parallel`     | block               | DuckDB threads + memory + thread pool toggle. |
+| `duckdb`       | block               | http retry/timeout, temp dir, object cache.   |
+| `logging`      | block               | level, format string.                         |
+| `hdx`          | block               | HDX site, push toggle, credentials.           |
+| `source`       | `overture` + `osm`  | Per-source settings (release, cache dir).     |
+| `categories`   | list                | Per-theme `name`, `hdx`, `overture`, `osm`.   |
 
-- **Description**: The owner organization on HDX.
-- **Required**: Yes
-- **Example**: `export HDX_OWNER_ORG=your_hdx_owner_org`
+## Categories
 
-### HDX_MAINTAINER
+Each category carries:
 
-- **Description**: The maintainer for the dataset on HDX.
-- **Required**: Yes
-- **Example**: `export HDX_MAINTAINER=your_hdx_maintainer`
+- `name`: human label (also used as the HDX dataset suffix and as the OSM
+  cache parquet filename).
+- `formats`: optional override for `output.formats`.
+- `hdx`: title, notes, tags, license, license_url, caveats.
+- `overture`: `enabled`, `theme`, `feature_type`, `select`, `where`.
+- `osm`: `enabled`, `filter`, `select`, `where`.
 
-### OVERTURE_VERSION
+Both `overture.select` and `osm.select` are pure SQL fragments. The geometry
+column is appended automatically.
 
-- **Description**: The release version of Overture data.
-- **Default**: `2024-09-18.0`
-- **Example**: `export OVERTURE_VERSION=2024-09-18.0`
+## OSM source schema (what your SELECT runs against)
 
-### LOG_LEVEL
+The OSM cache produced by quackosm has three columns:
 
-- **Description**: The logging level.
-- **Default**: `INFO`
-- **Example**: `export LOG_LEVEL=DEBUG`
+| Column       | Type                       | What it is                                    |
+| ------------ | -------------------------- | --------------------------------------------- |
+| `feature_id` | `VARCHAR`                  | OSM type + id, e.g. `node/12345`              |
+| `tags`       | `MAP<VARCHAR, VARCHAR>`    | All retained OSM tags as key->value           |
+| `geometry`   | geometry                   | POINT, LINESTRING, POLYGON, MULTIPOLYGON, ... |
 
-### LOG_FORMAT
+DuckDB MAP access returns a list, so use `tags['name'][1]` to get the
+scalar value of the `name` key. Refer to the
+[OSM tag wiki](https://wiki.openstreetmap.org/wiki/Map_features) for what
+keys exist; common ones include `building`, `highway`, `amenity`,
+`waterway`, `landuse`, `place`, `aeroway`, `railway`, `name`, `name:en`,
+`addr:*`, `source`.
 
-- **Description**: The logging format.
-- **Default**: `%(asctime)s - %(name)s - %(levelname)s - %(message)s`
-- **Example**: `export LOG_FORMAT="%(asctime)s - %(name)s - %(levelname)s - %(message)s"`
+`osm.filter` accepts the quackosm tag-filter shape:
 
-### DUCKDB_CON
-
-- **Description**: The DuckDB connection string.
-- **Default**: `:memory:`
-- **Example**: `export DUCKDB_CON=your_duckdb_connection_string`
-
-## Example : 
-
-```python
-import json
-
-geom = json.dumps(
-    {
-        "type": "FeatureCollection",
-        "features": [
-            {
-                "type": "Feature",
-                "properties": {},
-                "geometry": {
-                    "coordinates": [
-                        [
-                            [83.98047393581618, 28.255338988044088],
-                            [83.973540694181, 28.230486421513703],
-                            [83.91927014759125, 28.214265947308945],
-                            [83.97832224013575, 28.195093119231174],
-                            [83.96971545741735, 28.158212628626416],
-                            [84.00175181531534, 28.19361814379657],
-                            [84.03187555483152, 28.168540447741847],
-                            [84.01059767533235, 28.208788347541898],
-                            [84.0342663278089, 28.255549578267903],
-                            [83.99960011963498, 28.228801292171724],
-                            [83.98047393581618, 28.255338988044088],
-                        ]
-                    ],
-                    "type": "Polygon",
-                },
-            }
-        ],
-    }
-)
-config_yaml_mini = f"""
-    iso3: npl
-    geom: {geom}
-    key: osgeonepal_pkr
-    subnational: true
-    frequency: yearly
-    categories:
-    - Roads:
-        select:
-            - id
-            - names.primary as name
-            - class as class
-            - subclass as subclass
-            - UNNEST(JSON_EXTRACT(road_surface, '$[*].value')) as road_surface
-            - UNNEST(JSON_EXTRACT(sources, '$[*].dataset')) AS source
-        hdx:
-            title: Roads of Pokhara Nepal
-            notes:  Overturemaps Export for Pokhara . Data might known to have errors however gone through validation checks to detect map errors, breakage, and vandalism . Sources would be combination of OSM and Other openly available datasets in the region including facebook roads and ESRI community datasets
-            tags:
-            - geodata
-            - transportation
-            - roads
-        theme:
-            - transportation
-        feature_type:
-            - segment
-        formats:
-            - gpkg
-            - shp
-
-    - Buildings:
-        select:
-            - id
-            - names.primary as name
-            - class as class
-            - subtype as subtype
-            - height as height
-            - level as level
-            - num_floors as num_floors
-            - UNNEST(JSON_EXTRACT(sources, '$[*].dataset')) AS source
-        hdx:
-            title: Buildings of Pokhara Nepal
-            notes:  Overturemaps Export for Nepal . Data might known to have errors however gone through validation checks to detect map errors, breakage, and vandalism . Sources would be combination of OSM and Other openly available datasets in the region including facebook roads and ESRI community datasets
-            tags:
-            - geodata
-        theme:
-            - buildings
-        feature_type:
-            - building
-        formats:
-            - gpkg
-            - shp
-    """
-
+```yaml
+osm:
+  filter:
+    building: true                          # any value of `building`
+    highway: ["primary", "secondary"]       # only these values
+    amenity: ["hospital", "clinic"]
 ```
+
+## Overture source schema (what your SELECT runs against)
+
+Overture publishes parquet at `s3://overturemaps-us-west-2/release/<release>/theme=<theme>/type=<feature_type>/`.
+Each (theme, feature_type) has a documented column set. The current release
+exposes:
+
+| Theme            | Feature type        | Notable columns                                                          |
+| ---------------- | ------------------- | ------------------------------------------------------------------------ |
+| `addresses`      | `address`           | `id`, `country`, `postcode`, `street`, `number`, `unit`                  |
+| `base`           | `bathymetry`        | `id`, `depth`                                                            |
+| `base`           | `infrastructure`    | `id`, `names`, `subtype`, `class`                                        |
+| `base`           | `land`              | `id`, `names`, `subtype`, `class`                                        |
+| `base`           | `land_cover`        | `id`, `subtype`, `cartography.{min,max}_zoom`                            |
+| `base`           | `land_use`          | `id`, `names`, `subtype`, `class`, `surface`                             |
+| `base`           | `water`             | `id`, `names`, `subtype`, `class`, `is_salt`, `wikidata`                 |
+| `buildings`      | `building`          | `id`, `names`, `class`, `subtype`, `height`, `num_floors`, `roof_*`      |
+| `buildings`      | `building_part`     | `id`, `height`, `num_floors`                                             |
+| `divisions`      | `division`          | `id`, `names`, `subtype`, `country`, `region`, `population`, `wikidata`  |
+| `divisions`      | `division_area`     | `id`, `names`, `subtype`, `country`, `region`                            |
+| `divisions`      | `division_boundary` | `id`, `subtype`, `class`                                                 |
+| `places`         | `place`             | `id`, `names`, `categories`, `addresses`, `phones`, `websites`, `confidence` |
+| `transportation` | `connector`         | `id`                                                                     |
+| `transportation` | `segment`           | `id`, `names`, `class`, `subclass`, `subtype`, `road_surface`            |
+
+For the authoritative schema (including types and nested struct shapes),
+see the [Overture Maps schema reference](https://docs.overturemaps.org/schema/).
+Note that types are renamed across releases (e.g. `boundary` became
+`division_boundary` in 2026-04-15.0), so pin `source.overture.release` if
+your config relies on a specific schema.
+
+## Custom schemas
+
+Three ways to plug in your own category set:
+
+1. Inline `categories:` in your country YAML (replaces defaults wholesale).
+2. `categories_file: path/to/schema.yaml` on the country YAML.
+3. Both: `categories_file` loads the base set, then an inline
+   `categories:` block overrides for that country.
+
+Each category needs `name`, plus any of:
+
+- `formats` (list): override the global `output.formats` for this category.
+- `hdx`: HDX metadata (title, notes, tags, license, license_url, caveats).
+- `overture`: `theme`, `feature_type`, `select` (SQL), `where` (SQL).
+- `osm`: `filter` (quackosm tag filter), `select` (SQL), `where` (SQL).
+
+## OSM source: engines
+
+```yaml
+source:
+  osm:
+    engine: geofabrik          # or planet_parquet
+    cache_dir: data/osm
+    snapshot: latest
+    geofabrik_clip_to_boundary: true
+```
+
+`geofabrik` (default): no pre-build. First run per country downloads the PBF
+and builds the cache. Subsequent runs reuse it. The cache lives at
+`<cache_dir>/geofabrik/<iso3>/<snapshot>/<category-slug>.parquet`.
+
+`planet_parquet`: build once via `oex-cli osm-build-cache --planet`,
+then any country export is a fast read against the Hilbert-sorted parquet
+at `<cache_dir>/planet/<snapshot>/<category-slug>.parquet`.
+
+## Pinning a release / snapshot
+
+Both sources resolve to the latest data by default. Pin a specific version
+in the country YAML when you need a reproducible run:
+
+```yaml
+source:
+  overture:
+    release: 2026-04-15.0          # default 'latest' -> resolved from S3
+  osm:
+    snapshot: 2026-05-01           # default 'latest'
+```
+
+Resolution rules:
+
+- **Overture `release`**: any literal release like `2026-04-15.0` is used
+  verbatim with no lookup. `latest` lists the public S3 bucket and picks the
+  highest `YYYY-MM-DD.N`.
+- **OSM `snapshot` for `planet_parquet`**: must match an existing snapshot
+  directory under `<cache_dir>/planet/`. A missing snapshot is a loud error,
+  not a silent fallback. `latest` picks the newest dir.
+- **OSM `snapshot` for `geofabrik`**: this is a label for the per-country
+  cache dir. Geofabrik only publishes `*-latest.osm.pbf` URLs (no historical
+  archive), so a fresh build always pulls today's PBF regardless of the
+  label. To truly pin an OSM date, either use `planet_parquet` with a
+  pre-built snapshot, or build the geofabrik cache from your own historical
+  PBF: `oex-cli osm-build-cache --pbf <historical.osm.pbf>`.
+
+The resolved version is logged before any per-category work, e.g.:
+
+```text
+Overture source: release=2026-04-15.0 bucket=overturemaps-us-west-2
+OSM source: geofabrik IND, snapshot=2026-05-07, cache=...
+```
+
+It also lands inside every zip's `README.txt` (Source, Snapshot fields).
+
+## HDX publication
+
+HDX push is **off by default**. Enable per run:
+
+```yaml
+hdx:
+  push: true
+  site: prod                     # or 'demo'
+  api_key: ${oc.env:HDX_API_KEY}
+  owner_org: your-org
+  maintainer: your-username
+  user_agent: my-pipeline/1.0    # optional, defaults to oex
+```
+
+Each category supplies its own HDX metadata block:
+
+```yaml
+- name: Buildings
+  hdx:
+    title: Buildings of Nepal
+    notes: |
+      Building footprints from Overture (OSM + Microsoft + Google + Esri)
+      and OpenStreetMap.
+    tags: [buildings, geodata]
+    license: ODbL 1.0                                         # or 'hdx-odc-odbl' for the canonical id
+    license_url: https://opendatacommons.org/licenses/odbl/1-0/
+    caveats: Verified at the community level only.
+```
+
+When both `overture` and `osm` are enabled for a category, both sources
+contribute resources to the same HDX dataset (one zip per source per format).

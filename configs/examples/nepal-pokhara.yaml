@@ -1,0 +1,32 @@
+# Example with a custom clipping polygon (Pokhara region).
+iso3: NPL
+key: ode_pokhara
+dataset_name: Pokhara, Nepal
+subnational: true
+frequency: yearly
+boundary:
+  geom: |
+    {
+      "type": "FeatureCollection",
+      "features": [{
+        "type": "Feature",
+        "properties": {},
+        "geometry": {
+          "type": "Polygon",
+          "coordinates": [[
+            [83.91927014759125, 28.158212628626416],
+            [84.0342663278089, 28.158212628626416],
+            [84.0342663278089, 28.255549578267903],
+            [83.91927014759125, 28.255549578267903],
+            [83.91927014759125, 28.158212628626416]
+          ]]
+        }
+      }]
+    }
+output:
+  dir: output
+  formats:
+    - gpkg
+    - shp
+hdx:
+  push: false

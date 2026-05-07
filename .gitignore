@@ -1,7 +1,61 @@
-env
-.env
-.DS_STORE
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
 
-__pycache__
+# Distribution / packaging
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+wheels/
+share/python-wheels/
+
+# uv / virtualenv
+.venv/
+venv/
+env/
+.python-version
+
+# Testing & coverage
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+
+# Type checkers
+.mypy_cache/
+.pyright/
+.ty_cache/
+.ruff_cache/
+
+# Pre-commit
+.pre-commit-cache/
+
+# Docs build output
+site/
+.cache/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Project-local artefacts
 *.log
-.vscode
+output/
+data/
+soul.md
+poetry.lock
+bench-india/
