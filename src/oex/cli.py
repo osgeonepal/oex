@@ -1,5 +1,6 @@
 """Typer CLI for oex."""
 
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 import typer
@@ -23,9 +24,27 @@ app = typer.Typer(
 )
 
 
+def _print_version(value: bool) -> None:
+    if not value:
+        return
+    try:
+        typer.echo(f"oex {version('oex')}")
+    except PackageNotFoundError:
+        typer.echo("oex (source checkout)")
+    raise typer.Exit()
+
+
 @app.callback()
 def _global(
     log_level: str = typer.Option("INFO", envvar="LOG_LEVEL"),
+    _v: bool = typer.Option(
+        False,
+        "--version",
+        "-V",
+        callback=_print_version,
+        is_eager=True,
+        help="Show oex version and exit.",
+    ),
 ) -> None:
     setup_logging(level=log_level)
 

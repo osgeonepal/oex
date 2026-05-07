@@ -1,15 +1,20 @@
-# HOT-OSM HDX schema: 11 layers matching the dataset grid HOT publishes on
+# HOT-OSM HDX schema: 11 layers matching the HOT-OSM dataset grid published on
 # the Humanitarian Data Exchange (e.g. hotosm_<iso3>_buildings,
 # hotosm_<iso3>_roads, ...).
 #
-# Source of truth: the live HOTOSM HDX exports (verified against Nepal):
-# https://data.humdata.org/dataset?q=hotosm+npl
+# Metadata (license, caveats, dataset_source, tags, notes) below is HOT's
+# verbatim production metadata, copied from the live HDX exports' CKAN
+# records. This makes the output drop-in compatible with HOT's HDX grid:
+# pushing this schema produces datasets that humanitarian users already
+# know how to consume.
 #
-# Tag filters and attribute lists below mirror what HOT documents in each
-# dataset's "notes" field. Where a category has a direct Overture equivalent
-# we add an `overture` block with sensible select/where; where it does not
-# (e.g. financial_services, sea_ports, railways), we set
-# `overture.enabled: false` and the runner skips Overture for that category.
+# Source of truth: live HDX records, e.g.
+#   https://data.humdata.org/dataset/hotosm_npl_buildings
+#
+# The OSM filter / select blocks mirror the tag expressions that HOT
+# documents in each dataset's "notes" field. Each category also carries
+# an `overture` block so the same schema can drive a multi-source export;
+# set `overture.enabled: false` per category if you want OSM-only.
 #
 # Use as:
 #   iso3: NPL
@@ -20,12 +25,15 @@ categories:
   # 1. Buildings ---------------------------------------------------------------
   - name: buildings
     hdx:
-      title: null
-      notes: Building footprints from OSM (HOT-style HDX export).
-      tags: [geodata, buildings]
-      license: ODbL 1.0
+      notes: |
+        OpenStreetMap exports for use in GIS applications.
+        This theme includes all OpenStreetMap features in this area matching:
+          building IS NOT NULL
+      tags: [facilities-infrastructure, geodata]
+      license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
-      caveats: Mirrors HOT's hotosm_<iso3>_buildings layer.
+      caveats: OpenStreetMap data is crowd sourced and cannot be considered to be exhaustive.
+      dataset_source: OpenStreetMap contributors
     osm:
       enabled: true
       filter:
@@ -62,11 +70,15 @@ categories:
   # 2. Roads ------------------------------------------------------------------
   - name: roads
     hdx:
-      notes: Roads from OSM (HOT-style HDX export).
-      tags: [geodata, transportation, roads]
-      license: ODbL 1.0
+      notes: |
+        OpenStreetMap exports for use in GIS applications.
+        This theme includes all OpenStreetMap features in this area matching:
+          highway IS NOT NULL
+      tags: [facilities-infrastructure, geodata, transportation]
+      license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
-      caveats: Mirrors HOT's hotosm_<iso3>_roads layer.
+      caveats: OpenStreetMap data is crowd sourced and cannot be considered to be exhaustive.
+      dataset_source: OpenStreetMap contributors
     osm:
       enabled: true
       filter:
@@ -102,11 +114,16 @@ categories:
   # 3. Waterways --------------------------------------------------------------
   - name: waterways
     hdx:
-      notes: Waterways and water bodies from OSM (HOT-style HDX export).
-      tags: [environment, water]
-      license: ODbL 1.0
+      notes: |
+        OpenStreetMap exports for use in GIS applications.
+        This theme includes all OpenStreetMap features in this area matching:
+          waterway IS NOT NULL OR water IS NOT NULL OR
+          natural IN ('water', 'wetland', 'bay')
+      tags: [environment, geodata]
+      license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
-      caveats: Mirrors HOT's hotosm_<iso3>_waterways layer.
+      caveats: OpenStreetMap data is crowd sourced and cannot be considered to be exhaustive.
+      dataset_source: OpenStreetMap contributors
     osm:
       enabled: true
       filter:
@@ -144,11 +161,15 @@ categories:
   # 4. Railways ---------------------------------------------------------------
   - name: railways
     hdx:
-      notes: Railway lines and stations (HOT-style HDX export).
-      tags: [transportation, rail]
-      license: ODbL 1.0
+      notes: |
+        OpenStreetMap exports for use in GIS applications.
+        This theme includes all OpenStreetMap features in this area matching:
+          railway IN ('rail', 'station')
+      tags: [facilities-infrastructure, geodata, transportation]
+      license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
-      caveats: Mirrors HOT's hotosm_<iso3>_railways layer.
+      caveats: OpenStreetMap data is crowd sourced and cannot be considered to be exhaustive.
+      dataset_source: OpenStreetMap contributors
     osm:
       enabled: true
       filter:
@@ -172,11 +193,16 @@ categories:
   # 5. Education facilities ---------------------------------------------------
   - name: education_facilities
     hdx:
-      notes: Schools, colleges, universities, kindergartens (HOT-style).
-      tags: [education]
-      license: ODbL 1.0
+      notes: |
+        OpenStreetMap exports for use in GIS applications.
+        This theme includes all OpenStreetMap features in this area matching:
+          amenity IN ('kindergarten', 'school', 'college', 'university') OR
+          building IN ('kindergarten', 'school', 'college', 'university')
+      tags: [education, facilities-infrastructure, geodata]
+      license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
-      caveats: Mirrors HOT's hotosm_<iso3>_education_facilities layer.
+      caveats: OpenStreetMap data is crowd sourced and cannot be considered to be exhaustive.
+      dataset_source: OpenStreetMap contributors
     osm:
       enabled: true
       filter:
@@ -212,11 +238,16 @@ categories:
   # 6. Health facilities ------------------------------------------------------
   - name: health_facilities
     hdx:
-      notes: Hospitals, clinics, pharmacies and other healthcare POIs (HOT-style).
-      tags: [health]
-      license: ODbL 1.0
+      notes: |
+        OpenStreetMap exports for use in GIS applications.
+        This theme includes all OpenStreetMap features in this area matching:
+          healthcare IS NOT NULL OR
+          amenity IN ('doctors', 'dentist', 'clinic', 'hospital', 'pharmacy')
+      tags: [facilities-infrastructure, geodata, health]
+      license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
-      caveats: Mirrors HOT's hotosm_<iso3>_health_facilities layer.
+      caveats: OpenStreetMap data is crowd sourced and cannot be considered to be exhaustive.
+      dataset_source: OpenStreetMap contributors
     osm:
       enabled: true
       filter:
@@ -254,11 +285,16 @@ categories:
   # 7. Populated places -------------------------------------------------------
   - name: populated_places
     hdx:
-      notes: Cities, towns, villages, hamlets and isolated dwellings (HOT-style).
-      tags: [population, settlements]
-      license: ODbL 1.0
+      notes: |
+        OpenStreetMap exports for use in GIS applications.
+        This theme includes all OpenStreetMap features in this area matching:
+          place IN ('isolated_dwelling', 'town', 'village', 'hamlet', 'city') OR
+          landuse = 'residential'
+      tags: [geodata, populated places-settlements]
+      license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
-      caveats: Mirrors HOT's hotosm_<iso3>_populated_places layer.
+      caveats: OpenStreetMap data is crowd sourced and cannot be considered to be exhaustive.
+      dataset_source: OpenStreetMap contributors
     osm:
       enabled: true
       filter:
@@ -292,11 +328,17 @@ categories:
   # 8. Financial services -----------------------------------------------------
   - name: financial_services
     hdx:
-      notes: Banks, ATMs, money transfer agents, post offices (HOT-style).
-      tags: [services, finance]
-      license: ODbL 1.0
+      notes: |
+        OpenStreetMap exports for use in GIS applications.
+        This theme includes all OpenStreetMap features in this area matching:
+          amenity IN ('mobile_money_agent', 'bureau_de_change', 'bank',
+                      'microfinance', 'atm', 'sacco', 'money_transfer',
+                      'post_office')
+      tags: [economics, facilities-infrastructure, geodata]
+      license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
-      caveats: Mirrors HOT's hotosm_<iso3>_financial_services layer.
+      caveats: OpenStreetMap data is crowd sourced and cannot be considered to be exhaustive.
+      dataset_source: OpenStreetMap contributors
     osm:
       enabled: true
       filter:
@@ -319,11 +361,16 @@ categories:
   # 9. Airports ---------------------------------------------------------------
   - name: airports
     hdx:
-      notes: Aerodromes, terminals, helipads, emergency landing sites (HOT-style).
-      tags: [transportation, aviation]
-      license: ODbL 1.0
+      notes: |
+        OpenStreetMap exports for use in GIS applications.
+        This theme includes all OpenStreetMap features in this area matching:
+          aeroway IS NOT NULL OR building = 'aerodrome' OR
+          emergency = 'landing_site' OR emergency:helipad IS NOT NULL
+      tags: [aviation, facilities-infrastructure, geodata, transportation]
+      license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
-      caveats: Mirrors HOT's hotosm_<iso3>_airports layer.
+      caveats: OpenStreetMap data is crowd sourced and cannot be considered to be exhaustive.
+      dataset_source: OpenStreetMap contributors
     osm:
       enabled: true
       filter:
@@ -363,11 +410,16 @@ categories:
   # 10. Sea ports -------------------------------------------------------------
   - name: sea_ports
     hdx:
-      notes: Ferry terminals, ports and harbours (HOT-style).
-      tags: [transportation, maritime]
-      license: ODbL 1.0
+      notes: |
+        OpenStreetMap exports for use in GIS applications.
+        This theme includes all OpenStreetMap features in this area matching:
+          amenity = 'ferry_terminal' OR building = 'ferry_terminal' OR
+          port IS NOT NULL
+      tags: [facilities-infrastructure, geodata, ports, transportation]
+      license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
-      caveats: Mirrors HOT's hotosm_<iso3>_sea_ports layer.
+      caveats: OpenStreetMap data is crowd sourced and cannot be considered to be exhaustive.
+      dataset_source: OpenStreetMap contributors
     osm:
       enabled: true
       filter:
@@ -393,11 +445,16 @@ categories:
   # 11. Points of interest ----------------------------------------------------
   - name: points_of_interest
     hdx:
-      notes: Generic POIs (amenities, shops, tourism, man_made) - HOT-style.
-      tags: [poi]
-      license: ODbL 1.0
+      notes: |
+        OpenStreetMap exports for use in GIS applications.
+        This theme includes all OpenStreetMap features in this area matching:
+          amenity IS NOT NULL OR man_made IS NOT NULL OR
+          shop IS NOT NULL OR tourism IS NOT NULL
+      tags: [facilities-infrastructure, geodata, points of interest-poi]
+      license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
-      caveats: Mirrors HOT's hotosm_<iso3>_points_of_interest layer.
+      caveats: OpenStreetMap data is crowd sourced and cannot be considered to be exhaustive.
+      dataset_source: OpenStreetMap contributors
     osm:
       enabled: true
       filter:

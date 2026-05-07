@@ -317,7 +317,7 @@ class Exporter:
             f"Format:           {_FORMAT_LABELS.get(fmt, fmt)}",
             f"Features:         {feature_count:,}",
             "",
-            f"Source:           {query.dataset_source}",
+            f"Source:           {category.hdx.dataset_source or query.dataset_source}",
             f"Source URL:       {query.source_url}",
             f"Snapshot:         {query.snapshot_label}",
             f"License:          {category.hdx.license}",

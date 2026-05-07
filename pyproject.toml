@@ -41,6 +41,7 @@ dependencies = [
     "omegaconf>=2.3.0",
     "psutil>=7.0.0",
     "pycountry>=26.2.16",
+    "pyproj>=3.7.2",
     "quackosm>=0.17.1",
     "requests>=2.32.0",
     "shapely>=2.1.0",

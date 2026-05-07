@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from typing import Any
 
 import requests
+from pyproj import Transformer
+from shapely.geometry import mapping, shape
+from shapely.ops import transform
 
 from oex.config.schema import BoundaryConfig
 from oex.logging_setup import get_logger
@@ -13,6 +16,9 @@ from oex.logging_setup import get_logger
 logger = get_logger(__name__)
 
 _GEOBOUNDARIES_TPL = "https://www.geoboundaries.org/api/current/gbOpen/{iso3}/{level}/"
+
+_to_3857 = Transformer.from_crs(4326, 3857, always_xy=True).transform
+_to_4326 = Transformer.from_crs(3857, 4326, always_xy=True).transform
 
 
 @dataclass(frozen=True)
@@ -24,7 +30,7 @@ class Boundary:
 
 
 _lock = threading.Lock()
-_cache: dict[tuple[str, str, str], Boundary] = {}
+_cache: dict[tuple[str, str, str, str], Boundary] = {}
 
 
 def _bbox_from_geometry(geometry: dict[str, Any]) -> tuple[float, float, float, float]:
@@ -95,10 +101,36 @@ def _from_user_geom(iso3: str, geom_str: str) -> Boundary:
     )
 
 
+def _buffered(boundary: Boundary, buffer_meters: float) -> Boundary:
+    # shapely.buffer operates in the geometry's own CRS units. The boundary is
+    # in EPSG:4326 (degrees), so we project to EPSG:3857 to make the metre
+    # value mean what the config says it means before reprojecting back.
+    geom = shape(json.loads(boundary.geojson))
+    projected = transform(_to_3857, geom)
+    buffered = projected.buffer(buffer_meters)
+    back = transform(_to_4326, buffered)
+    return Boundary(
+        iso3=boundary.iso3,
+        bbox=back.bounds,
+        geojson=json.dumps(mapping(back)),
+        source=f"{boundary.source} (buffered +{buffer_meters:g}m)",
+    )
+
+
 def resolve_boundary(iso3: str, cfg: BoundaryConfig) -> Boundary:
     if not iso3:
         raise ValueError("iso3 must be set on the config")
-    key = (iso3.upper(), cfg.geoboundaries_release, cfg.geoboundaries_level)
+    if cfg.buffer_meters < 0:
+        raise ValueError(
+            f"boundary.buffer_meters must be >= 0; got {cfg.buffer_meters}. "
+            "Inward buffers are not supported (would shrink the export area)."
+        )
+    key = (
+        iso3.upper(),
+        cfg.geoboundaries_release,
+        cfg.geoboundaries_level,
+        f"buf{cfg.buffer_meters:g}",
+    )
     with _lock:
         cached = _cache.get(key)
     if cached is not None:
@@ -108,6 +140,9 @@ def resolve_boundary(iso3: str, cfg: BoundaryConfig) -> Boundary:
         boundary = _from_user_geom(iso3, cfg.geom)
     else:
         boundary = _fetch_geoboundaries(iso3, cfg.geoboundaries_release, cfg.geoboundaries_level)
+
+    if cfg.buffer_meters > 0:
+        boundary = _buffered(boundary, cfg.buffer_meters)
 
     with _lock:
         _cache[key] = boundary

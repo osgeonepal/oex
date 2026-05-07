@@ -26,6 +26,33 @@ default list rather than element-wise merging.
 For Overture there is no `filter`: the upstream (theme, feature_type) pair
 already names a partitioned subset, so `where` is the only filter.
 
+## Boundary
+
+```yaml
+boundary:
+  geom: null                       # optional inline GeoJSON (string)
+  geoboundaries_release: CGAZ
+  geoboundaries_level: ADM0
+  buffer_meters: 0                 # outward buffer in metres (0 = off)
+```
+
+If `geom` is set (a GeoJSON string), it overrides the geoBoundaries lookup;
+otherwise the boundary comes from geoBoundaries CGAZ ADM0 for the ISO3.
+
+`buffer_meters` is an outward buffer applied to whatever boundary you end up
+with. The geometry is reprojected from EPSG:4326 to EPSG:3857, buffered by
+the given metre value, then reprojected back. 0 disables it. Use this for
+coastal countries or for cross-border features whose centroid sits a few
+hundred metres outside the legal boundary (jetties, bridges, airfields).
+
+A note on engines: the buffer affects the SQL clip applied at query time.
+For `source.osm.engine: geofabrik`, OSM data is bounded by the per-country
+PBF that Geofabrik publishes, so the buffer can only widen the clip *up to*
+what Geofabrik already includes (Geofabrik PBFs do contain a small overlap
+beyond the legal border, but it is not unlimited). Switch to
+`planet_parquet` if you need a buffer larger than Geofabrik's own slice.
+Overture is not affected; it reads from the global S3 bucket.
+
 ## Output formats
 
 `output.formats` (or per-category `formats`) accepts any subset of:
@@ -224,10 +251,18 @@ Each category supplies its own HDX metadata block:
       Building footprints from Overture (OSM + Microsoft + Google + Esri)
       and OpenStreetMap.
     tags: [buildings, geodata]
-    license: ODbL 1.0                                         # or 'hdx-odc-odbl' for the canonical id
+    license: hdx-odc-odbl                                     # or a free-form license string
     license_url: https://opendatacommons.org/licenses/odbl/1-0/
     caveats: Verified at the community level only.
+    dataset_source: OpenStreetMap contributors                # optional override
 ```
+
+`dataset_source` is the value HDX displays under "Source" on the dataset
+page. When unset, the runner supplies a default like
+`OpenStreetMap (Geofabrik IND 2026-05-07)` for OSM exports or
+`Overture Maps Foundation 2026-04-15.0` for Overture. Override it to match
+your organisation's standard (HOT-OSM uses the verbatim string
+`OpenStreetMap contributors`).
 
 When both `overture` and `osm` are enabled for a category, both sources
 contribute resources to the same HDX dataset (one zip per source per format).

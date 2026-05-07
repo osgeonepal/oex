@@ -61,7 +61,7 @@ class HdxPublisher:
             "notes": category.hdx.notes,
             "caveats": category.hdx.caveats,
             "private": False,
-            "dataset_source": ctx.dataset_source,
+            "dataset_source": category.hdx.dataset_source or ctx.dataset_source,
             "methodology": cfg.hdx.methodology,
             "methodology_other": cfg.hdx.methodology_other,
             "owner_org": self._owner_org,

@@ -55,6 +55,10 @@ class BoundaryConfig:
     geom: str | None = None
     geoboundaries_release: str = "CGAZ"
     geoboundaries_level: str = "ADM0"
+    # Optional outward buffer applied to the resolved boundary.
+    # The geometry is reprojected to EPSG:3857, buffered by this many metres,
+    # then reprojected back to EPSG:4326. 0 = no buffer.
+    buffer_meters: float = 0.0
 
 
 @dataclass
@@ -90,6 +94,10 @@ class CategoryHdx:
         "Data may contain errors. Verified at the community level only; "
         "individual features may need correction."
     )
+    # Optional dataset_source override. When unset, the source runner
+    # supplies a value like "OpenStreetMap (Geofabrik IND 2026-05-07)".
+    # Set to "OpenStreetMap contributors" for HOT-style HDX exports.
+    dataset_source: str | None = None
 
 
 @dataclass
