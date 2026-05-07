@@ -55,7 +55,7 @@ Each zip contains the GIS file(s), `README.txt`, `config.yaml`, and
 optionally `metadata.json` (when `output.metadata: true`) with per-column
 null shares, distinct counts, geometry types, and bbox.
 
-## What you get out of the box
+## Features
 
 - 8 default categories: Buildings, Roads, Hospitals, Schools, Rivers,
   Land Use, Transportation Hubs, Settlements.
