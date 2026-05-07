@@ -63,3 +63,30 @@ and is auto-managed by [commitizen](https://commitizen-tools.github.io/commitize
 ### Fix
 
 - **config**: config fix
+
+## v0.2.1 (2026-05-07)
+
+### Fix
+
+- **boundary**: fix boundary override on the configuration
+
+## v0.2.0 (2026-05-07)
+
+### Feat
+
+- **osm**: adds osm as support and refactors entire setup with modern python deps
+- **readme**: add default Python example for Overture2HDX configuration
+
+### Fix
+
+- **config**: adds config dataset inside CONFIG class
+- **license**: fixes license url not being parsed issue
+- **lcs**: adds layer creation option and fixes encoding issue
+- **encode**: fixes bug on encoding and adds more attributes to datasets
+- **file**: fixes bug on file too large
+- **yaml**: fixes bug with categories in tphub
+- **schema**: adds default schema and fixes issues with license
+- **license**: adds license info in yaml
+- **category**: adds category to hdx exports and fixes bug on shapefile generation
+- **doc-generation**: fix for readme doc link to package
+- **config**: config fix
