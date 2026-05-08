@@ -65,7 +65,8 @@ def _write_single(
         f"WITH (FORMAT GDAL, SRS 'EPSG:4326', DRIVER '{driver}', "
         f"LAYER_CREATION_OPTIONS 'ENCODING=UTF-8')"
     )
-    logger.info("Wrote %s in %.2fs", target, time.time() - start)
+    size_mb = target.stat().st_size / (1024 * 1024)
+    logger.info("Wrote %s (%.0f MB) in %.2fs", target, size_mb, time.time() - start)
     return [target]
 
 
@@ -115,6 +116,13 @@ def _write_shapefiles(
                   LAYER_CREATION_OPTIONS 'ENCODING=UTF-8,2GB_LIMIT=NO')
             """
         )
-        logger.info("Wrote %s (%s) in %.2fs", target, types, time.time() - start)
+        size_mb = target.stat().st_size / (1024 * 1024)
+        logger.info(
+            "Wrote %s (%s, %.0f MB) in %.2fs",
+            target,
+            types,
+            size_mb,
+            time.time() - start,
+        )
         written.append(target)
     return written

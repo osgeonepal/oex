@@ -85,7 +85,33 @@ class Exporter:
         if not self._cfg.categories:
             raise ValueError("config.categories is empty")
 
+        iso = self._cfg.iso3.upper()
+        cat_names = [c.name for c in self._cfg.categories]
+        logger.info(
+            "[%s/%s] run starting: %d categor%s, formats=%s, parallel=%s, hdx_push=%s",
+            iso,
+            self._runner.name,
+            len(cat_names),
+            "y" if len(cat_names) == 1 else "ies",
+            self._cfg.output.formats,
+            self._cfg.parallel.enabled,
+            self._cfg.hdx.push,
+        )
+        logger.info("[%s/%s] categories: %s", iso, self._runner.name, ", ".join(cat_names))
+
         boundary = resolve_boundary(self._cfg.iso3, self._cfg.boundary)
+        bbox = boundary.bbox
+        logger.info(
+            "[%s/%s] boundary: %s bbox=(%.4f, %.4f, %.4f, %.4f)",
+            iso,
+            self._runner.name,
+            boundary.source,
+            bbox[0],
+            bbox[1],
+            bbox[2],
+            bbox[3],
+        )
+
         self._runner.prepare(self._cfg)
 
         publisher: HdxPublisher | None = None
@@ -95,7 +121,7 @@ class Exporter:
         out_root = Path(self._cfg.output.dir) / self._cfg.iso3.lower() / self._runner.name
         out_root.mkdir(parents=True, exist_ok=True)
 
-        result = ExportResult(iso3=self._cfg.iso3.upper(), source_name=self._runner.name)
+        result = ExportResult(iso3=iso, source_name=self._runner.name)
         start = time.time()
 
         if self._cfg.parallel.enabled and len(self._cfg.categories) > 1:
@@ -140,10 +166,12 @@ class Exporter:
     ) -> CategoryResult:
         cat_start = time.time()
         slug = _slugify(category.name)
+        cat_tag = f"[{category.name}/{self._runner.name}]"
+        logger.info("%s starting", cat_tag)
         try:
             query = self._runner.query_for(self._cfg, category)
         except CategorySkippedError as skip:
-            logger.info("[%s] skipped: %s", category.name, skip)
+            logger.info("%s skipped: %s", cat_tag, skip)
             return CategoryResult(
                 name=category.name,
                 status="skipped",
@@ -153,12 +181,20 @@ class Exporter:
 
         formats = category.formats or self._cfg.output.formats
         if not formats:
+            logger.info("%s skipped: no output formats configured", cat_tag)
             return CategoryResult(
                 name=category.name,
                 status="skipped",
                 duration_s=time.time() - cat_start,
                 error="no output formats configured",
             )
+
+        logger.info(
+            "%s source: %s | snapshot: %s",
+            cat_tag,
+            query.dataset_source,
+            query.snapshot_label,
+        )
 
         from typing import cast
 
@@ -185,8 +221,17 @@ class Exporter:
             table = f"{slug}_{int(time.time() * 1000)}"
             select_clause = build_select_clause(query.select_fields)
             where_clause = build_where_clause(boundary_obj, query.where_conditions, query.bbox_cols)
+            logger.info("%s querying source...", cat_tag)
+            mat_start = time.time()
             count = materialise(conn, table, query.source_expr, select_clause, where_clause)
+            logger.info(
+                "%s queried %s features in %.1fs",
+                cat_tag,
+                f"{count:,}",
+                time.time() - mat_start,
+            )
             if count == 0:
+                logger.info("%s empty: no features within boundary", cat_tag)
                 return CategoryResult(
                     name=category.name,
                     status="empty",
@@ -194,10 +239,13 @@ class Exporter:
                     duration_s=time.time() - cat_start,
                 )
 
-            metadata_dict = (
-                compute_metadata(conn, table).to_dict() if self._cfg.output.metadata else None
-            )
+            if self._cfg.output.metadata:
+                logger.info("%s computing metadata...", cat_tag)
+                metadata_dict = compute_metadata(conn, table).to_dict()
+            else:
+                metadata_dict = None
 
+            logger.info("%s writing %d format(s): %s", cat_tag, len(formats), formats)
             zip_paths = self._materialise_outputs(
                 conn=conn,
                 table=table,
@@ -211,14 +259,25 @@ class Exporter:
                 feature_count=count,
             )
 
+            total_mb = sum(p.stat().st_size for p in zip_paths) / (1024 * 1024)
+
             dataset_name: str | None = None
             if publisher is not None:
+                logger.info("%s uploading %d zip(s) to HDX...", cat_tag, len(zip_paths))
                 ctx = PublishContext(
                     dataset_source=query.dataset_source,
                     snapshot_date=query.snapshot_date,
                 )
                 dataset_name = publisher.publish(self._cfg, category, zip_paths, ctx)
 
+            logger.info(
+                "%s done: %s features, %d zip(s), %.0f MB total in %.1fs",
+                cat_tag,
+                f"{count:,}",
+                len(zip_paths),
+                total_mb,
+                time.time() - cat_start,
+            )
             return CategoryResult(
                 name=category.name,
                 status="ok",
@@ -228,7 +287,7 @@ class Exporter:
                 hdx_dataset=dataset_name,
             )
         except Exception as exc:  # noqa: BLE001  per-category boundary; logged + reported
-            logger.exception("Failed to process category %s", category.name)
+            logger.exception("%s failed", cat_tag)
             return CategoryResult(
                 name=category.name,
                 status="failed",
@@ -263,7 +322,7 @@ class Exporter:
                 if not files:
                     continue
                 dt_name = f"{self._cfg.key}_{self._cfg.iso3.lower()}_{slug}"
-                zip_path = out_root / f"{dt_name}_{fmt}.zip"
+                zip_path = out_root / f"{dt_name}_{self._runner.name}_{fmt}.zip"
                 readme_lines = self._build_readme(
                     fmt=fmt,
                     category=category,

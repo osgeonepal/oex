@@ -1,0 +1,402 @@
+# Production config for the osgeo-nepal HDX organization.
+#
+# `key: osgeonepal` is load-bearing: combined with `iso3: NPL` and the
+# 8 categories below, the dataset names resolve to osgeonepal_npl_<category>,
+# matching the 8 datasets already at
+# https://data.humdata.org/organization/osgeo-nepal so subsequent runs upsert
+# in place rather than creating duplicates.
+#
+# Both `oex-cli overture nepal --hdx-push` and `oex-cli osm nepal --hdx-push`
+# write to the same 8 datasets; the source name is encoded in each zip's
+# filename so OSM and Overture coexist as separate resources per dataset.
+
+iso3: NPL
+key: osgeonepal
+dataset_name: Nepal
+subnational: false
+frequency: yearly
+
+boundary:
+  geom: null
+  geoboundaries_release: CGAZ
+  geoboundaries_level: ADM0
+
+output:
+  dir: output
+  formats:
+    - gpkg
+    - shp
+  metadata: true
+
+hdx:
+  push: true
+  site: prod
+  user_agent: osgeonepal-oex
+  methodology: Other
+  methodology_other: Open Source Geographic information
+
+categories:
+  - name: Buildings
+    hdx:
+      title: Buildings of Nepal
+      notes: >-
+        Building outlines across Nepal. Combines crowd-sourced OpenStreetMap
+        data with machine-learning building detections from Microsoft,
+        Google, and Esri (via Overture Maps).
+      tags:
+        - geodata
+        - buildings
+        - infrastructure
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: >-
+        Building data may contain errors and is verified at the community
+        level only.
+    overture:
+      enabled: true
+      theme: buildings
+      feature_type: building
+      select:
+        - id
+        - names.primary AS name
+        - names.common->'en' AS name_en
+        - class
+        - subtype
+        - height
+        - level
+        - num_floors
+        - num_floors_underground
+        - is_underground
+        - has_parts
+        - roof_material
+        - roof_shape
+        - roof_color
+        - sources[1].dataset AS source
+      where: []
+    osm:
+      enabled: true
+      filter:
+        building: true
+      select:
+        - feature_id AS id
+        - tags['name'][1] AS name
+        - tags['name:en'][1] AS name_en
+        - tags['name:ne'][1] AS name_ne
+        - tags['building'][1] AS building
+        - tags['building:material'][1] AS material
+        - tags['building:levels'][1] AS levels
+        - tags['height'][1] AS height
+        - tags['roof:shape'][1] AS roof_shape
+        - tags['roof:material'][1] AS roof_material
+        - tags['addr:full'][1] AS addr_full
+        - tags['addr:city'][1] AS addr_city
+        - tags['source'][1] AS osm_source
+      where: []
+
+  - name: Roads
+    hdx:
+      title: Roads of Nepal
+      notes: >-
+        All roads, highways, and streets across Nepal. Combines
+        OpenStreetMap with TomTom road geometry (via Overture Maps).
+      tags:
+        - geodata
+        - transportation
+        - roads
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Road data may contain errors and is community verified.
+    overture:
+      enabled: true
+      theme: transportation
+      feature_type: segment
+      select:
+        - id
+        - names.primary AS name
+        - names.common->'en' AS name_en
+        - class
+        - subclass
+        - subtype
+        - road_surface[1].value AS road_surface
+        - sources[1].dataset AS source
+      where: []
+    osm:
+      enabled: true
+      filter:
+        highway: true
+      select:
+        - feature_id AS id
+        - tags['name'][1] AS name
+        - tags['name:en'][1] AS name_en
+        - tags['name:ne'][1] AS name_ne
+        - tags['highway'][1] AS highway
+        - tags['surface'][1] AS surface
+        - tags['smoothness'][1] AS smoothness
+        - tags['width'][1] AS width
+        - tags['lanes'][1] AS lanes
+        - tags['oneway'][1] AS oneway
+        - tags['bridge'][1] AS bridge
+        - tags['layer'][1] AS layer
+        - tags['source'][1] AS osm_source
+      where: []
+
+  - name: Hospitals
+    hdx:
+      title: Hospitals of Nepal
+      notes: >-
+        Hospitals, clinics, doctor and dentist offices, and pharmacies
+        across Nepal. Sourced from OpenStreetMap and Overture Maps.
+      tags:
+        - health
+      license: CDLA Permissive 2.0
+      license_url: https://cdla.dev/permissive-2-0/
+      caveats: Health POI data may contain errors and is community verified.
+    overture:
+      enabled: true
+      theme: places
+      feature_type: place
+      select:
+        - id
+        - names.primary AS name
+        - names.common->'en' AS name_en
+        - categories.primary AS category
+        - addresses[1].freeform AS address
+        - phones[1] AS phone
+        - emails[1] AS email
+        - websites[1] AS website
+        - confidence
+        - sources[1].dataset AS source
+      where:
+        - "categories.primary IN ('hospital', 'clinic', 'doctor', 'dentist', 'pharmacy')"
+    osm:
+      enabled: true
+      filter:
+        amenity: ["hospital", "clinic", "doctors", "dentist", "pharmacy"]
+        healthcare: true
+      select:
+        - feature_id AS id
+        - tags['name'][1] AS name
+        - tags['name:en'][1] AS name_en
+        - tags['name:ne'][1] AS name_ne
+        - tags['amenity'][1] AS amenity
+        - tags['healthcare'][1] AS healthcare
+        - tags['operator'][1] AS operator
+        - tags['phone'][1] AS phone
+        - tags['website'][1] AS website
+        - tags['addr:full'][1] AS addr_full
+        - tags['addr:city'][1] AS addr_city
+      where: []
+
+  - name: Schools
+    hdx:
+      title: Schools of Nepal
+      notes: >-
+        Schools, colleges, universities, and kindergartens across Nepal.
+        Sourced from OpenStreetMap and Overture Maps.
+      tags:
+        - education
+      license: CDLA Permissive 2.0
+      license_url: https://cdla.dev/permissive-2-0/
+      caveats: Education POI data may contain errors.
+    overture:
+      enabled: true
+      theme: places
+      feature_type: place
+      select:
+        - id
+        - names.primary AS name
+        - names.common->'en' AS name_en
+        - categories.primary AS category
+        - addresses[1].freeform AS address
+        - phones[1] AS phone
+        - websites[1] AS website
+        - confidence
+        - sources[1].dataset AS source
+      where:
+        - "categories.primary IN ('school', 'university', 'college', 'kindergarten')"
+    osm:
+      enabled: true
+      filter:
+        amenity: ["school", "college", "university", "kindergarten"]
+      select:
+        - feature_id AS id
+        - tags['name'][1] AS name
+        - tags['name:en'][1] AS name_en
+        - tags['name:ne'][1] AS name_ne
+        - tags['amenity'][1] AS amenity
+        - tags['operator'][1] AS operator
+        - tags['operator:type'][1] AS operator_type
+        - tags['website'][1] AS website
+        - tags['addr:full'][1] AS addr_full
+        - tags['addr:city'][1] AS addr_city
+      where: []
+
+  - name: Rivers
+    hdx:
+      title: Rivers of Nepal
+      notes: >-
+        Rivers, streams, canals, and natural water bodies across Nepal.
+        Sourced from OpenStreetMap and Overture Maps.
+      tags:
+        - environment
+        - water
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Hydrography from OSM via Overture or directly from OSM.
+    overture:
+      enabled: true
+      theme: base
+      feature_type: water
+      select:
+        - id
+        - names.primary AS name
+        - names.common->'en' AS name_en
+        - subtype
+        - class
+        - is_salt
+        - wikidata
+        - sources[1].dataset AS source
+      where:
+        - "class NOT IN ('dam', 'weir', 'breakwater', 'fountain', 'drinking_water')"
+    osm:
+      enabled: true
+      filter:
+        waterway: ["river", "stream", "canal"]
+        natural: ["water"]
+      select:
+        - feature_id AS id
+        - tags['name'][1] AS name
+        - tags['name:en'][1] AS name_en
+        - tags['name:ne'][1] AS name_ne
+        - tags['waterway'][1] AS waterway
+        - tags['natural'][1] AS natural_class
+        - tags['water'][1] AS water_type
+        - tags['width'][1] AS width
+        - tags['depth'][1] AS depth
+      where: []
+
+  - name: Land Use
+    hdx:
+      title: Land Use of Nepal
+      notes: >-
+        Land use polygons across Nepal: farmland, forest, residential
+        areas, parks, and other zoned land. Sourced from OpenStreetMap
+        and Overture Maps.
+      tags:
+        - environment
+        - landuse
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Land use data from OSM via Overture or directly from OSM.
+    overture:
+      enabled: true
+      theme: base
+      feature_type: land_use
+      select:
+        - id
+        - names.primary AS name
+        - names.common->'en' AS name_en
+        - subtype
+        - class
+        - surface
+        - wikidata
+        - sources[1].dataset AS source
+      where: []
+    osm:
+      enabled: true
+      filter:
+        landuse: true
+      select:
+        - feature_id AS id
+        - tags['name'][1] AS name
+        - tags['name:en'][1] AS name_en
+        - tags['landuse'][1] AS landuse
+        - tags['surface'][1] AS surface
+      where: []
+
+  - name: Transportation Hubs
+    hdx:
+      title: Airports and Stations of Nepal
+      notes: >-
+        Airports, railway stations, bus stations, and ferry terminals
+        across Nepal. Sourced from OpenStreetMap and Overture Maps.
+      tags:
+        - transportation
+        - logistics
+      license: CDLA Permissive 2.0
+      license_url: https://cdla.dev/permissive-2-0/
+      caveats: Transport POI data may contain errors.
+    overture:
+      enabled: true
+      theme: places
+      feature_type: place
+      select:
+        - id
+        - names.primary AS name
+        - names.common->'en' AS name_en
+        - categories.primary AS category
+        - addresses[1].freeform AS address
+        - websites[1] AS website
+        - confidence
+        - sources[1].dataset AS source
+      where:
+        - "categories.primary IN ('airport', 'train_station', 'bus_station', 'light_rail_and_subway_station', 'ferry_terminal', 'heliport')"
+    osm:
+      enabled: true
+      filter:
+        aeroway: ["aerodrome", "terminal"]
+        railway: ["station", "halt"]
+        amenity: ["bus_station", "ferry_terminal"]
+        public_transport: ["station"]
+      select:
+        - feature_id AS id
+        - tags['name'][1] AS name
+        - tags['name:en'][1] AS name_en
+        - tags['name:ne'][1] AS name_ne
+        - tags['aeroway'][1] AS aeroway
+        - tags['railway'][1] AS railway
+        - tags['amenity'][1] AS amenity
+        - tags['public_transport'][1] AS public_transport
+      where: []
+
+  - name: Settlements
+    hdx:
+      title: Cities and Towns of Nepal
+      notes: >-
+        Cities, towns, villages, hamlets, and suburbs of Nepal.
+        Sourced from OpenStreetMap and Overture Maps.
+      tags:
+        - population
+        - settlements
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Locality data from Overture divisions or OSM.
+    overture:
+      enabled: true
+      theme: divisions
+      feature_type: division
+      select:
+        - id
+        - names.primary AS name
+        - names.common->'en' AS name_en
+        - subtype
+        - population
+        - region
+        - wikidata
+        - sources[1].dataset AS source
+      where:
+        - "subtype = 'locality'"
+    osm:
+      enabled: true
+      filter:
+        place: ["city", "town", "village", "hamlet", "suburb"]
+      select:
+        - feature_id AS id
+        - tags['name'][1] AS name
+        - tags['name:en'][1] AS name_en
+        - tags['name:ne'][1] AS name_ne
+        - tags['place'][1] AS place
+        - tags['population'][1] AS population
+        - tags['wikidata'][1] AS wikidata
+        - tags['is_in'][1] AS is_in
+      where: []
