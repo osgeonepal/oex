@@ -106,6 +106,22 @@ class HdxPublisher:
             r["name"]: r for r in (fresh.get_resources() or [])
         }
 
+        if cfg.hdx.purge_existing_resources and existing_by_name:
+            logger.warning(
+                "PURGE: deleting %d existing resource(s) on %s before upload",
+                len(existing_by_name),
+                dt_name,
+            )
+            for name, res in existing_by_name.items():
+                try:
+                    res.delete_from_hdx()
+                    logger.info("Purged resource %s", name)
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"HDX dataset {dt_name}: failed to purge {name}: {exc}"
+                    ) from exc
+            existing_by_name = {}
+
         ok = 0
         failed: list[tuple[str, str]] = []
         for zip_path in zip_paths:
@@ -182,10 +198,7 @@ class HdxPublisher:
         category_slug: str,
         output_dir: Path,
     ) -> None:
-        # Read every per-source metadata.json on the dataset, merge, render
-        # one HTML with a tab per source, upload, point customviz at it.
-        # Self-iframing works because HDX serves uploaded HTML with
-        # text/html + X-Frame-Options: SAMEORIGIN (verified 2026-05-09).
+        # HDX serves uploaded HTML with text/html + SAMEORIGIN, so the resource URL self-iframes.
         from hdx.data.dataset import Dataset
         from hdx.data.resource import Resource
 

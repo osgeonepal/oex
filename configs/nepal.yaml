@@ -36,7 +36,7 @@ hdx:
   user_agent: osgeonepal-oex
   methodology: Other
   methodology_other: Open Source Geographic information
-
+  purge_existing_resources: false
 source:
   pcodes:
     enabled: true
@@ -85,19 +85,24 @@ categories:
         building: true
       select:
         - feature_id AS id
-        - tags['name'][1] AS name
-        - tags['name:en'][1] AS name_en
-        - tags['name:ne'][1] AS name_ne
-        - tags['building'][1] AS building
-        - tags['building:material'][1] AS material
-        - tags['building:levels'][1] AS levels
-        - tags['height'][1] AS height
-        - tags['roof:shape'][1] AS roof_shape
-        - tags['roof:material'][1] AS roof_material
-        - tags['addr:full'][1] AS addr_full
-        - tags['addr:city'][1] AS addr_city
-        - tags['source'][1] AS osm_source
+        - tags['name'] AS name
+        - tags['name:en'] AS name_en
+        - tags['name:ne'] AS name_ne
+        - tags['building'] AS building
+        - tags['building:material'] AS material
+        - tags['building:levels'] AS levels
+        - tags['height'] AS height
+        - tags['roof:shape'] AS roof_shape
+        - tags['roof:material'] AS roof_material
+        - tags['addr:full'] AS addr_full
+        - tags['addr:city'] AS addr_city
+        - tags['source'] AS osm_source
       where: []
+
+    transliterate:
+      - target: name_latin
+        source: name
+        prefer: name_en
 
   - name: Roads
     hdx:
@@ -132,19 +137,24 @@ categories:
         highway: true
       select:
         - feature_id AS id
-        - tags['name'][1] AS name
-        - tags['name:en'][1] AS name_en
-        - tags['name:ne'][1] AS name_ne
-        - tags['highway'][1] AS highway
-        - tags['surface'][1] AS surface
-        - tags['smoothness'][1] AS smoothness
-        - tags['width'][1] AS width
-        - tags['lanes'][1] AS lanes
-        - tags['oneway'][1] AS oneway
-        - tags['bridge'][1] AS bridge
-        - tags['layer'][1] AS layer
-        - tags['source'][1] AS osm_source
+        - tags['name'] AS name
+        - tags['name:en'] AS name_en
+        - tags['name:ne'] AS name_ne
+        - tags['highway'] AS highway
+        - tags['surface'] AS surface
+        - tags['smoothness'] AS smoothness
+        - tags['width'] AS width
+        - tags['lanes'] AS lanes
+        - tags['oneway'] AS oneway
+        - tags['bridge'] AS bridge
+        - tags['layer'] AS layer
+        - tags['source'] AS osm_source
       where: []
+
+    transliterate:
+      - target: name_latin
+        source: name
+        prefer: name_en
 
   - name: Hospitals
     hdx:
@@ -181,17 +191,22 @@ categories:
         healthcare: true
       select:
         - feature_id AS id
-        - tags['name'][1] AS name
-        - tags['name:en'][1] AS name_en
-        - tags['name:ne'][1] AS name_ne
-        - tags['amenity'][1] AS amenity
-        - tags['healthcare'][1] AS healthcare
-        - tags['operator'][1] AS operator
-        - tags['phone'][1] AS phone
-        - tags['website'][1] AS website
-        - tags['addr:full'][1] AS addr_full
-        - tags['addr:city'][1] AS addr_city
+        - tags['name'] AS name
+        - tags['name:en'] AS name_en
+        - tags['name:ne'] AS name_ne
+        - tags['amenity'] AS amenity
+        - tags['healthcare'] AS healthcare
+        - tags['operator'] AS operator
+        - tags['phone'] AS phone
+        - tags['website'] AS website
+        - tags['addr:full'] AS addr_full
+        - tags['addr:city'] AS addr_city
       where: []
+
+    transliterate:
+      - target: name_latin
+        source: name
+        prefer: name_en
 
   - name: Schools
     hdx:
@@ -226,16 +241,21 @@ categories:
         amenity: ["school", "college", "university", "kindergarten"]
       select:
         - feature_id AS id
-        - tags['name'][1] AS name
-        - tags['name:en'][1] AS name_en
-        - tags['name:ne'][1] AS name_ne
-        - tags['amenity'][1] AS amenity
-        - tags['operator'][1] AS operator
-        - tags['operator:type'][1] AS operator_type
-        - tags['website'][1] AS website
-        - tags['addr:full'][1] AS addr_full
-        - tags['addr:city'][1] AS addr_city
+        - tags['name'] AS name
+        - tags['name:en'] AS name_en
+        - tags['name:ne'] AS name_ne
+        - tags['amenity'] AS amenity
+        - tags['operator'] AS operator
+        - tags['operator:type'] AS operator_type
+        - tags['website'] AS website
+        - tags['addr:full'] AS addr_full
+        - tags['addr:city'] AS addr_city
       where: []
+
+    transliterate:
+      - target: name_latin
+        source: name
+        prefer: name_en
 
   - name: Rivers
     hdx:
@@ -271,15 +291,20 @@ categories:
         natural: ["water"]
       select:
         - feature_id AS id
-        - tags['name'][1] AS name
-        - tags['name:en'][1] AS name_en
-        - tags['name:ne'][1] AS name_ne
-        - tags['waterway'][1] AS waterway
-        - tags['natural'][1] AS natural_class
-        - tags['water'][1] AS water_type
-        - tags['width'][1] AS width
-        - tags['depth'][1] AS depth
+        - tags['name'] AS name
+        - tags['name:en'] AS name_en
+        - tags['name:ne'] AS name_ne
+        - tags['waterway'] AS waterway
+        - tags['natural'] AS natural_class
+        - tags['water'] AS water_type
+        - tags['width'] AS width
+        - tags['depth'] AS depth
       where: []
+
+    transliterate:
+      - target: name_latin
+        source: name
+        prefer: name_en
 
   - name: Land Use
     hdx:
@@ -314,11 +339,16 @@ categories:
         landuse: true
       select:
         - feature_id AS id
-        - tags['name'][1] AS name
-        - tags['name:en'][1] AS name_en
-        - tags['landuse'][1] AS landuse
-        - tags['surface'][1] AS surface
+        - tags['name'] AS name
+        - tags['name:en'] AS name_en
+        - tags['landuse'] AS landuse
+        - tags['surface'] AS surface
       where: []
+
+    transliterate:
+      - target: name_latin
+        source: name
+        prefer: name_en
 
   - name: Transportation Hubs
     hdx:
@@ -356,14 +386,19 @@ categories:
         public_transport: ["station"]
       select:
         - feature_id AS id
-        - tags['name'][1] AS name
-        - tags['name:en'][1] AS name_en
-        - tags['name:ne'][1] AS name_ne
-        - tags['aeroway'][1] AS aeroway
-        - tags['railway'][1] AS railway
-        - tags['amenity'][1] AS amenity
-        - tags['public_transport'][1] AS public_transport
+        - tags['name'] AS name
+        - tags['name:en'] AS name_en
+        - tags['name:ne'] AS name_ne
+        - tags['aeroway'] AS aeroway
+        - tags['railway'] AS railway
+        - tags['amenity'] AS amenity
+        - tags['public_transport'] AS public_transport
       where: []
+
+    transliterate:
+      - target: name_latin
+        source: name
+        prefer: name_en
 
   - name: Settlements
     hdx:
@@ -398,11 +433,15 @@ categories:
         place: ["city", "town", "village", "hamlet", "suburb"]
       select:
         - feature_id AS id
-        - tags['name'][1] AS name
-        - tags['name:en'][1] AS name_en
-        - tags['name:ne'][1] AS name_ne
-        - tags['place'][1] AS place
-        - tags['population'][1] AS population
-        - tags['wikidata'][1] AS wikidata
-        - tags['is_in'][1] AS is_in
+        - tags['name'] AS name
+        - tags['name:en'] AS name_en
+        - tags['name:ne'] AS name_ne
+        - tags['place'] AS place
+        - tags['population'] AS population
+        - tags['wikidata'] AS wikidata
+        - tags['is_in'] AS is_in
       where: []
+    transliterate:
+      - target: name_latin
+        source: name
+        prefer: name_en

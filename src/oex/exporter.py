@@ -26,6 +26,7 @@ from oex.report import SourceMetadata, render_report
 from oex.sources.base import CategorySkippedError, SourceQuery, SourceRunner
 from oex.sql import build_select_clause, build_where_clause, materialise
 from oex.system import default_thread_count
+from oex.translit import transliterate_table
 from oex.writers import write_format
 from oex.zip_bundle import make_zip
 
@@ -282,6 +283,20 @@ class Exporter:
                     geom_column="geom",
                 )
                 logger.info("%s pcodes tagged in %.1fs", cat_tag, time.time() - tag_start)
+
+            if category.transliterate:
+                translit_start = time.time()
+                logger.info(
+                    "%s transliterating %d column(s)...",
+                    cat_tag,
+                    len(category.transliterate),
+                )
+                transliterate_table(conn, table=table, rules=category.transliterate)
+                logger.info(
+                    "%s transliteration done in %.1fs",
+                    cat_tag,
+                    time.time() - translit_start,
+                )
 
             need_metadata = self._cfg.output.metadata or self._cfg.output.report.enabled
             metadata_obj = None

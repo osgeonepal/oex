@@ -12,12 +12,6 @@ from oex.pcodes.tagger import PcodeTagReport, tag_table
 
 
 def resolve_pcodes_config(source: dict[str, Any]) -> PcodesSourceConfig:
-    """Pull the pcodes config out of `cfg.source`, normalising dict vs dataclass.
-
-    The `source` field on RootConfig is `dict[str, Any]`, so OmegaConf does
-    not preserve the dataclass type when user YAML overrides values. We
-    accept both shapes and return a typed `PcodesSourceConfig`.
-    """
     raw = source.get("pcodes")
     if raw is None:
         return PcodesSourceConfig()

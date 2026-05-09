@@ -1,10 +1,4 @@
-"""Multi-source HTML report renderer.
-
-Pure stdlib (no Jinja, no Plotly, no JS, no external CDN). When more
-than one source is supplied, the result has CSS-only tabs (hidden radios
-+ sibling selectors) so users can switch between Overture and OSM views
-inside the HDX customviz iframe.
-"""
+"""Multi-source HTML report renderer."""
 
 from dataclasses import dataclass
 from html import escape
@@ -15,19 +9,12 @@ from oex.metadata import ColumnReport, MetadataReport
 _PCODE_PREFIX = "adm"
 _PCODE_SUFFIX = "_pcode"
 _SOURCE_COL = "source"
-# Coverage buckets (filled-percent thresholds). High = green, mid = amber, low = red.
 _COVERAGE_HIGH = 80.0
 _COVERAGE_MID = 50.0
 
 
 @dataclass(frozen=True)
 class SourceMetadata:
-    """One source's payload for the report (and the metadata.json resource).
-
-    `metadata` is the runtime `MetadataReport` for the rendering path; the
-    JSON serialisation lives in `to_payload` / `from_payload`.
-    """
-
     source_name: str
     snapshot_label: str
     dataset_source: str
@@ -111,17 +98,17 @@ h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em;
 .panel > .quality:first-child + h2 { margin-top: 24px; }
 .quality { padding: 14px 16px; background: #fafafa; border-left: 3px solid var(--bar);
            border-radius: 2px; margin: 0; }
-.quality-strip { display: flex; gap: 2px; margin: 0 0 10px; }
-.qc { flex: 1; height: 24px; min-width: 6px; border-radius: 2px; display: inline-block; }
+.quality-caption { font-size: 14px; color: var(--fg); margin: 0 0 8px; }
+.ratio-bar { display: flex; height: 12px; border-radius: 2px; overflow: hidden;
+             background: var(--bar-bg); }
+.ratio-bar > i { display: block; height: 100%; }
 .qc-high { background: #22c55e; }
 .qc-mid  { background: #eab308; }
 .qc-low  { background: #ef4444; }
-.quality-caption { font-size: 13px; color: var(--fg); }
-.quality-hint { color: var(--muted); font-size: 12px; }
-.quality-legend { font-size: 11px; color: var(--muted); margin-top: 8px;
-                  display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.quality-legend .qc { width: 12px; height: 12px; flex: none; min-width: 12px;
-                      vertical-align: middle; }
+.quality-legend { font-size: 11px; color: var(--muted); margin-top: 10px;
+                  display: flex; gap: 16px; flex-wrap: wrap; }
+.swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+          vertical-align: middle; margin-right: 4px; }
 .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px;
         background: var(--line); margin: 18px 0 0; border: 1px solid var(--line); }
 .kpi { background: var(--bg); padding: 14px 16px; }
@@ -224,28 +211,34 @@ def _render_panel(name: str, source: SourceMetadata) -> str:
 def _render_quality(metadata: MetadataReport) -> str:
     if not metadata.columns:
         return ""
-    cells = []
+    high = mid = low = 0
     for col in metadata.columns:
         coverage = max(0.0, min(100.0, 100.0 - col.null_percent))
         bucket = _coverage_bucket(coverage)
-        title = f"{col.name} ({coverage:.2f}% filled)"
-        cells.append(f'<span class="qc qc-{bucket}" title="{escape(title)}"></span>')
-    sparse_count = sum(1 for c in metadata.columns if c.null_percent >= _COVERAGE_MID)
+        if bucket == "high":
+            high += 1
+        elif bucket == "mid":
+            mid += 1
+        else:
+            low += 1
     total = len(metadata.columns)
-    if sparse_count == 0:
-        caption = f"All {total} attribute columns are at least 50% filled."
+    sparse = mid + low
+    if sparse == 0:
+        caption = f"All {total} attribute columns are at least 80% filled."
     else:
-        caption = f"{sparse_count} of {total} attribute columns are over 50% null."
+        caption = f"{sparse} of {total} attribute columns are under 80% filled."
     return (
         '<div class="quality">'
-        f'<div class="quality-strip">{"".join(cells)}</div>'
-        f'<div class="quality-caption">{caption} '
-        '<span class="quality-hint">Hover a cell to see the column.</span>'
+        f'<div class="quality-caption">{caption}</div>'
+        '<div class="ratio-bar">'
+        f'<i class="qc-high" style="width:{high / total * 100:.2f}%"></i>'
+        f'<i class="qc-mid"  style="width:{mid / total * 100:.2f}%"></i>'
+        f'<i class="qc-low"  style="width:{low / total * 100:.2f}%"></i>'
         "</div>"
         '<div class="quality-legend">'
-        '<span class="qc qc-high"></span>over 80% filled '
-        '<span class="qc qc-mid"></span>50 to 80% '
-        '<span class="qc qc-low"></span>under 50%'
+        f'<span><span class="swatch qc-high"></span>{high} over 80% filled</span>'
+        f'<span><span class="swatch qc-mid"></span>{mid} between 50 and 80%</span>'
+        f'<span><span class="swatch qc-low"></span>{low} under 50%</span>'
         "</div>"
         "</div>"
     )
@@ -450,8 +443,7 @@ def _ordered_source_names(sources: dict[str, SourceMetadata]) -> list[str]:
 
 
 def _default_source_name(sources: dict[str, SourceMetadata], ordered: list[str]) -> str:
-    # Most recently generated source is the default tab so a fresh push
-    # always lands on the data the user just produced.
+    # Most recent source = default tab, so a fresh push lands on the data just produced.
     return max(ordered, key=lambda name: sources[name].generated_utc)
 
 

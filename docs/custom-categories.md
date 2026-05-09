@@ -30,8 +30,8 @@ WHERE in plain SQL.
       building: true
     select:
       - feature_id AS id
-      - tags['name'][1] AS name
-      - tags['height'][1] AS height
+      - tags['name'] AS name
+      - tags['height'] AS height
     where: []
 ```
 
@@ -56,8 +56,8 @@ quackosm produces parquet with three columns:
 - `tags` (`MAP<VARCHAR, VARCHAR>`): all retained tags
 - `geometry`
 
-DuckDB MAP access returns a list, so use `tags['key'][1]` to read scalar
-values. See the [OSM Map Features wiki](https://wiki.openstreetmap.org/wiki/Map_features)
+`tags['key']` returns the scalar value (or NULL when the tag is absent).
+See the [OSM Map Features wiki](https://wiki.openstreetmap.org/wiki/Map_features)
 for available keys.
 
 `osm.filter` accepts the quackosm tag-filter shape:
@@ -118,3 +118,34 @@ schema.
 The bundled defaults at `src/oex/defaults/base.yaml` ship the eight-theme
 combo (Buildings, Roads, Hospitals, Schools, Rivers, Land Use,
 Transportation Hubs, Settlements) drawn from both sources.
+
+## Optional per-category features
+
+```yaml
+- name: Buildings
+  transliterate:
+    - target: name_latin
+      source: name
+      prefer: name_en
+```
+
+`transliterate` adds a Latin-script display column. When `prefer` is non-null
+it is used verbatim; otherwise `source` is transliterated via `unidecode`.
+
+## Optional run-level features
+
+```yaml
+output:
+  report:
+    enabled: true            # writes report.html per category and (if hdx.push)
+                             # attaches it as the dataset's interactive view
+
+source:
+  pcodes:
+    enabled: true            # adds adm{N}_pcode and adm{N}_name columns
+                             # from fieldmaps.io edge-matched humanitarian
+
+hdx:
+  purge_existing_resources: true   # destructive: clears the dataset before
+                                   # uploading fresh resources
+```

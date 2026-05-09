@@ -47,6 +47,7 @@ dependencies = [
     "shapely>=2.1.0",
     "tqdm>=4.67.0",
     "typer>=0.15.0",
+    "unidecode>=1.4.0",
 ]
 
 [project.scripts]

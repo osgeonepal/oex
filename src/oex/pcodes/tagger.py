@@ -1,11 +1,4 @@
-"""DuckDB-side p-code tagging.
-
-Adds `adm{N}_pcode` and `adm{N}_name` columns (lowercase, OCHA COD-AB
-v1.1+ convention) to a materialised feature table by centroid-in-polygon
-join against cached fieldmaps admin parquets. RTREE indexes on the
-country-filtered admin tables let DuckDB rewrite the joins as index
-probes.
-"""
+"""DuckDB-side p-code tagging."""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -79,11 +72,6 @@ def _prepare_admin_tables(
     cache_entries: dict[int, PcodeCacheEntry],
     levels: list[int],
 ) -> tuple[dict[int, str], list[int], list[int]]:
-    """Returns `(admin_tables, levels_with_data, levels_empty)`.
-
-    `admin_tables[level]` is present for every cached level, regardless of
-    whether that level had country rows, so the caller can drop them all.
-    """
     admin_tables: dict[int, str] = {}
     levels_with_data: list[int] = []
     levels_empty: list[int] = []
@@ -129,8 +117,7 @@ def _build_rewrite_sql(
     adm0_pcode: str,
     adm0_name: str | None,
 ) -> str:
-    # NULL::VARCHAR for missing levels keeps the output schema constant
-    # regardless of which levels actually had country data.
+    # NULL::VARCHAR keeps the output schema constant when a level has no country rows.
     adm0_pcode_sql = adm0_pcode.replace("'", "''")
     select_extra: list[str] = [f"'{adm0_pcode_sql}' AS adm0_pcode"]
     if adm0_name is not None:
@@ -176,17 +163,6 @@ def tag_table(
     levels: list[int],
     geom_column: str = "geom",
 ) -> PcodeTagReport:
-    """Add admin pcode/name columns to `table` in place.
-
-    Output columns (always present, regardless of which levels had data):
-    `adm0_pcode`, `adm0_name`, then `adm{N}_pcode`, `adm{N}_name` for every
-    `N` in `levels`. Levels with no admin polygons for `iso3` are emitted as
-    NULL and reported in `PcodeTagReport.levels_empty`.
-
-    If no level has any polygons for `iso3`, `table` is left untouched and
-    `levels_tagged` is empty so the caller can decide whether to surface a
-    warning.
-    """
     iso3_upper = iso3.upper()
     requested = sorted(set(levels))
     if not requested:

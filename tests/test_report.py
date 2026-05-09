@@ -207,33 +207,37 @@ def test_render_report_raises_on_empty_sources() -> None:
         render_report({})
 
 
-def test_quality_strip_emits_one_cell_per_attribute_column() -> None:
+def test_ratio_bar_segments_reflect_bucket_counts() -> None:
     meta = _meta(
         columns=[
             ColumnReport("a", "VARCHAR", 0, 0.0, 1, []),
-            ColumnReport("b", "VARCHAR", 50, 50.0, 1, []),
-            ColumnReport("c", "VARCHAR", 99, 99.0, 1, []),
+            ColumnReport("b", "VARCHAR", 19, 19.0, 1, []),
+            ColumnReport("c", "VARCHAR", 35, 35.0, 1, []),
+            ColumnReport("d", "VARCHAR", 80, 80.0, 1, []),
         ]
     )
     html = render_report({"overture": _source(metadata=meta)})
-    assert html.count('<span class="qc qc-') == 3 + 3  # 3 strip cells + 3 legend swatches
+    assert '<i class="qc-high" style="width:50.00%"></i>' in html
+    assert '<i class="qc-mid"  style="width:25.00%"></i>' in html
+    assert '<i class="qc-low"  style="width:25.00%"></i>' in html
 
 
-def test_quality_strip_classes_reflect_coverage_buckets() -> None:
+def test_ratio_legend_carries_per_bucket_counts() -> None:
     meta = _meta(
         columns=[
-            ColumnReport("filled", "VARCHAR", 0, 0.0, 1, []),
-            ColumnReport("medium", "VARCHAR", 35, 35.0, 1, []),
-            ColumnReport("sparse", "VARCHAR", 70, 70.0, 1, []),
+            ColumnReport("a", "VARCHAR", 0, 0.0, 1, []),
+            ColumnReport("b", "VARCHAR", 35, 35.0, 1, []),
+            ColumnReport("c", "VARCHAR", 80, 80.0, 1, []),
+            ColumnReport("d", "VARCHAR", 95, 95.0, 1, []),
         ]
     )
     html = render_report({"overture": _source(metadata=meta)})
-    assert 'qc-high" title="filled (100.00% filled)"' in html
-    assert 'qc-mid" title="medium (65.00% filled)"' in html
-    assert 'qc-low" title="sparse (30.00% filled)"' in html
+    assert "1 over 80% filled" in html
+    assert "1 between 50 and 80%" in html
+    assert "2 under 50%" in html
 
 
-def test_quality_caption_counts_sparse_columns() -> None:
+def test_quality_caption_when_some_columns_are_sparse() -> None:
     meta = _meta(
         columns=[
             ColumnReport("a", "VARCHAR", 0, 0.0, 1, []),
@@ -242,10 +246,10 @@ def test_quality_caption_counts_sparse_columns() -> None:
         ]
     )
     html = render_report({"overture": _source(metadata=meta)})
-    assert "2 of 3 attribute columns are over 50% null" in html
+    assert "2 of 3 attribute columns are under 80% filled" in html
 
 
-def test_quality_caption_when_no_columns_are_sparse() -> None:
+def test_quality_caption_when_all_columns_are_well_filled() -> None:
     meta = _meta(
         columns=[
             ColumnReport("a", "VARCHAR", 0, 0.0, 1, []),
@@ -253,17 +257,13 @@ def test_quality_caption_when_no_columns_are_sparse() -> None:
         ]
     )
     html = render_report({"overture": _source(metadata=meta)})
-    assert "All 2 attribute columns are at least 50% filled" in html
-    assert (
-        "over 50% null"
-        not in html.replace("under 50%", "").replace("over 80% filled", "").split("All 2")[0]
-    )
+    assert "All 2 attribute columns are at least 80% filled" in html
 
 
-def test_quality_strip_omitted_when_no_attribute_columns() -> None:
+def test_quality_block_omitted_when_no_attribute_columns() -> None:
     html = render_report({"overture": _source(metadata=_meta(columns=[]))})
     assert '<div class="quality">' not in html
-    assert '<div class="quality-strip">' not in html
+    assert '<div class="ratio-bar">' not in html
 
 
 def test_attribute_table_uses_coverage_not_null_percent() -> None:

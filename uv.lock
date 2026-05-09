@@ -1246,6 +1246,7 @@ dependencies = [
     { name = "shapely" },
     { name = "tqdm" },
     { name = "typer" },
+    { name = "unidecode" },
 ]
 
 [package.dev-dependencies]
@@ -1275,6 +1276,7 @@ requires-dist = [
     { name = "shapely", specifier = ">=2.1.0" },
     { name = "tqdm", specifier = ">=4.67.0" },
     { name = "typer", specifier = ">=0.15.0" },
+    { name = "unidecode", specifier = ">=1.4.0" },
 ]
 
 [package.metadata.requires-dev]

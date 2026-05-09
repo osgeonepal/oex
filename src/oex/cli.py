@@ -70,6 +70,7 @@ def _build_overrides(
     hdx_push: bool | None,
     output_dir: Path | None,
     osm_engine: str | None = None,
+    hdx_purge: bool | None = None,
 ) -> dict[str, object]:
     overrides: dict[str, object] = {}
     if iso3_or_yaml and len(iso3_or_yaml) <= 3 and iso3_or_yaml.isalpha():
@@ -78,6 +79,10 @@ def _build_overrides(
         overrides["hdx.push"] = True
     if hdx_push is False:
         overrides["hdx.push"] = False
+    if hdx_purge is True:
+        overrides["hdx.purge_existing_resources"] = True
+    if hdx_purge is False:
+        overrides["hdx.purge_existing_resources"] = False
     if output_dir is not None:
         overrides["output.dir"] = str(output_dir)
     if osm_engine is not None:
@@ -139,11 +144,16 @@ def cmd_overture(
     config: Path | None = typer.Option(None, "--config", "-c", help="Explicit config YAML path"),
     output_dir: Path | None = typer.Option(None, "--output-dir", "-o"),
     hdx_push: bool | None = typer.Option(None, "--hdx-push/--no-hdx-push"),
+    hdx_purge: bool | None = typer.Option(
+        None,
+        "--hdx-purge/--no-hdx-purge",
+        help="Destructive: delete every existing resource on the dataset before upload.",
+    ),
 ) -> None:
     """Export Overture data."""
     iso3_resolved, theme_resolved = _resolve_args(iso3_or_yaml, theme, configs_dir, config)
     yamls = _resolve_config(iso3_resolved, configs_dir, config)
-    overrides = _build_overrides(iso3_resolved, hdx_push, output_dir)
+    overrides = _build_overrides(iso3_resolved, hdx_push, output_dir, hdx_purge=hdx_purge)
     results = [_run_one(y, overrides, theme_resolved, OvertureRunner) for y in yamls]
     raise typer.Exit(code=_summarise(results))
 
@@ -158,6 +168,11 @@ def cmd_osm(
     config: Path | None = typer.Option(None, "--config", "-c"),
     output_dir: Path | None = typer.Option(None, "--output-dir", "-o"),
     hdx_push: bool | None = typer.Option(None, "--hdx-push/--no-hdx-push"),
+    hdx_purge: bool | None = typer.Option(
+        None,
+        "--hdx-purge/--no-hdx-purge",
+        help="Destructive: delete every existing resource on the dataset before upload.",
+    ),
     engine: str | None = typer.Option(
         None,
         "--engine",
@@ -167,7 +182,9 @@ def cmd_osm(
     """Export OSM data via the configured engine."""
     iso3_resolved, theme_resolved = _resolve_args(iso3_or_yaml, theme, configs_dir, config)
     yamls = _resolve_config(iso3_resolved, configs_dir, config)
-    overrides = _build_overrides(iso3_resolved, hdx_push, output_dir, osm_engine=engine)
+    overrides = _build_overrides(
+        iso3_resolved, hdx_push, output_dir, osm_engine=engine, hdx_purge=hdx_purge
+    )
     results = [_run_one(y, overrides, theme_resolved, OsmRunner) for y in yamls]
     raise typer.Exit(code=_summarise(results))
 

@@ -70,6 +70,13 @@ def test_apply_overrides_dotted_keys() -> None:
     assert new_cfg.hdx.push is True
 
 
+def test_purge_existing_resources_defaults_false_and_overrides_through() -> None:
+    cfg = load_config()
+    assert cfg.hdx.purge_existing_resources is False
+    flipped = apply_overrides(cfg, {"hdx.purge_existing_resources": True})
+    assert flipped.hdx.purge_existing_resources is True
+
+
 def test_select_categories_filters_by_name() -> None:
     cfg = load_config()
     cfg = apply_overrides(cfg, {"iso3": "NPL"})

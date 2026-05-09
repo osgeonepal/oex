@@ -1,10 +1,4 @@
-"""Fetch and cache fieldmaps.io edge-matched admin parquets.
-
-Freshness is driven by the per-level `date` field in
-`https://data.fieldmaps.io/edge-matched.json`. We persist a local
-`meta.json` capturing the date used for the last download per level;
-on the next run we re-download only when the upstream date moved.
-"""
+"""Fetch and cache fieldmaps.io edge-matched admin parquets."""
 
 import json
 import os
@@ -22,13 +16,11 @@ logger = get_logger(__name__)
 
 
 class PcodeCacheError(RuntimeError):
-    """Raised when the fieldmaps cache cannot be prepared."""
+    pass
 
 
 @dataclass(frozen=True)
 class PcodeCacheEntry:
-    """Resolved local parquet for a given admin level."""
-
     level: int
     path: Path
     upstream_date: str
@@ -111,13 +103,6 @@ def ensure_admin_parquets(
     parquet_url_template: str,
     manifest_group: str,
 ) -> dict[int, PcodeCacheEntry]:
-    """Make sure each requested admin parquet is on disk and current.
-
-    Returns a mapping {level -> PcodeCacheEntry}. Refetches a level's parquet
-    when the upstream `date` differs from the locally recorded date OR when
-    the local file is missing. Stale parquets for older dates are left in
-    place untouched so an in-flight run never reads a half-written file.
-    """
     if not levels:
         raise PcodeCacheError("ensure_admin_parquets requires at least one level")
 

@@ -115,7 +115,8 @@ def build_cache(
             tags_filter=tag_filter,
             geometry_filter=geometry_filter,
             result_file_path=str(target),
-            keep_all_tags=False,
+            # False here drops every tag not in the filter, so tags['name'] returns NULL.
+            keep_all_tags=True,
             explode_tags=False,
             sort_result=True,
             working_directory=str(snapshot_dir / "_work"),

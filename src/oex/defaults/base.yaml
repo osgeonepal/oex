@@ -49,6 +49,8 @@ hdx:
   user_agent: oex
   methodology: Other
   methodology_other: Open Source Geographic information
+  # Destructive: deletes every existing resource on the dataset before upload.
+  purge_existing_resources: false
 
 source:
   overture:
@@ -116,14 +118,14 @@ categories:
         building: true
       select:
         - feature_id AS id
-        - tags['name'][1] AS name
-        - tags['name:en'][1] AS name_en
-        - tags['building'][1] AS building
-        - tags['building:material'][1] AS material
-        - tags['building:levels'][1] AS levels
-        - tags['height'][1] AS height
-        - tags['roof:shape'][1] AS roof_shape
-        - tags['roof:material'][1] AS roof_material
+        - tags['name'] AS name
+        - tags['name:en'] AS name_en
+        - tags['building'] AS building
+        - tags['building:material'] AS material
+        - tags['building:levels'] AS levels
+        - tags['height'] AS height
+        - tags['roof:shape'] AS roof_shape
+        - tags['roof:material'] AS roof_material
       where: []
 
   - name: Roads
@@ -155,13 +157,13 @@ categories:
         highway: true
       select:
         - feature_id AS id
-        - tags['name'][1] AS name
-        - tags['name:en'][1] AS name_en
-        - tags['highway'][1] AS highway
-        - tags['surface'][1] AS surface
-        - tags['maxspeed'][1] AS maxspeed
-        - tags['lanes'][1] AS lanes
-        - tags['oneway'][1] AS oneway
+        - tags['name'] AS name
+        - tags['name:en'] AS name_en
+        - tags['highway'] AS highway
+        - tags['surface'] AS surface
+        - tags['maxspeed'] AS maxspeed
+        - tags['lanes'] AS lanes
+        - tags['oneway'] AS oneway
       where: []
 
   - name: Hospitals
@@ -194,13 +196,13 @@ categories:
         healthcare: true
       select:
         - feature_id AS id
-        - tags['name'][1] AS name
-        - tags['name:en'][1] AS name_en
-        - tags['amenity'][1] AS amenity
-        - tags['healthcare'][1] AS healthcare
-        - tags['operator'][1] AS operator
-        - tags['phone'][1] AS phone
-        - tags['website'][1] AS website
+        - tags['name'] AS name
+        - tags['name:en'] AS name_en
+        - tags['amenity'] AS amenity
+        - tags['healthcare'] AS healthcare
+        - tags['operator'] AS operator
+        - tags['phone'] AS phone
+        - tags['website'] AS website
       where: []
 
   - name: Schools
@@ -231,11 +233,11 @@ categories:
         amenity: ["school", "college", "university", "kindergarten"]
       select:
         - feature_id AS id
-        - tags['name'][1] AS name
-        - tags['name:en'][1] AS name_en
-        - tags['amenity'][1] AS amenity
-        - tags['operator'][1] AS operator
-        - tags['website'][1] AS website
+        - tags['name'] AS name
+        - tags['name:en'] AS name_en
+        - tags['amenity'] AS amenity
+        - tags['operator'] AS operator
+        - tags['website'] AS website
       where: []
 
   - name: Rivers
@@ -267,11 +269,11 @@ categories:
         natural: ["water"]
       select:
         - feature_id AS id
-        - tags['name'][1] AS name
-        - tags['name:en'][1] AS name_en
-        - tags['waterway'][1] AS waterway
-        - tags['natural'][1] AS natural_class
-        - tags['water'][1] AS water_type
+        - tags['name'] AS name
+        - tags['name:en'] AS name_en
+        - tags['waterway'] AS waterway
+        - tags['natural'] AS natural_class
+        - tags['water'] AS water_type
       where: []
 
   - name: Land Use
@@ -301,10 +303,10 @@ categories:
         landuse: true
       select:
         - feature_id AS id
-        - tags['name'][1] AS name
-        - tags['name:en'][1] AS name_en
-        - tags['landuse'][1] AS landuse
-        - tags['surface'][1] AS surface
+        - tags['name'] AS name
+        - tags['name:en'] AS name_en
+        - tags['landuse'] AS landuse
+        - tags['surface'] AS surface
       where: []
 
   - name: Transportation Hubs
@@ -338,12 +340,12 @@ categories:
         public_transport: ["station"]
       select:
         - feature_id AS id
-        - tags['name'][1] AS name
-        - tags['name:en'][1] AS name_en
-        - tags['aeroway'][1] AS aeroway
-        - tags['railway'][1] AS railway
-        - tags['amenity'][1] AS amenity
-        - tags['public_transport'][1] AS public_transport
+        - tags['name'] AS name
+        - tags['name:en'] AS name_en
+        - tags['aeroway'] AS aeroway
+        - tags['railway'] AS railway
+        - tags['amenity'] AS amenity
+        - tags['public_transport'] AS public_transport
       where: []
 
   - name: Settlements
@@ -373,9 +375,9 @@ categories:
         place: ["city", "town", "village", "hamlet", "suburb"]
       select:
         - feature_id AS id
-        - tags['name'][1] AS name
-        - tags['name:en'][1] AS name_en
-        - tags['place'][1] AS place
-        - tags['population'][1] AS population
-        - tags['wikidata'][1] AS wikidata
+        - tags['name'] AS name
+        - tags['name:en'] AS name_en
+        - tags['place'] AS place
+        - tags['population'] AS population
+        - tags['wikidata'] AS wikidata
       where: []

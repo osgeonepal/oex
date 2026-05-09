@@ -16,6 +16,8 @@ class HdxConfig:
     user_agent: str = "oex"
     methodology: str = "Other"
     methodology_other: str = "Open Source Geographic information"
+    # Destructive: deletes every existing resource on the dataset before upload.
+    purge_existing_resources: bool = False
 
 
 @dataclass
@@ -38,13 +40,6 @@ class LoggingConfig:
 
 @dataclass
 class ReportConfig:
-    """HTML report rendered from compute_metadata output.
-
-    When enabled, the report is written to `output/<iso3>/<source>/<slug>_report.html`
-    and (if HDX push is on) attached as a resource and used as the dataset's
-    customviz URL so HDX renders it inline.
-    """
-
     enabled: bool = False
 
 
@@ -98,13 +93,6 @@ class OsmSourceConfig:
 
 @dataclass
 class PcodesSourceConfig:
-    """P-code tagging via fieldmaps.io edge-matched humanitarian admin polygons.
-
-    When enabled, every output feature gets `adm{N}_pcode` and `adm{N}_name`
-    columns for N in `levels`, assigned by centroid via DuckDB ST_Within.
-    Missing levels are left NULL (logged as a warning at runtime).
-    """
-
     enabled: bool = False
     cache_dir: str = "data/pcodes"
     levels: list[int] = field(default_factory=lambda: [1, 2, 3, 4])
@@ -152,12 +140,20 @@ class CategoryOsm:
 
 
 @dataclass
+class TransliterateRule:
+    target: str = ""
+    source: str = ""
+    prefer: str | None = None
+
+
+@dataclass
 class CategoryConfig:
     name: str = ""
     formats: list[str] | None = None
     hdx: CategoryHdx = field(default_factory=CategoryHdx)
     overture: CategoryOverture = field(default_factory=CategoryOverture)
     osm: CategoryOsm = field(default_factory=CategoryOsm)
+    transliterate: list[TransliterateRule] = field(default_factory=list)
 
 
 @dataclass
