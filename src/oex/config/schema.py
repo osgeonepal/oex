@@ -114,9 +114,7 @@ class CategoryHdx:
         "Data may contain errors. Verified at the community level only; "
         "individual features may need correction."
     )
-    # Optional dataset_source override. When unset, the source runner
-    # supplies a value like "OpenStreetMap (Geofabrik IND 2026-05-07)".
-    # Set to "OpenStreetMap contributors" for HOT-style HDX exports.
+    # HDX dataset_source override. When unset, defaults to "OpenStreetMap" or "Overture".
     dataset_source: str | None = None
 
 

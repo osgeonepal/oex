@@ -16,6 +16,8 @@ _HDX_SITE_URLS = {
     "stage": "https://stage.data-humdata-org.ahconu.org",
 }
 
+_HDX_SHORT_SOURCE = {"osm": "OpenStreetMap", "overture": "Overture"}
+
 
 @dataclass
 class PublishContext:
@@ -67,13 +69,16 @@ class HdxPublisher:
         dt_name = f"{cfg.key}_{cfg.iso3.lower()}_{category_slug}"
         title = category.hdx.title or f"{category.name} of {cfg.dataset_name or cfg.iso3.upper()}"
 
+        hdx_source = category.hdx.dataset_source or _HDX_SHORT_SOURCE.get(
+            ctx.source_name, ctx.dataset_source
+        )
         dataset_args: dict[str, object] = {
             "title": title,
             "name": dt_name,
             "notes": category.hdx.notes,
             "caveats": category.hdx.caveats,
             "private": False,
-            "dataset_source": category.hdx.dataset_source or ctx.dataset_source,
+            "dataset_source": hdx_source,
             "methodology": cfg.hdx.methodology,
             "methodology_other": cfg.hdx.methodology_other,
             "owner_org": self._owner_org,
