@@ -20,6 +20,8 @@ output:
   formats:
     - gpkg
     - shp
+  report:
+    enabled: false
 
 parallel:
   enabled: true

@@ -37,10 +37,23 @@ class LoggingConfig:
 
 
 @dataclass
+class ReportConfig:
+    """HTML report rendered from compute_metadata output.
+
+    When enabled, the report is written to `output/<iso3>/<source>/<slug>_report.html`
+    and (if HDX push is on) attached as a resource and used as the dataset's
+    customviz URL so HDX renders it inline.
+    """
+
+    enabled: bool = False
+
+
+@dataclass
 class OutputConfig:
     dir: str = "output"
     formats: list[str] = field(default_factory=lambda: ["gpkg", "shp"])
     metadata: bool = False
+    report: ReportConfig = field(default_factory=ReportConfig)
 
 
 @dataclass

@@ -21,6 +21,10 @@ _HDX_SITE_URLS = {
 class PublishContext:
     dataset_source: str
     snapshot_date: datetime
+    source_name: str = ""
+    metadata_json_path: Path | None = None
+    combined_report_enabled: bool = False
+    output_dir: Path | None = None
 
 
 class HdxPublisher:
@@ -146,7 +150,149 @@ class HdxPublisher:
                 f"failures: {summary}"
             )
         logger.info("Saved HDX dataset %s with %d resources", dt_name, len(zip_paths))
+
+        if ctx.metadata_json_path is not None:
+            _upload_simple_resource(
+                package_id=package_id,
+                existing_by_name=existing_by_name,
+                path=ctx.metadata_json_path,
+                fmt="JSON",
+                description=f"{category.name} ({ctx.source_name}) feature-level metadata",
+                dt_name=dt_name,
+            )
+
+        if ctx.combined_report_enabled and ctx.output_dir is not None:
+            self._build_and_publish_combined_report(
+                dt_name=dt_name,
+                package_id=package_id,
+                category=category,
+                cfg=cfg,
+                category_slug=category_slug,
+                output_dir=ctx.output_dir,
+            )
         return dt_name
+
+    def _build_and_publish_combined_report(
+        self,
+        *,
+        dt_name: str,
+        package_id: str,
+        category: CategoryConfig,
+        cfg: RootConfig,
+        category_slug: str,
+        output_dir: Path,
+    ) -> None:
+        # Read every per-source metadata.json on the dataset, merge, render
+        # one HTML with a tab per source, upload, point customviz at it.
+        # Self-iframing works because HDX serves uploaded HTML with
+        # text/html + X-Frame-Options: SAMEORIGIN (verified 2026-05-09).
+        from hdx.data.dataset import Dataset
+        from hdx.data.resource import Resource
+
+        from oex.report import SourceMetadata, render_report
+
+        fresh = Dataset.read_from_hdx(dt_name)
+        if fresh is None:
+            raise RuntimeError(f"HDX dataset {dt_name} not visible before report build")
+        resources = fresh.get_resources() or []
+
+        sources: dict[str, SourceMetadata] = {}
+        for r in resources:
+            name = r["name"]
+            if not name.endswith("_metadata.json"):
+                continue
+            url = r["url"]
+            try:
+                payload = _download_json(url)
+                sm = SourceMetadata.from_payload(payload)
+            except Exception as exc:
+                raise RuntimeError(f"HDX dataset {dt_name}: could not parse {name}: {exc}") from exc
+            sources[sm.source_name] = sm
+
+        if not sources:
+            raise RuntimeError(
+                f"HDX dataset {dt_name}: combined report requested but no "
+                "metadata.json resources found"
+            )
+
+        report_path = output_dir / f"{cfg.key}_{cfg.iso3.lower()}_{category_slug}_report.html"
+        report_path.write_text(render_report(sources), encoding="utf-8")
+        logger.info(
+            "Built combined report (%d source%s) -> %s",
+            len(sources),
+            "" if len(sources) == 1 else "s",
+            report_path,
+        )
+
+        existing_by_name: dict[str, Resource] = {r["name"]: r for r in resources}
+        _upload_simple_resource(
+            package_id=package_id,
+            existing_by_name=existing_by_name,
+            path=report_path,
+            fmt="HTML",
+            description=f"{category.name} (interactive report)",
+            dt_name=dt_name,
+        )
+
+        refreshed = Dataset.read_from_hdx(dt_name)
+        if refreshed is None:
+            raise RuntimeError(f"HDX dataset {dt_name} not visible after report upload")
+        report_url = next(
+            (r["url"] for r in (refreshed.get_resources() or []) if r["name"] == report_path.name),
+            None,
+        )
+        if not report_url:
+            raise RuntimeError(
+                f"HDX dataset {dt_name}: uploaded report {report_path.name} has no URL"
+            )
+
+        logger.info("Setting customviz: %s", report_url)
+        refreshed.set_custom_viz(report_url)
+        refreshed.update_in_hdx()
+
+
+def _upload_simple_resource(
+    *,
+    package_id: str,
+    existing_by_name: dict,
+    path: Path,
+    fmt: str,
+    description: str,
+    dt_name: str,
+) -> None:
+    from hdx.data.resource import Resource
+
+    size_mb = path.stat().st_size / (1024 * 1024)
+    try:
+        if path.name in existing_by_name:
+            res = existing_by_name[path.name]
+            res["description"] = description
+            res.set_format(fmt)
+            res.set_file_to_upload(str(path))
+            logger.info("Updating resource %s (%.2f MB)", path.name, size_mb)
+            res.update_in_hdx()
+        else:
+            res = Resource(
+                {
+                    "package_id": package_id,
+                    "name": path.name,
+                    "description": description,
+                }
+            )
+            res.set_format(fmt)
+            res.set_file_to_upload(str(path))
+            logger.info("Creating resource %s (%.2f MB)", path.name, size_mb)
+            res.create_in_hdx()
+    except Exception as exc:
+        raise RuntimeError(f"HDX dataset {dt_name}: failed to upload {path.name}: {exc}") from exc
+
+
+def _download_json(url: str, *, timeout: float = 60.0) -> dict:
+    import requests
+
+    resp = requests.get(url, timeout=timeout)
+    resp.raise_for_status()
+    return resp.json()
 
 
 def _slugify(value: str) -> str:

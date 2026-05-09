@@ -27,6 +27,8 @@ output:
     - gpkg
     - shp
   metadata: true
+  report:
+    enabled: true
 
 hdx:
   push: true

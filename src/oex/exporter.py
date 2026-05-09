@@ -1,6 +1,7 @@
 """Per-category export loop, shared by Overture and OSM sources."""
 
 import concurrent.futures
+import json
 import re
 import shutil
 import time
@@ -21,6 +22,7 @@ from oex.pcodes import (
     resolve_pcodes_config,
     tag_table,
 )
+from oex.report import SourceMetadata, render_report
 from oex.sources.base import CategorySkippedError, SourceQuery, SourceRunner
 from oex.sql import build_select_clause, build_where_clause, materialise
 from oex.system import default_thread_count
@@ -281,11 +283,48 @@ class Exporter:
                 )
                 logger.info("%s pcodes tagged in %.1fs", cat_tag, time.time() - tag_start)
 
-            if self._cfg.output.metadata:
+            need_metadata = self._cfg.output.metadata or self._cfg.output.report.enabled
+            metadata_obj = None
+            metadata_dict = None
+            if need_metadata:
                 logger.info("%s computing metadata...", cat_tag)
-                metadata_dict = compute_metadata(conn, table).to_dict()
-            else:
-                metadata_dict = None
+                metadata_obj = compute_metadata(conn, table)
+                metadata_dict = metadata_obj.to_dict()
+
+            metadata_json_path: Path | None = None
+            if self._cfg.output.report.enabled and metadata_obj is not None:
+                dt_name = f"{self._cfg.key}_{self._cfg.iso3.lower()}_{slug}"
+                source_metadata = SourceMetadata(
+                    source_name=self._runner.name,
+                    snapshot_label=query.snapshot_label,
+                    dataset_source=query.dataset_source,
+                    generated_utc=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    oex_version=_oex_version(),
+                    license_label=category.hdx.license,
+                    license_url=category.hdx.license_url,
+                    pcode_source_date=(
+                        next(iter(self._pcode_cache.values())).upstream_date
+                        if self._pcode_cache
+                        else None
+                    ),
+                    metadata=metadata_obj,
+                )
+                metadata_json_path = out_root / f"{dt_name}_{self._runner.name}_metadata.json"
+                metadata_json_path.write_text(
+                    json.dumps(source_metadata.to_payload(), indent=2),
+                    encoding="utf-8",
+                )
+
+                local_report_path = out_root / f"{dt_name}_{self._runner.name}_report.html"
+                local_report_path.write_text(
+                    render_report({self._runner.name: source_metadata}),
+                    encoding="utf-8",
+                )
+                logger.info(
+                    "%s wrote metadata.json + local report -> %s",
+                    cat_tag,
+                    out_root,
+                )
 
             logger.info("%s writing %d format(s): %s", cat_tag, len(formats), formats)
             zip_paths = self._materialise_outputs(
@@ -309,6 +348,10 @@ class Exporter:
                 ctx = PublishContext(
                     dataset_source=query.dataset_source,
                     snapshot_date=query.snapshot_date,
+                    source_name=self._runner.name,
+                    metadata_json_path=metadata_json_path,
+                    combined_report_enabled=self._cfg.output.report.enabled,
+                    output_dir=out_root,
                 )
                 dataset_name = publisher.publish(self._cfg, category, zip_paths, ctx)
 
