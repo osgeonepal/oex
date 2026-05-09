@@ -133,8 +133,22 @@ class HdxPublisher:
         for tag in category.hdx.tags:
             dataset.add_tag(tag)
 
-        logger.info("Creating/updating HDX dataset %s (metadata)", dt_name)
-        dataset.create_in_hdx(allow_no_resources=True)
+        existing = Dataset.read_from_hdx(dt_name)
+        if existing is None:
+            logger.info("Creating HDX dataset %s", dt_name)
+            dataset.create_in_hdx(allow_no_resources=True)
+        else:
+            existing_org = existing.get("owner_org")
+            if existing_org and existing_org != self._owner_org:
+                raise RuntimeError(
+                    f"HDX dataset {dt_name} exists under a different organisation "
+                    f"(owner_org={existing_org!r}; you are publishing as "
+                    f"{self._owner_org!r}). Pick a different `key` in your config "
+                    "to namespace your datasets, or have HDX transfer ownership."
+                )
+            logger.info("Updating HDX dataset %s", dt_name)
+            dataset["id"] = existing["id"]
+            dataset.update_in_hdx(allow_no_resources=True)
 
         fresh = Dataset.read_from_hdx(dt_name)
         if fresh is None:

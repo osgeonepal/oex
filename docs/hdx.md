@@ -101,6 +101,25 @@ categories:
 
 See [Custom categories](custom-categories.md) for the per-category schema.
 
+## Local language columns
+
+For OSM exports, oex auto-injects `tags['name:<lang>'] AS name_<lang>` into
+each category's select for the country's primary non-English official
+languages (up to three). The languages are resolved from the config's
+`iso3` via [babel](https://babel.pocoo.org/) (`get_official_languages`)
+plus pycountry. Examples:
+
+|ISO3|Injected columns|
+|----|----------------|
+|NPL|`name_ne`|
+|SDN|`name_ar`|
+|IND|`name_hi`|
+|CHE|`name_de`, `name_fr`, `name_it`|
+|USA|(none, English is already in `name_en`)|
+
+Per-category YAML can still pin or override a language by including
+`tags['name:<lang>'] AS name_<lang>` explicitly in `osm.select`.
+
 ## Production sanity
 
 - Always run with `hdx.site: demo` first against the HDX demo instance

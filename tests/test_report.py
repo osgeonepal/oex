@@ -291,6 +291,69 @@ def test_quality_block_omitted_when_no_attribute_columns() -> None:
     assert '<div class="ratio-bar">' not in html
 
 
+def test_languages_kpi_lists_name_columns_in_order() -> None:
+    meta = _meta(
+        columns=[
+            ColumnReport("name", "VARCHAR", 0, 0.0, 5, []),
+            ColumnReport("name_en", "VARCHAR", 0, 0.0, 5, []),
+            ColumnReport("name_ne", "VARCHAR", 0, 0.0, 5, []),
+            ColumnReport("name_hi", "VARCHAR", 0, 0.0, 5, []),
+        ]
+    )
+    html = render_report({"overture": _source(metadata=meta)})
+    assert ">Languages<" in html
+    assert ">4</div>" in html
+    assert ">local, en, ne, hi<" in html
+
+
+def test_languages_kpi_excludes_translit_column() -> None:
+    meta = _meta(
+        columns=[
+            ColumnReport("name", "VARCHAR", 0, 0.0, 5, []),
+            ColumnReport("name_en", "VARCHAR", 0, 0.0, 5, []),
+            ColumnReport("name_latin", "VARCHAR", 0, 0.0, 5, []),
+        ]
+    )
+    html = render_report({"overture": _source(metadata=meta)})
+    assert ">2</div>" in html
+    assert ">local, en<" in html
+    assert "name_latin" not in html.split('class="kpis"')[1].split("</div></div>")[0]
+
+
+def test_languages_kpi_says_none_when_no_name_columns() -> None:
+    meta = _meta(columns=[ColumnReport("id", "VARCHAR", 0, 0.0, 5, [])])
+    html = render_report({"overture": _source(metadata=meta)})
+    assert "no name columns" in html
+
+
+def test_bbox_line_replaces_bbox_kpi() -> None:
+    html = render_report({"overture": _source(metadata=_meta(bbox=(0.5, 1.5, 2.5, 3.5)))})
+    assert "Bounding box: 0.50, 1.50 to 2.50, 3.50 (EPSG:4326)" in html
+    assert ">Bounding box</div>" not in html
+
+
+def test_bbox_line_omitted_when_bbox_missing() -> None:
+    html = render_report({"overture": _source(metadata=_meta(bbox=None))})
+    assert "Bounding box" not in html
+
+
+def test_footer_notes_transliteration_when_latin_column_present() -> None:
+    meta = _meta(
+        columns=[
+            ColumnReport("name", "VARCHAR", 0, 0.0, 5, []),
+            ColumnReport("name_latin", "VARCHAR", 0, 0.0, 5, []),
+        ]
+    )
+    html = render_report({"overture": _source(metadata=meta)})
+    assert "Latin transliteration via unidecode" in html
+
+
+def test_footer_omits_transliteration_note_when_absent() -> None:
+    meta = _meta(columns=[ColumnReport("name", "VARCHAR", 0, 0.0, 5, [])])
+    html = render_report({"overture": _source(metadata=meta)})
+    assert "transliteration" not in html
+
+
 def test_attribute_table_uses_coverage_not_null_percent() -> None:
     meta = _meta(
         columns=[

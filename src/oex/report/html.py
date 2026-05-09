@@ -1,5 +1,6 @@
 """Multi-source HTML report renderer."""
 
+import re
 from dataclasses import dataclass
 from html import escape
 from typing import Any
@@ -11,6 +12,8 @@ _PCODE_SUFFIX = "_pcode"
 _SOURCE_COL = "source"
 _COVERAGE_HIGH = 50.0
 _COVERAGE_MID = 25.0
+_NAME_LANG_RE = re.compile(r"^name_([a-z]{2,3})$")
+_TRANSLIT_SUFFIX = "_latin"
 
 
 @dataclass(frozen=True)
@@ -138,6 +141,8 @@ td.coverage .bar { margin-top: 4px; min-width: 0; height: 4px; }
                    background: #f4f4f5; padding: 1px 5px; border-radius: 3px; }
 .top-values .count { color: var(--muted); }
 .bbox { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.bbox-line { font-family: var(--mono); font-size: 12px; color: var(--muted);
+             margin: 10px 0 0; }
 .tab-footer { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--line);
               color: var(--muted); font-size: 12px; line-height: 1.55; }
 .tab-footer a { color: inherit; }
@@ -201,6 +206,7 @@ def _render_panel(name: str, source: SourceMetadata) -> str:
     sections = [
         _render_quality(metadata),
         _render_kpis(metadata),
+        _render_bbox_line(metadata),
         _render_geometry_types(metadata),
         _render_source_mix(metadata),
         _render_pcode_coverage(metadata),
@@ -259,7 +265,7 @@ def _coverage_bucket(coverage: float) -> str:
 def _render_kpis(metadata: MetadataReport) -> str:
     geom_label = _geometry_label(metadata.geometry_types)
     pcode_kpi = _admin_coverage_kpi(metadata)
-    bbox_kpi = _bbox_kpi(metadata)
+    languages_kpi = _languages_kpi(metadata)
     columns_count = len(metadata.columns)
     return (
         '<div class="kpis">'
@@ -270,7 +276,7 @@ def _render_kpis(metadata: MetadataReport) -> str:
         f'<div class="kpi-value">{columns_count}</div>'
         f'<div class="kpi-sub">+ geometry</div></div>'
         f"{pcode_kpi}"
-        f"{bbox_kpi}"
+        f"{languages_kpi}"
         "</div>"
     )
 
@@ -292,18 +298,41 @@ def _admin_coverage_kpi(metadata: MetadataReport) -> str:
     )
 
 
-def _bbox_kpi(metadata: MetadataReport) -> str:
-    if metadata.bbox is None:
+def _languages_kpi(metadata: MetadataReport) -> str:
+    languages = _language_columns(metadata)
+    if not languages:
         return (
-            '<div class="kpi"><div class="kpi-label">Bounding box</div>'
-            '<div class="kpi-value" style="font-size:14px">n/a</div>'
-            '<div class="kpi-sub">empty dataset</div></div>'
+            '<div class="kpi"><div class="kpi-label">Languages</div>'
+            '<div class="kpi-value" style="font-size:14px">none</div>'
+            '<div class="kpi-sub">no name columns</div></div>'
         )
+    return (
+        '<div class="kpi"><div class="kpi-label">Languages</div>'
+        f'<div class="kpi-value">{len(languages)}</div>'
+        f'<div class="kpi-sub">{escape(", ".join(languages))}</div></div>'
+    )
+
+
+def _language_columns(metadata: MetadataReport) -> list[str]:
+    """Language labels carried by the dataset, ordered as they appear."""
+    labels: list[str] = []
+    for col in metadata.columns:
+        if col.name == "name":
+            labels.append("local")
+            continue
+        match = _NAME_LANG_RE.match(col.name)
+        if match:
+            labels.append(match.group(1))
+    return labels
+
+
+def _render_bbox_line(metadata: MetadataReport) -> str:
+    if metadata.bbox is None:
+        return ""
     minx, miny, maxx, maxy = metadata.bbox
     return (
-        '<div class="kpi"><div class="kpi-label">Bounding box</div>'
-        '<div class="kpi-value" style="font-size:14px">EPSG:4326</div>'
-        f'<div class="bbox">{minx:.2f}, {miny:.2f} to {maxx:.2f}, {maxy:.2f}</div>'
+        '<div class="bbox-line">'
+        f"Bounding box: {minx:.2f}, {miny:.2f} to {maxx:.2f}, {maxy:.2f} (EPSG:4326)"
         "</div>"
     )
 
@@ -377,12 +406,18 @@ def _render_footer(source: SourceMetadata) -> str:
             "p-codes from fieldmaps.io edge-matched humanitarian "
             f"({escape(source.pcode_source_date)})"
         )
+    if _has_transliteration(source.metadata):
+        parts.append("Latin transliteration via unidecode")
     license_text = escape(source.license_label)
     if source.license_url:
         license_text = f'<a href="{escape(source.license_url)}">{license_text}</a>'
     parts.append(f"licensed under {license_text}")
     parts.append(f"oex {escape(source.oex_version)}")
     return f'<div class="tab-footer">{". ".join(parts)}.</div>'
+
+
+def _has_transliteration(metadata: MetadataReport) -> bool:
+    return any(col.name.endswith(_TRANSLIT_SUFFIX) for col in metadata.columns)
 
 
 def _attribute_row(col: ColumnReport) -> str:

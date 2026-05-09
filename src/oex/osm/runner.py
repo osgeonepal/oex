@@ -11,6 +11,7 @@ from oex.config.schema import (
     OsmSourceConfig,
     RootConfig,
 )
+from oex.locale import local_osm_languages
 from oex.logging_setup import get_logger
 from oex.osm.build_cache import build_cache, theme_slug
 from oex.osm.fetch_planet import download_pbf
@@ -18,6 +19,32 @@ from oex.osm.geofabrik import lookup_country
 from oex.sources.base import CategorySkippedError, SourceQuery, SourceRunner
 
 logger = get_logger(__name__)
+
+
+def _inject_local_name(select_fields: list[str], iso3: str) -> list[str]:
+    """Append `tags['name:<lang>'] AS name_<lang>` for each local OSM language.
+
+    Skips a language if its alias is already present (per-category YAML wins).
+    """
+    languages = local_osm_languages(iso3)
+    if not languages:
+        return select_fields
+
+    new_fields = list(select_fields)
+    insert_at = len(new_fields)
+    for index, field in enumerate(new_fields):
+        if "AS name_en" in field or field.endswith(" name_en"):
+            insert_at = index + 1
+            break
+
+    existing = "\n".join(new_fields)
+    for lang in languages:
+        alias = f"name_{lang}"
+        if alias in existing:
+            continue
+        new_fields.insert(insert_at, f"tags['name:{lang}'] AS {alias}")
+        insert_at += 1
+    return new_fields
 
 
 def _resolve_snapshot(cache_root: Path, requested: str) -> str:
@@ -192,9 +219,10 @@ class OsmRunner(SourceRunner):
 
         snapshot_label = self._snapshot_label or "unknown"
         snapshot_date = self._snapshot_date or datetime.now(UTC)
+        select_fields = _inject_local_name(list(category.osm.select), cfg.iso3)
         return SourceQuery(
             source_expr=f"read_parquet('{parquet}')",
-            select_fields=list(category.osm.select),
+            select_fields=select_fields,
             where_conditions=list(category.osm.where),
             bbox_cols="geom",
             dataset_source=self._dataset_source,
