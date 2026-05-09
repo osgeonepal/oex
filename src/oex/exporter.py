@@ -322,6 +322,7 @@ class Exporter:
                         if self._pcode_cache
                         else None
                     ),
+                    boundary=boundary_obj.source,
                     metadata=metadata_obj,
                 )
                 metadata_json_path = out_root / f"{dt_name}_{self._runner.name}_metadata.json"
@@ -367,6 +368,7 @@ class Exporter:
                     metadata_json_path=metadata_json_path,
                     combined_report_enabled=self._cfg.output.report.enabled,
                     output_dir=out_root,
+                    s3=self._cfg.output.s3,
                 )
                 dataset_name = publisher.publish(self._cfg, category, zip_paths, ctx)
 

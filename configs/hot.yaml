@@ -1,0 +1,50 @@
+# HOT-OSM HDX grid template.
+#
+# `iso3` is intentionally empty: pass it on the CLI so a single template
+# drives the full sweep. Example for one country:
+#
+#   oex-cli osm NPL --config configs/hot.yaml --hdx-purge
+#
+# For the full 225-country grid:
+#
+#   xargs -a hot_countries.txt -I{} oex-cli osm {} --config configs/hot.yaml --hdx-purge
+#
+# Run `oex-cli osm-build-cache --planet` once first to populate the planet
+# parquet cache. Each country then reads from the same cache, no per-country
+# PBF download.
+
+iso3: ""
+key: hotosm
+dataset_name: null
+subnational: false
+frequency: yearly
+
+boundary:
+  geom: null
+  geoboundaries_release: CGAZ
+  geoboundaries_level: ADM0
+  buffer_meters: 5000
+
+output:
+  dir: output
+  formats:
+    - gpkg
+    - shp
+  metadata: true
+  report:
+    enabled: true
+
+source:
+  osm:
+    engine: planet_parquet
+  pcodes:
+    enabled: true
+
+hdx:
+  push: true
+  site: prod
+  user_agent: hotosm-oex
+  methodology_other: Volunteered geographic information
+  purge_existing_resources: true
+
+categories_file: configs/examples/hot-schema.yaml

@@ -44,11 +44,22 @@ class ReportConfig:
 
 
 @dataclass
+class S3Config:
+    enabled: bool = False
+    bucket: str = ""
+    prefix: str = ""
+    region: str = ""
+    acl: str = "public-read"
+    endpoint_url: str | None = None
+
+
+@dataclass
 class OutputConfig:
     dir: str = "output"
     formats: list[str] = field(default_factory=lambda: ["gpkg", "shp"])
     metadata: bool = False
     report: ReportConfig = field(default_factory=ReportConfig)
+    s3: S3Config = field(default_factory=S3Config)
 
 
 @dataclass

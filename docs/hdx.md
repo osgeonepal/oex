@@ -51,6 +51,56 @@ Per-category metadata comes from each category's `hdx:` block:
     caveats: Verified at the community level only.
 ```
 
+## Cleanup before upload
+
+```yaml
+hdx:
+  purge_existing_resources: true   # destructive: clears the dataset before upload
+```
+
+Or per-run: `oex-cli osm npl --hdx-push --hdx-purge`.
+
+## Hosting resources on S3 instead of HDX
+
+```yaml
+output:
+  s3:
+    enabled: true
+    bucket: my-bucket          # or OEX_S3_BUCKET
+    prefix: hotosm/exports     # or OEX_S3_PREFIX
+    region: us-east-1          # or OEX_S3_REGION
+    acl: public-read           # so HDX can fetch the URL
+    endpoint_url: null         # set for R2/MinIO via OEX_S3_ENDPOINT_URL
+```
+
+Each artifact uploads to `s3://<bucket>/<prefix>/<iso3>/<category>/<filename>`,
+then attaches to HDX as a URL link instead of an upload.
+
+AWS credentials come from boto3's default chain: `AWS_ACCESS_KEY_ID` +
+`AWS_SECRET_ACCESS_KEY` (with optional `AWS_SESSION_TOKEN`), `AWS_PROFILE`,
+or an IAM role on EC2. Nothing oex-specific needed for credentials.
+
+## Optional features
+
+```yaml
+output:
+  report:
+    enabled: true        # interactive HTML report attached as customviz
+
+source:
+  pcodes:
+    enabled: true        # adds adm{N}_pcode and adm{N}_name columns
+
+categories:
+  - name: Buildings
+    transliterate:
+      - target: name_latin
+        source: name
+        prefer: name_en  # used as-is when not null, else transliterated
+```
+
+See [Custom categories](custom-categories.md) for the per-category schema.
+
 ## Production sanity
 
 - Always run with `hdx.site: demo` first against the HDX demo instance

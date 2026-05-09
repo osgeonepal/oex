@@ -30,6 +30,7 @@ def _source(
     metadata: MetadataReport | None = None,
     pcode_source_date: str | None = None,
     license_url: str | None = "https://opendatacommons.org/licenses/odbl/1-0/",
+    boundary: str | None = None,
 ) -> SourceMetadata:
     return SourceMetadata(
         source_name=name,
@@ -40,6 +41,7 @@ def _source(
         license_label="ODbL 1.0",
         license_url=license_url,
         pcode_source_date=pcode_source_date,
+        boundary=boundary,
         metadata=metadata or _meta(),
     )
 
@@ -131,6 +133,18 @@ def test_per_tab_footer_carries_snapshot_facts() -> None:
 def test_per_tab_footer_omits_pcode_when_not_tagged() -> None:
     html = render_report({"overture": _source(pcode_source_date=None)})
     assert "fieldmaps.io" not in html
+
+
+def test_per_tab_footer_includes_boundary_when_provided() -> None:
+    html = render_report(
+        {"overture": _source(boundary="geoBoundaries CGAZ ADM0 (buffered +5000m)")}
+    )
+    assert "boundary geoBoundaries CGAZ ADM0 (buffered +5000m)" in html
+
+
+def test_per_tab_footer_omits_boundary_when_absent() -> None:
+    html = render_report({"overture": _source(boundary=None)})
+    assert "boundary " not in html
 
 
 def test_render_report_omits_pcode_section_when_no_pcode_columns() -> None:

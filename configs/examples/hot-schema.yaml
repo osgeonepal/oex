@@ -22,7 +22,6 @@
 #   categories_file: configs/examples/hot-schema.yaml
 
 categories:
-  # 1. Buildings ---------------------------------------------------------------
   - name: buildings
     hdx:
       notes: |
@@ -32,7 +31,7 @@ categories:
       tags: [facilities-infrastructure, geodata]
       license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
-      caveats: OpenStreetMap data is crowd sourced and cannot be considered to be exhaustive.
+      caveats: OpenStreetMap data is crowd sourced and cannot be considered to be exhaustive
       dataset_source: OpenStreetMap contributors
     osm:
       enabled: true
@@ -40,18 +39,18 @@ categories:
         building: true
       select:
         - feature_id AS id
-        - tags['name'][1] AS name
-        - tags['name:en'][1] AS name_en
-        - tags['name:ne'][1] AS name_ne
-        - tags['building'][1] AS building
-        - tags['building:levels'][1] AS building_levels
-        - tags['building:materials'][1] AS building_materials
-        - tags['addr:full'][1] AS addr_full
-        - tags['addr:housenumber'][1] AS addr_housenumber
-        - tags['addr:street'][1] AS addr_street
-        - tags['addr:city'][1] AS addr_city
-        - tags['office'][1] AS office
-        - tags['source'][1] AS source
+        - tags['name'] AS name
+        - tags['name:en'] AS name_en
+        - tags['name:ne'] AS name_ne
+        - tags['building'] AS building
+        - tags['building:levels'] AS building_levels
+        - tags['building:materials'] AS building_materials
+        - tags['addr:full'] AS addr_full
+        - tags['addr:housenumber'] AS addr_housenumber
+        - tags['addr:street'] AS addr_street
+        - tags['addr:city'] AS addr_city
+        - tags['office'] AS office
+        - tags['source'] AS source
       where: []
     overture:
       enabled: true
@@ -60,24 +59,28 @@ categories:
       select:
         - id
         - names.primary AS name
-        - names.common->'en' AS name_en
+        - names.common->>'en' AS name_en
         - class AS building
         - num_floors AS building_levels
         - roof_material AS building_materials
         - sources[1].dataset AS source
       where: []
 
-  # 2. Roads ------------------------------------------------------------------
+    transliterate:
+      - target: name_latin
+        source: name
+        prefer: name_en
+
   - name: roads
     hdx:
       notes: |
         OpenStreetMap exports for use in GIS applications.
         This theme includes all OpenStreetMap features in this area matching:
           highway IS NOT NULL
-      tags: [facilities-infrastructure, geodata, transportation]
+      tags: [geodata, roads, transportation]
       license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
-      caveats: OpenStreetMap data is crowd sourced and cannot be considered to be exhaustive.
+      caveats: OpenStreetMap data is crowd sourced and cannot be considered to be exhaustive
       dataset_source: OpenStreetMap contributors
     osm:
       enabled: true
@@ -85,18 +88,18 @@ categories:
         highway: true
       select:
         - feature_id AS id
-        - tags['name'][1] AS name
-        - tags['name:en'][1] AS name_en
-        - tags['name:ne'][1] AS name_ne
-        - tags['highway'][1] AS highway
-        - tags['surface'][1] AS surface
-        - tags['smoothness'][1] AS smoothness
-        - tags['width'][1] AS width
-        - tags['lanes'][1] AS lanes
-        - tags['oneway'][1] AS oneway
-        - tags['bridge'][1] AS bridge
-        - tags['layer'][1] AS layer
-        - tags['source'][1] AS source
+        - tags['name'] AS name
+        - tags['name:en'] AS name_en
+        - tags['name:ne'] AS name_ne
+        - tags['highway'] AS highway
+        - tags['surface'] AS surface
+        - tags['smoothness'] AS smoothness
+        - tags['width'] AS width
+        - tags['lanes'] AS lanes
+        - tags['oneway'] AS oneway
+        - tags['bridge'] AS bridge
+        - tags['layer'] AS layer
+        - tags['source'] AS source
       where: []
     overture:
       enabled: true
@@ -105,24 +108,29 @@ categories:
       select:
         - id
         - names.primary AS name
-        - names.common->'en' AS name_en
+        - names.common->>'en' AS name_en
         - class AS highway
         - road_surface[1].value AS surface
         - sources[1].dataset AS source
       where: []
 
-  # 3. Waterways --------------------------------------------------------------
+    transliterate:
+      - target: name_latin
+        source: name
+        prefer: name_en
+
   - name: waterways
+    formats: [gpkg, shp, geojson, kml]
     hdx:
       notes: |
         OpenStreetMap exports for use in GIS applications.
         This theme includes all OpenStreetMap features in this area matching:
           waterway IS NOT NULL OR water IS NOT NULL OR
           natural IN ('water', 'wetland', 'bay')
-      tags: [environment, geodata]
+      tags: [geodata, hydrology, rivers]
       license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
-      caveats: OpenStreetMap data is crowd sourced and cannot be considered to be exhaustive.
+      caveats: OpenStreetMap data is crowd sourced and cannot be considered to be exhaustive
       dataset_source: OpenStreetMap contributors
     osm:
       enabled: true
@@ -132,19 +140,19 @@ categories:
         natural: [water, wetland, bay]
       select:
         - feature_id AS id
-        - tags['name'][1] AS name
-        - tags['name:en'][1] AS name_en
-        - tags['name:ne'][1] AS name_ne
-        - tags['waterway'][1] AS waterway
-        - tags['covered'][1] AS covered
-        - tags['width'][1] AS width
-        - tags['depth'][1] AS depth
-        - tags['layer'][1] AS layer
-        - tags['blockage'][1] AS blockage
-        - tags['tunnel'][1] AS tunnel
-        - tags['natural'][1] AS natural_class
-        - tags['water'][1] AS water
-        - tags['source'][1] AS source
+        - tags['name'] AS name
+        - tags['name:en'] AS name_en
+        - tags['name:ne'] AS name_ne
+        - tags['waterway'] AS waterway
+        - tags['covered'] AS covered
+        - tags['width'] AS width
+        - tags['depth'] AS depth
+        - tags['layer'] AS layer
+        - tags['blockage'] AS blockage
+        - tags['tunnel'] AS tunnel
+        - tags['natural'] AS natural_class
+        - tags['water'] AS water
+        - tags['source'] AS source
       where: []
     overture:
       enabled: true
@@ -153,22 +161,27 @@ categories:
       select:
         - id
         - names.primary AS name
-        - names.common->'en' AS name_en
+        - names.common->>'en' AS name_en
         - class AS waterway
         - sources[1].dataset AS source
       where: []
 
-  # 4. Railways ---------------------------------------------------------------
+    transliterate:
+      - target: name_latin
+        source: name
+        prefer: name_en
+
   - name: railways
+    formats: [gpkg, shp, geojson, kml]
     hdx:
       notes: |
         OpenStreetMap exports for use in GIS applications.
         This theme includes all OpenStreetMap features in this area matching:
           railway IN ('rail', 'station')
-      tags: [facilities-infrastructure, geodata, transportation]
+      tags: [facilities-infrastructure, geodata, railways, transportation]
       license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
-      caveats: OpenStreetMap data is crowd sourced and cannot be considered to be exhaustive.
+      caveats: OpenStreetMap data is crowd sourced and cannot be considered to be exhaustive
       dataset_source: OpenStreetMap contributors
     osm:
       enabled: true
@@ -176,32 +189,37 @@ categories:
         railway: [rail, station]
       select:
         - feature_id AS id
-        - tags['name'][1] AS name
-        - tags['name:en'][1] AS name_en
-        - tags['name:ne'][1] AS name_ne
-        - tags['railway'][1] AS railway
-        - tags['ele'][1] AS ele
-        - tags['operator:type'][1] AS operator_type
-        - tags['layer'][1] AS layer
-        - tags['addr:full'][1] AS addr_full
-        - tags['addr:city'][1] AS addr_city
-        - tags['source'][1] AS source
+        - tags['name'] AS name
+        - tags['name:en'] AS name_en
+        - tags['name:ne'] AS name_ne
+        - tags['railway'] AS railway
+        - tags['ele'] AS ele
+        - tags['operator:type'] AS operator_type
+        - tags['layer'] AS layer
+        - tags['addr:full'] AS addr_full
+        - tags['addr:city'] AS addr_city
+        - tags['source'] AS source
       where: []
     overture:
       enabled: false
 
-  # 5. Education facilities ---------------------------------------------------
+    transliterate:
+      - target: name_latin
+        source: name
+        prefer: name_en
+
   - name: education_facilities
+    formats: [gpkg, shp, geojson, kml]
     hdx:
       notes: |
         OpenStreetMap exports for use in GIS applications.
         This theme includes all OpenStreetMap features in this area matching:
           amenity IN ('kindergarten', 'school', 'college', 'university') OR
           building IN ('kindergarten', 'school', 'college', 'university')
-      tags: [education, facilities-infrastructure, geodata]
+      tags: [education facilities-schools, geodata]
       license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
-      caveats: OpenStreetMap data is crowd sourced and cannot be considered to be exhaustive.
+      caveats: OpenStreetMap data is crowd sourced and cannot be considered to be exhaustive
       dataset_source: OpenStreetMap contributors
     osm:
       enabled: true
@@ -210,16 +228,16 @@ categories:
         building: [kindergarten, school, college, university]
       select:
         - feature_id AS id
-        - tags['name'][1] AS name
-        - tags['name:en'][1] AS name_en
-        - tags['name:ne'][1] AS name_ne
-        - tags['amenity'][1] AS amenity
-        - tags['building'][1] AS building
-        - tags['operator:type'][1] AS operator_type
-        - tags['capacity:persons'][1] AS capacity_persons
-        - tags['addr:full'][1] AS addr_full
-        - tags['addr:city'][1] AS addr_city
-        - tags['source'][1] AS source
+        - tags['name'] AS name
+        - tags['name:en'] AS name_en
+        - tags['name:ne'] AS name_ne
+        - tags['amenity'] AS amenity
+        - tags['building'] AS building
+        - tags['operator:type'] AS operator_type
+        - tags['capacity:persons'] AS capacity_persons
+        - tags['addr:full'] AS addr_full
+        - tags['addr:city'] AS addr_city
+        - tags['source'] AS source
       where: []
     overture:
       enabled: true
@@ -228,25 +246,30 @@ categories:
       select:
         - id
         - names.primary AS name
-        - names.common->'en' AS name_en
+        - names.common->>'en' AS name_en
         - categories.primary AS amenity
         - addresses[1].freeform AS addr_full
         - sources[1].dataset AS source
       where:
         - "categories.primary IN ('school', 'university', 'college', 'kindergarten')"
 
-  # 6. Health facilities ------------------------------------------------------
+    transliterate:
+      - target: name_latin
+        source: name
+        prefer: name_en
+
   - name: health_facilities
+    formats: [gpkg, shp, geojson, kml]
     hdx:
       notes: |
         OpenStreetMap exports for use in GIS applications.
         This theme includes all OpenStreetMap features in this area matching:
           healthcare IS NOT NULL OR
           amenity IN ('doctors', 'dentist', 'clinic', 'hospital', 'pharmacy')
-      tags: [facilities-infrastructure, geodata, health]
+      tags: [geodata, health, health facilities]
       license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
-      caveats: OpenStreetMap data is crowd sourced and cannot be considered to be exhaustive.
+      caveats: OpenStreetMap data is crowd sourced and cannot be considered to be exhaustive
       dataset_source: OpenStreetMap contributors
     osm:
       enabled: true
@@ -255,18 +278,18 @@ categories:
         amenity: [doctors, dentist, clinic, hospital, pharmacy]
       select:
         - feature_id AS id
-        - tags['name'][1] AS name
-        - tags['name:en'][1] AS name_en
-        - tags['name:ne'][1] AS name_ne
-        - tags['amenity'][1] AS amenity
-        - tags['building'][1] AS building
-        - tags['healthcare'][1] AS healthcare
-        - tags['healthcare:speciality'][1] AS healthcare_speciality
-        - tags['operator:type'][1] AS operator_type
-        - tags['capacity:persons'][1] AS capacity_persons
-        - tags['addr:full'][1] AS addr_full
-        - tags['addr:city'][1] AS addr_city
-        - tags['source'][1] AS source
+        - tags['name'] AS name
+        - tags['name:en'] AS name_en
+        - tags['name:ne'] AS name_ne
+        - tags['amenity'] AS amenity
+        - tags['building'] AS building
+        - tags['healthcare'] AS healthcare
+        - tags['healthcare:speciality'] AS healthcare_speciality
+        - tags['operator:type'] AS operator_type
+        - tags['capacity:persons'] AS capacity_persons
+        - tags['addr:full'] AS addr_full
+        - tags['addr:city'] AS addr_city
+        - tags['source'] AS source
       where: []
     overture:
       enabled: true
@@ -275,15 +298,20 @@ categories:
       select:
         - id
         - names.primary AS name
-        - names.common->'en' AS name_en
+        - names.common->>'en' AS name_en
         - categories.primary AS amenity
         - addresses[1].freeform AS addr_full
         - sources[1].dataset AS source
       where:
         - "categories.primary IN ('hospital', 'clinic', 'doctor', 'dentist', 'pharmacy')"
 
-  # 7. Populated places -------------------------------------------------------
+    transliterate:
+      - target: name_latin
+        source: name
+        prefer: name_en
+
   - name: populated_places
+    formats: [gpkg, shp, geojson, kml]
     hdx:
       notes: |
         OpenStreetMap exports for use in GIS applications.
@@ -293,7 +321,7 @@ categories:
       tags: [geodata, populated places-settlements]
       license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
-      caveats: OpenStreetMap data is crowd sourced and cannot be considered to be exhaustive.
+      caveats: OpenStreetMap data is crowd sourced and cannot be considered to be exhaustive
       dataset_source: OpenStreetMap contributors
     osm:
       enabled: true
@@ -302,14 +330,14 @@ categories:
         landuse: [residential]
       select:
         - feature_id AS id
-        - tags['name'][1] AS name
-        - tags['name:en'][1] AS name_en
-        - tags['name:ne'][1] AS name_ne
-        - tags['place'][1] AS place
-        - tags['landuse'][1] AS landuse
-        - tags['population'][1] AS population
-        - tags['is_in'][1] AS is_in
-        - tags['source'][1] AS source
+        - tags['name'] AS name
+        - tags['name:en'] AS name_en
+        - tags['name:ne'] AS name_ne
+        - tags['place'] AS place
+        - tags['landuse'] AS landuse
+        - tags['population'] AS population
+        - tags['is_in'] AS is_in
+        - tags['source'] AS source
       where: []
     overture:
       enabled: true
@@ -318,15 +346,20 @@ categories:
       select:
         - id
         - names.primary AS name
-        - names.common->'en' AS name_en
+        - names.common->>'en' AS name_en
         - subtype AS place
         - population
         - sources[1].dataset AS source
       where:
         - "subtype = 'locality'"
 
-  # 8. Financial services -----------------------------------------------------
+    transliterate:
+      - target: name_latin
+        source: name
+        prefer: name_en
+
   - name: financial_services
+    formats: [gpkg, shp, geojson, kml]
     hdx:
       notes: |
         OpenStreetMap exports for use in GIS applications.
@@ -334,10 +367,10 @@ categories:
           amenity IN ('mobile_money_agent', 'bureau_de_change', 'bank',
                       'microfinance', 'atm', 'sacco', 'money_transfer',
                       'post_office')
-      tags: [economics, facilities-infrastructure, geodata]
+      tags: [economics, geodata]
       license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
-      caveats: OpenStreetMap data is crowd sourced and cannot be considered to be exhaustive.
+      caveats: OpenStreetMap data is crowd sourced and cannot be considered to be exhaustive
       dataset_source: OpenStreetMap contributors
     osm:
       enabled: true
@@ -345,31 +378,36 @@ categories:
         amenity: [mobile_money_agent, bureau_de_change, bank, microfinance, atm, sacco, money_transfer, post_office]
       select:
         - feature_id AS id
-        - tags['name'][1] AS name
-        - tags['name:en'][1] AS name_en
-        - tags['name:ne'][1] AS name_ne
-        - tags['amenity'][1] AS amenity
-        - tags['operator'][1] AS operator
-        - tags['network'][1] AS network
-        - tags['addr:full'][1] AS addr_full
-        - tags['addr:city'][1] AS addr_city
-        - tags['source'][1] AS source
+        - tags['name'] AS name
+        - tags['name:en'] AS name_en
+        - tags['name:ne'] AS name_ne
+        - tags['amenity'] AS amenity
+        - tags['operator'] AS operator
+        - tags['network'] AS network
+        - tags['addr:full'] AS addr_full
+        - tags['addr:city'] AS addr_city
+        - tags['source'] AS source
       where: []
     overture:
       enabled: false
 
-  # 9. Airports ---------------------------------------------------------------
+    transliterate:
+      - target: name_latin
+        source: name
+        prefer: name_en
+
   - name: airports
+    formats: [gpkg, shp, geojson, kml]
     hdx:
       notes: |
         OpenStreetMap exports for use in GIS applications.
         This theme includes all OpenStreetMap features in this area matching:
           aeroway IS NOT NULL OR building = 'aerodrome' OR
           emergency = 'landing_site' OR emergency:helipad IS NOT NULL
-      tags: [aviation, facilities-infrastructure, geodata, transportation]
+      tags: [aviation, facilities-infrastructure, geodata]
       license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
-      caveats: OpenStreetMap data is crowd sourced and cannot be considered to be exhaustive.
+      caveats: OpenStreetMap data is crowd sourced and cannot be considered to be exhaustive
       dataset_source: OpenStreetMap contributors
     osm:
       enabled: true
@@ -380,18 +418,18 @@ categories:
         emergency:helipad: true
       select:
         - feature_id AS id
-        - tags['name'][1] AS name
-        - tags['name:en'][1] AS name_en
-        - tags['name:ne'][1] AS name_ne
-        - tags['aeroway'][1] AS aeroway
-        - tags['building'][1] AS building
-        - tags['emergency'][1] AS emergency
-        - tags['emergency:helipad'][1] AS emergency_helipad
-        - tags['operator:type'][1] AS operator_type
-        - tags['capacity:persons'][1] AS capacity_persons
-        - tags['addr:full'][1] AS addr_full
-        - tags['addr:city'][1] AS addr_city
-        - tags['source'][1] AS source
+        - tags['name'] AS name
+        - tags['name:en'] AS name_en
+        - tags['name:ne'] AS name_ne
+        - tags['aeroway'] AS aeroway
+        - tags['building'] AS building
+        - tags['emergency'] AS emergency
+        - tags['emergency:helipad'] AS emergency_helipad
+        - tags['operator:type'] AS operator_type
+        - tags['capacity:persons'] AS capacity_persons
+        - tags['addr:full'] AS addr_full
+        - tags['addr:city'] AS addr_city
+        - tags['source'] AS source
       where: []
     overture:
       enabled: true
@@ -400,25 +438,30 @@ categories:
       select:
         - id
         - names.primary AS name
-        - names.common->'en' AS name_en
+        - names.common->>'en' AS name_en
         - categories.primary AS aeroway
         - addresses[1].freeform AS addr_full
         - sources[1].dataset AS source
       where:
         - "categories.primary IN ('airport', 'heliport')"
 
-  # 10. Sea ports -------------------------------------------------------------
+    transliterate:
+      - target: name_latin
+        source: name
+        prefer: name_en
+
   - name: sea_ports
+    formats: [gpkg, shp, geojson, kml]
     hdx:
       notes: |
         OpenStreetMap exports for use in GIS applications.
         This theme includes all OpenStreetMap features in this area matching:
           amenity = 'ferry_terminal' OR building = 'ferry_terminal' OR
           port IS NOT NULL
-      tags: [facilities-infrastructure, geodata, ports, transportation]
+      tags: [facilities-infrastructure, geodata, ports]
       license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
-      caveats: OpenStreetMap data is crowd sourced and cannot be considered to be exhaustive.
+      caveats: OpenStreetMap data is crowd sourced and cannot be considered to be exhaustive
       dataset_source: OpenStreetMap contributors
     osm:
       enabled: true
@@ -428,22 +471,27 @@ categories:
         port: true
       select:
         - feature_id AS id
-        - tags['name'][1] AS name
-        - tags['name:en'][1] AS name_en
-        - tags['name:ne'][1] AS name_ne
-        - tags['amenity'][1] AS amenity
-        - tags['building'][1] AS building
-        - tags['port'][1] AS port
-        - tags['operator:type'][1] AS operator_type
-        - tags['addr:full'][1] AS addr_full
-        - tags['addr:city'][1] AS addr_city
-        - tags['source'][1] AS source
+        - tags['name'] AS name
+        - tags['name:en'] AS name_en
+        - tags['name:ne'] AS name_ne
+        - tags['amenity'] AS amenity
+        - tags['building'] AS building
+        - tags['port'] AS port
+        - tags['operator:type'] AS operator_type
+        - tags['addr:full'] AS addr_full
+        - tags['addr:city'] AS addr_city
+        - tags['source'] AS source
       where: []
     overture:
       enabled: false
 
-  # 11. Points of interest ----------------------------------------------------
+    transliterate:
+      - target: name_latin
+        source: name
+        prefer: name_en
+
   - name: points_of_interest
+    formats: [gpkg, shp, geojson, kml]
     hdx:
       notes: |
         OpenStreetMap exports for use in GIS applications.
@@ -453,7 +501,7 @@ categories:
       tags: [facilities-infrastructure, geodata, points of interest-poi]
       license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
-      caveats: OpenStreetMap data is crowd sourced and cannot be considered to be exhaustive.
+      caveats: OpenStreetMap data is crowd sourced and cannot be considered to be exhaustive
       dataset_source: OpenStreetMap contributors
     osm:
       enabled: true
@@ -464,21 +512,21 @@ categories:
         tourism: true
       select:
         - feature_id AS id
-        - tags['name'][1] AS name
-        - tags['name:en'][1] AS name_en
-        - tags['name:ne'][1] AS name_ne
-        - tags['amenity'][1] AS amenity
-        - tags['man_made'][1] AS man_made
-        - tags['shop'][1] AS shop
-        - tags['tourism'][1] AS tourism
-        - tags['opening_hours'][1] AS opening_hours
-        - tags['beds'][1] AS beds
-        - tags['rooms'][1] AS rooms
-        - tags['addr:full'][1] AS addr_full
-        - tags['addr:housenumber'][1] AS addr_housenumber
-        - tags['addr:street'][1] AS addr_street
-        - tags['addr:city'][1] AS addr_city
-        - tags['source'][1] AS source
+        - tags['name'] AS name
+        - tags['name:en'] AS name_en
+        - tags['name:ne'] AS name_ne
+        - tags['amenity'] AS amenity
+        - tags['man_made'] AS man_made
+        - tags['shop'] AS shop
+        - tags['tourism'] AS tourism
+        - tags['opening_hours'] AS opening_hours
+        - tags['beds'] AS beds
+        - tags['rooms'] AS rooms
+        - tags['addr:full'] AS addr_full
+        - tags['addr:housenumber'] AS addr_housenumber
+        - tags['addr:street'] AS addr_street
+        - tags['addr:city'] AS addr_city
+        - tags['source'] AS source
       where: []
     overture:
       enabled: true
@@ -487,8 +535,69 @@ categories:
       select:
         - id
         - names.primary AS name
-        - names.common->'en' AS name_en
+        - names.common->>'en' AS name_en
         - categories.primary AS amenity
         - addresses[1].freeform AS addr_full
         - sources[1].dataset AS source
       where: []
+    transliterate:
+      - target: name_latin
+        source: name
+        prefer: name_en
+
+  - name: cultural_places
+    formats: [gpkg, shp, geojson, kml]
+    hdx:
+      notes: |
+        OpenStreetMap exports for use in GIS applications.
+        This theme includes all OpenStreetMap features in this area matching:
+          tourism IN ('museum', 'gallery', 'theatre', 'artwork', 'attraction', 'zoo', 'aquarium', 'cinema')
+          OR amenity IN ('arts_centre', 'library', 'community_centre', 'theatre', 'fountain', 'planetarium', 'public_bookcase', 'social_centre', 'stage', 'place_of_mourning', 'place_of_worship', 'cinema')
+          OR historic IS NOT NULL
+          OR heritage IS NOT NULL
+      tags: [cultural, entertainment, geodata, heritage, historic-sites]
+      license: hdx-odc-odbl
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: OpenStreetMap data is crowd sourced and cannot be considered to be exhaustive
+      dataset_source: OpenStreetMap contributors
+    osm:
+      enabled: true
+      filter:
+        tourism: [museum, gallery, theatre, artwork, attraction, zoo, aquarium, cinema]
+        amenity: [arts_centre, library, community_centre, theatre, fountain, planetarium, public_bookcase, social_centre, stage, place_of_mourning, place_of_worship, cinema]
+        historic: true
+        heritage: true
+      select:
+        - feature_id AS id
+        - tags['name'] AS name
+        - tags['name:en'] AS name_en
+        - tags['tourism'] AS tourism
+        - tags['amenity'] AS amenity
+        - tags['historic'] AS historic
+        - tags['heritage'] AS heritage
+        - tags['operator'] AS operator
+        - tags['opening_hours'] AS opening_hours
+        - tags['website'] AS website
+        - tags['description'] AS description
+        - tags['capacity'] AS capacity
+        - tags['screen'] AS screen
+      where: []
+    overture:
+      enabled: true
+      theme: places
+      feature_type: place
+      select:
+        - id
+        - names.primary AS name
+        - names.common->>'en' AS name_en
+        - categories.primary AS category
+        - addresses[1].freeform AS address
+        - websites[1] AS website
+        - confidence
+        - sources[1].dataset AS source
+      where:
+        - "categories.primary IN ('museum', 'gallery', 'theatre', 'artwork', 'attraction', 'zoo', 'aquarium', 'cinema', 'arts_centre', 'library', 'community_centre', 'cinema', 'place_of_worship', 'historic_site', 'monument', 'memorial', 'castle', 'fort', 'archaeological_site')"
+    transliterate:
+      - target: name_latin
+        source: name
+        prefer: name_en

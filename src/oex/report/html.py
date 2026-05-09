@@ -24,6 +24,7 @@ class SourceMetadata:
     license_url: str | None
     pcode_source_date: str | None
     metadata: MetadataReport
+    boundary: str | None = None
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -35,6 +36,7 @@ class SourceMetadata:
             "license_label": self.license_label,
             "license_url": self.license_url,
             "pcode_source_date": self.pcode_source_date,
+            "boundary": self.boundary,
             "metadata": self.metadata.to_dict(),
         }
 
@@ -60,6 +62,7 @@ class SourceMetadata:
             license_label=payload["license_label"],
             license_url=payload.get("license_url"),
             pcode_source_date=payload.get("pcode_source_date"),
+            boundary=payload.get("boundary"),
             metadata=report,
         )
 
@@ -366,6 +369,8 @@ def _render_footer(source: SourceMetadata) -> str:
         f"snapshot {escape(source.snapshot_label)}",
         f"generated {escape(source.generated_utc)}",
     ]
+    if source.boundary:
+        parts.append(f"boundary {escape(source.boundary)}")
     if source.pcode_source_date:
         parts.append(
             "p-codes from fieldmaps.io edge-matched humanitarian "

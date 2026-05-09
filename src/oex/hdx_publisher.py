@@ -5,8 +5,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from oex.config.schema import CategoryConfig, HdxConfig, RootConfig
+from oex.config.schema import CategoryConfig, HdxConfig, RootConfig, S3Config
 from oex.logging_setup import get_logger
+from oex.s3 import build_key
+from oex.s3 import upload as s3_upload
 
 logger = get_logger(__name__)
 
@@ -27,6 +29,7 @@ class PublishContext:
     metadata_json_path: Path | None = None
     combined_report_enabled: bool = False
     output_dir: Path | None = None
+    s3: S3Config | None = None
 
 
 class HdxPublisher:
@@ -130,7 +133,6 @@ class HdxPublisher:
         ok = 0
         failed: list[tuple[str, str]] = []
         for zip_path in zip_paths:
-            size_mb = zip_path.stat().st_size / (1024 * 1024)
             parts = zip_path.stem.rsplit("_", 2)
             source = parts[-2] if len(parts) >= 3 else ""
             fmt = parts[-1]
@@ -140,27 +142,20 @@ class HdxPublisher:
                 else f"{category.name} data in {fmt.upper()} format"
             )
             try:
-                if zip_path.name in existing_by_name:
-                    res = existing_by_name[zip_path.name]
-                    res["description"] = description
-                    res.set_format(fmt)
-                    res.set_file_to_upload(str(zip_path))
-                    logger.info("Updating resource %s (%.0f MB)", zip_path.name, size_mb)
-                    res.update_in_hdx()
-                else:
-                    res = Resource(
-                        {
-                            "package_id": package_id,
-                            "name": zip_path.name,
-                            "description": description,
-                        }
-                    )
-                    res.set_format(fmt)
-                    res.set_file_to_upload(str(zip_path))
-                    logger.info("Creating resource %s (%.0f MB)", zip_path.name, size_mb)
-                    res.create_in_hdx()
+                _attach_resource(
+                    package_id=package_id,
+                    existing_by_name=existing_by_name,
+                    path=zip_path,
+                    fmt=fmt,
+                    description=description,
+                    dt_name=dt_name,
+                    s3_cfg=ctx.s3,
+                    iso3=cfg.iso3,
+                    category_slug=category_slug,
+                )
                 ok += 1
             except Exception as exc:  # noqa: BLE001  per-resource boundary; reported below
+                size_mb = zip_path.stat().st_size / (1024 * 1024)
                 logger.exception("Resource upload failed for %s (%.0f MB)", zip_path.name, size_mb)
                 failed.append((zip_path.name, str(exc)))
 
@@ -173,13 +168,16 @@ class HdxPublisher:
         logger.info("Saved HDX dataset %s with %d resources", dt_name, len(zip_paths))
 
         if ctx.metadata_json_path is not None:
-            _upload_simple_resource(
+            _attach_resource(
                 package_id=package_id,
                 existing_by_name=existing_by_name,
                 path=ctx.metadata_json_path,
                 fmt="JSON",
                 description=f"{category.name} ({ctx.source_name}) feature-level metadata",
                 dt_name=dt_name,
+                s3_cfg=ctx.s3,
+                iso3=cfg.iso3,
+                category_slug=category_slug,
             )
 
         if ctx.combined_report_enabled and ctx.output_dir is not None:
@@ -190,6 +188,7 @@ class HdxPublisher:
                 cfg=cfg,
                 category_slug=category_slug,
                 output_dir=ctx.output_dir,
+                s3_cfg=ctx.s3,
             )
         return dt_name
 
@@ -202,6 +201,7 @@ class HdxPublisher:
         cfg: RootConfig,
         category_slug: str,
         output_dir: Path,
+        s3_cfg: S3Config | None,
     ) -> None:
         # HDX serves uploaded HTML with text/html + SAMEORIGIN, so the resource URL self-iframes.
         from hdx.data.dataset import Dataset
@@ -243,13 +243,16 @@ class HdxPublisher:
         )
 
         existing_by_name: dict[str, Resource] = {r["name"]: r for r in resources}
-        _upload_simple_resource(
+        _attach_resource(
             package_id=package_id,
             existing_by_name=existing_by_name,
             path=report_path,
             fmt="HTML",
             description=f"{category.name} (interactive report)",
             dt_name=dt_name,
+            s3_cfg=s3_cfg,
+            iso3=cfg.iso3,
+            category_slug=category_slug,
         )
 
         refreshed = Dataset.read_from_hdx(dt_name)
@@ -269,7 +272,7 @@ class HdxPublisher:
         refreshed.update_in_hdx()
 
 
-def _upload_simple_resource(
+def _attach_resource(
     *,
     package_id: str,
     existing_by_name: dict,
@@ -277,11 +280,59 @@ def _upload_simple_resource(
     fmt: str,
     description: str,
     dt_name: str,
+    s3_cfg: S3Config | None,
+    iso3: str,
+    category_slug: str,
 ) -> None:
     from hdx.data.resource import Resource
 
-    size_mb = path.stat().st_size / (1024 * 1024)
+    size_bytes = path.stat().st_size
+    size_mb = size_bytes / (1024 * 1024)
+    use_s3 = s3_cfg is not None and s3_cfg.enabled
     try:
+        if use_s3:
+            assert s3_cfg is not None
+            bucket = s3_cfg.bucket or os.environ.get("OEX_S3_BUCKET", "")
+            prefix = s3_cfg.prefix or os.environ.get("OEX_S3_PREFIX", "")
+            region = s3_cfg.region or os.environ.get("OEX_S3_REGION", "")
+            endpoint_url = s3_cfg.endpoint_url or os.environ.get("OEX_S3_ENDPOINT_URL")
+            if not bucket:
+                raise ValueError(
+                    "output.s3.enabled is true but no bucket given via "
+                    "output.s3.bucket or OEX_S3_BUCKET"
+                )
+            key = build_key(prefix, iso3, category_slug, path.name)
+            url = s3_upload(
+                path,
+                bucket=bucket,
+                key=key,
+                region=region,
+                endpoint_url=endpoint_url,
+                acl=s3_cfg.acl,
+            )
+            logger.info("Uploaded %s to s3://%s/%s (%.2f MB)", path.name, bucket, key, size_mb)
+            if path.name in existing_by_name:
+                res = existing_by_name[path.name]
+                res["description"] = description
+                res["url"] = url
+                res["url_type"] = ""
+                res["size"] = size_bytes
+                res.set_format(fmt)
+                res.update_in_hdx()
+            else:
+                res = Resource(
+                    {
+                        "package_id": package_id,
+                        "name": path.name,
+                        "description": description,
+                        "url": url,
+                        "size": size_bytes,
+                    }
+                )
+                res.set_format(fmt)
+                res.create_in_hdx()
+            return
+
         if path.name in existing_by_name:
             res = existing_by_name[path.name]
             res["description"] = description
@@ -302,7 +353,7 @@ def _upload_simple_resource(
             logger.info("Creating resource %s (%.2f MB)", path.name, size_mb)
             res.create_in_hdx()
     except Exception as exc:
-        raise RuntimeError(f"HDX dataset {dt_name}: failed to upload {path.name}: {exc}") from exc
+        raise RuntimeError(f"HDX dataset {dt_name}: failed to attach {path.name}: {exc}") from exc
 
 
 def _download_json(url: str, *, timeout: float = 60.0) -> dict:
