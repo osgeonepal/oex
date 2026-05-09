@@ -29,11 +29,9 @@ categories:
 
         OpenStreetMap is a free, collaborative world map built by volunteers. Completeness varies by region: urban areas are usually well-mapped, remote areas may be incomplete. Cross-check critical decisions with local field knowledge.
 
-        |   |   |
-        |---|---|
-        | **Source** | [OpenStreetMap](https://www.openstreetmap.org) |
-        | **OSM tags** | [Key:building](https://wiki.openstreetmap.org/wiki/Key:building) |
-        | **Part of** | [HOT exports on HDX](https://data.humdata.org/organization/hot) by the [Humanitarian OpenStreetMap Team](https://www.hotosm.org/en/) |
+        - Source: [OpenStreetMap](https://www.openstreetmap.org)
+        - OSM tags: [Key:building](https://wiki.openstreetmap.org/wiki/Key:building)
+        - Part of: [HOT exports on HDX](https://data.humdata.org/organization/hot) by the [Humanitarian OpenStreetMap Team](https://www.hotosm.org/en/)
       tags: [facilities-infrastructure, geodata]
       license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
@@ -83,11 +81,9 @@ categories:
 
         OpenStreetMap is a free, collaborative world map built by volunteers. Completeness varies by region: urban areas are usually well-mapped, remote areas may be incomplete. Cross-check critical decisions with local field knowledge.
 
-        |   |   |
-        |---|---|
-        | **Source** | [OpenStreetMap](https://www.openstreetmap.org) |
-        | **OSM tags** | [Key:highway](https://wiki.openstreetmap.org/wiki/Key:highway) |
-        | **Part of** | [HOT exports on HDX](https://data.humdata.org/organization/hot) by the [Humanitarian OpenStreetMap Team](https://www.hotosm.org/en/) |
+        - Source: [OpenStreetMap](https://www.openstreetmap.org)
+        - OSM tags: [Key:highway](https://wiki.openstreetmap.org/wiki/Key:highway)
+        - Part of: [HOT exports on HDX](https://data.humdata.org/organization/hot) by the [Humanitarian OpenStreetMap Team](https://www.hotosm.org/en/)
       tags: [geodata, roads, transportation]
       license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
@@ -137,11 +133,9 @@ categories:
 
         OpenStreetMap is a free, collaborative world map built by volunteers. Completeness varies by region: urban areas are usually well-mapped, remote areas may be incomplete. Cross-check critical decisions with local field knowledge.
 
-        |   |   |
-        |---|---|
-        | **Source** | [OpenStreetMap](https://www.openstreetmap.org) |
-        | **OSM tags** | [Key:waterway](https://wiki.openstreetmap.org/wiki/Key:waterway), [Key:water](https://wiki.openstreetmap.org/wiki/Key:water), [Key:natural](https://wiki.openstreetmap.org/wiki/Key:natural) |
-        | **Part of** | [HOT exports on HDX](https://data.humdata.org/organization/hot) by the [Humanitarian OpenStreetMap Team](https://www.hotosm.org/en/) |
+        - Source: [OpenStreetMap](https://www.openstreetmap.org)
+        - OSM tags: [Key:waterway](https://wiki.openstreetmap.org/wiki/Key:waterway), [Key:water](https://wiki.openstreetmap.org/wiki/Key:water), [Key:natural](https://wiki.openstreetmap.org/wiki/Key:natural)
+        - Part of: [HOT exports on HDX](https://data.humdata.org/organization/hot) by the [Humanitarian OpenStreetMap Team](https://www.hotosm.org/en/)
       tags: [geodata, hydrology, rivers]
       license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
@@ -193,11 +187,9 @@ categories:
 
         OpenStreetMap is a free, collaborative world map built by volunteers. Completeness varies by region: urban areas are usually well-mapped, remote areas may be incomplete. Cross-check critical decisions with local field knowledge.
 
-        |   |   |
-        |---|---|
-        | **Source** | [OpenStreetMap](https://www.openstreetmap.org) |
-        | **OSM tags** | [Key:railway](https://wiki.openstreetmap.org/wiki/Key:railway) |
-        | **Part of** | [HOT exports on HDX](https://data.humdata.org/organization/hot) by the [Humanitarian OpenStreetMap Team](https://www.hotosm.org/en/) |
+        - Source: [OpenStreetMap](https://www.openstreetmap.org)
+        - OSM tags: [Key:railway](https://wiki.openstreetmap.org/wiki/Key:railway)
+        - Part of: [HOT exports on HDX](https://data.humdata.org/organization/hot) by the [Humanitarian OpenStreetMap Team](https://www.hotosm.org/en/)
       tags: [facilities-infrastructure, geodata, railways, transportation]
       license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
@@ -235,11 +227,9 @@ categories:
 
         OpenStreetMap is a free, collaborative world map built by volunteers. Completeness varies by region: urban areas are usually well-mapped, remote areas may be incomplete. Cross-check critical decisions with local field knowledge.
 
-        |   |   |
-        |---|---|
-        | **Source** | [OpenStreetMap](https://www.openstreetmap.org) |
-        | **OSM tags** | [Key:amenity](https://wiki.openstreetmap.org/wiki/Key:amenity), [Key:building](https://wiki.openstreetmap.org/wiki/Key:building) |
-        | **Part of** | [HOT exports on HDX](https://data.humdata.org/organization/hot) by the [Humanitarian OpenStreetMap Team](https://www.hotosm.org/en/) |
+        - Source: [OpenStreetMap](https://www.openstreetmap.org)
+        - OSM tags: [Key:amenity](https://wiki.openstreetmap.org/wiki/Key:amenity), [Key:building](https://wiki.openstreetmap.org/wiki/Key:building)
+        - Part of: [HOT exports on HDX](https://data.humdata.org/organization/hot) by the [Humanitarian OpenStreetMap Team](https://www.hotosm.org/en/)
       tags: [education facilities-schools, geodata]
       license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
@@ -289,11 +279,9 @@ categories:
 
         OpenStreetMap is a free, collaborative world map built by volunteers. Completeness varies by region: urban areas are usually well-mapped, remote areas may be incomplete. Cross-check critical decisions with local field knowledge.
 
-        |   |   |
-        |---|---|
-        | **Source** | [OpenStreetMap](https://www.openstreetmap.org) |
-        | **OSM tags** | [Key:amenity](https://wiki.openstreetmap.org/wiki/Key:amenity), [Key:healthcare](https://wiki.openstreetmap.org/wiki/Key:healthcare) |
-        | **Part of** | [HOT exports on HDX](https://data.humdata.org/organization/hot) by the [Humanitarian OpenStreetMap Team](https://www.hotosm.org/en/) |
+        - Source: [OpenStreetMap](https://www.openstreetmap.org)
+        - OSM tags: [Key:amenity](https://wiki.openstreetmap.org/wiki/Key:amenity), [Key:healthcare](https://wiki.openstreetmap.org/wiki/Key:healthcare)
+        - Part of: [HOT exports on HDX](https://data.humdata.org/organization/hot) by the [Humanitarian OpenStreetMap Team](https://www.hotosm.org/en/)
       tags: [geodata, health, health facilities]
       license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
@@ -345,11 +333,9 @@ categories:
 
         OpenStreetMap is a free, collaborative world map built by volunteers. Completeness varies by region: urban areas are usually well-mapped, remote areas may be incomplete. Cross-check critical decisions with local field knowledge.
 
-        |   |   |
-        |---|---|
-        | **Source** | [OpenStreetMap](https://www.openstreetmap.org) |
-        | **OSM tags** | [Key:place](https://wiki.openstreetmap.org/wiki/Key:place), [Key:landuse](https://wiki.openstreetmap.org/wiki/Key:landuse) |
-        | **Part of** | [HOT exports on HDX](https://data.humdata.org/organization/hot) by the [Humanitarian OpenStreetMap Team](https://www.hotosm.org/en/) |
+        - Source: [OpenStreetMap](https://www.openstreetmap.org)
+        - OSM tags: [Key:place](https://wiki.openstreetmap.org/wiki/Key:place), [Key:landuse](https://wiki.openstreetmap.org/wiki/Key:landuse)
+        - Part of: [HOT exports on HDX](https://data.humdata.org/organization/hot) by the [Humanitarian OpenStreetMap Team](https://www.hotosm.org/en/)
       tags: [geodata, populated places-settlements]
       license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
@@ -397,11 +383,9 @@ categories:
 
         OpenStreetMap is a free, collaborative world map built by volunteers. Completeness varies by region: urban areas are usually well-mapped, remote areas may be incomplete. Cross-check critical decisions with local field knowledge.
 
-        |   |   |
-        |---|---|
-        | **Source** | [OpenStreetMap](https://www.openstreetmap.org) |
-        | **OSM tags** | [Key:amenity](https://wiki.openstreetmap.org/wiki/Key:amenity) |
-        | **Part of** | [HOT exports on HDX](https://data.humdata.org/organization/hot) by the [Humanitarian OpenStreetMap Team](https://www.hotosm.org/en/) |
+        - Source: [OpenStreetMap](https://www.openstreetmap.org)
+        - OSM tags: [Key:amenity](https://wiki.openstreetmap.org/wiki/Key:amenity)
+        - Part of: [HOT exports on HDX](https://data.humdata.org/organization/hot) by the [Humanitarian OpenStreetMap Team](https://www.hotosm.org/en/)
       tags: [economics, geodata]
       license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
@@ -438,11 +422,9 @@ categories:
 
         OpenStreetMap is a free, collaborative world map built by volunteers. Completeness varies by region: urban areas are usually well-mapped, remote areas may be incomplete. Cross-check critical decisions with local field knowledge.
 
-        |   |   |
-        |---|---|
-        | **Source** | [OpenStreetMap](https://www.openstreetmap.org) |
-        | **OSM tags** | [Key:aeroway](https://wiki.openstreetmap.org/wiki/Key:aeroway), [Key:building](https://wiki.openstreetmap.org/wiki/Key:building), [Key:emergency](https://wiki.openstreetmap.org/wiki/Key:emergency) |
-        | **Part of** | [HOT exports on HDX](https://data.humdata.org/organization/hot) by the [Humanitarian OpenStreetMap Team](https://www.hotosm.org/en/) |
+        - Source: [OpenStreetMap](https://www.openstreetmap.org)
+        - OSM tags: [Key:aeroway](https://wiki.openstreetmap.org/wiki/Key:aeroway), [Key:building](https://wiki.openstreetmap.org/wiki/Key:building), [Key:emergency](https://wiki.openstreetmap.org/wiki/Key:emergency)
+        - Part of: [HOT exports on HDX](https://data.humdata.org/organization/hot) by the [Humanitarian OpenStreetMap Team](https://www.hotosm.org/en/)
       tags: [aviation, facilities-infrastructure, geodata]
       license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
@@ -496,11 +478,9 @@ categories:
 
         OpenStreetMap is a free, collaborative world map built by volunteers. Completeness varies by region: urban areas are usually well-mapped, remote areas may be incomplete. Cross-check critical decisions with local field knowledge.
 
-        |   |   |
-        |---|---|
-        | **Source** | [OpenStreetMap](https://www.openstreetmap.org) |
-        | **OSM tags** | [Key:amenity](https://wiki.openstreetmap.org/wiki/Key:amenity), [Key:building](https://wiki.openstreetmap.org/wiki/Key:building), [Key:port](https://wiki.openstreetmap.org/wiki/Key:port) |
-        | **Part of** | [HOT exports on HDX](https://data.humdata.org/organization/hot) by the [Humanitarian OpenStreetMap Team](https://www.hotosm.org/en/) |
+        - Source: [OpenStreetMap](https://www.openstreetmap.org)
+        - OSM tags: [Key:amenity](https://wiki.openstreetmap.org/wiki/Key:amenity), [Key:building](https://wiki.openstreetmap.org/wiki/Key:building), [Key:port](https://wiki.openstreetmap.org/wiki/Key:port)
+        - Part of: [HOT exports on HDX](https://data.humdata.org/organization/hot) by the [Humanitarian OpenStreetMap Team](https://www.hotosm.org/en/)
       tags: [facilities-infrastructure, geodata, ports]
       license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
@@ -540,11 +520,9 @@ categories:
 
         OpenStreetMap is a free, collaborative world map built by volunteers. Completeness varies by region: urban areas are usually well-mapped, remote areas may be incomplete. Cross-check critical decisions with local field knowledge.
 
-        |   |   |
-        |---|---|
-        | **Source** | [OpenStreetMap](https://www.openstreetmap.org) |
-        | **OSM tags** | [Key:amenity](https://wiki.openstreetmap.org/wiki/Key:amenity), [Key:shop](https://wiki.openstreetmap.org/wiki/Key:shop), [Key:tourism](https://wiki.openstreetmap.org/wiki/Key:tourism), [Key:man_made](https://wiki.openstreetmap.org/wiki/Key:man_made) |
-        | **Part of** | [HOT exports on HDX](https://data.humdata.org/organization/hot) by the [Humanitarian OpenStreetMap Team](https://www.hotosm.org/en/) |
+        - Source: [OpenStreetMap](https://www.openstreetmap.org)
+        - OSM tags: [Key:amenity](https://wiki.openstreetmap.org/wiki/Key:amenity), [Key:shop](https://wiki.openstreetmap.org/wiki/Key:shop), [Key:tourism](https://wiki.openstreetmap.org/wiki/Key:tourism), [Key:man_made](https://wiki.openstreetmap.org/wiki/Key:man_made)
+        - Part of: [HOT exports on HDX](https://data.humdata.org/organization/hot) by the [Humanitarian OpenStreetMap Team](https://www.hotosm.org/en/)
       tags: [facilities-infrastructure, geodata, points of interest-poi]
       license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
@@ -599,11 +577,9 @@ categories:
 
         OpenStreetMap is a free, collaborative world map built by volunteers. Completeness varies by region: urban areas are usually well-mapped, remote areas may be incomplete. Cross-check critical decisions with local field knowledge.
 
-        |   |   |
-        |---|---|
-        | **Source** | [OpenStreetMap](https://www.openstreetmap.org) |
-        | **OSM tags** | [Key:tourism](https://wiki.openstreetmap.org/wiki/Key:tourism), [Key:amenity](https://wiki.openstreetmap.org/wiki/Key:amenity), [Key:historic](https://wiki.openstreetmap.org/wiki/Key:historic), [Key:heritage](https://wiki.openstreetmap.org/wiki/Key:heritage) |
-        | **Part of** | [HOT exports on HDX](https://data.humdata.org/organization/hot) by the [Humanitarian OpenStreetMap Team](https://www.hotosm.org/en/) |
+        - Source: [OpenStreetMap](https://www.openstreetmap.org)
+        - OSM tags: [Key:tourism](https://wiki.openstreetmap.org/wiki/Key:tourism), [Key:amenity](https://wiki.openstreetmap.org/wiki/Key:amenity), [Key:historic](https://wiki.openstreetmap.org/wiki/Key:historic), [Key:heritage](https://wiki.openstreetmap.org/wiki/Key:heritage)
+        - Part of: [HOT exports on HDX](https://data.humdata.org/organization/hot) by the [Humanitarian OpenStreetMap Team](https://www.hotosm.org/en/)
       tags: [cultural, entertainment, geodata, heritage, historic-sites]
       license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
