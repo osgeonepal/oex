@@ -16,6 +16,9 @@ class HdxConfig:
     user_agent: str = "oex"
     methodology: str = "Other"
     methodology_other: str = "Open Source Geographic information"
+    # Template for the HDX title. Supports {country}, {category}, {iso3}.
+    # Empty falls back to the per-category title or "<category> of <iso3>".
+    title_template: str = ""
     # Destructive: deletes every existing resource on the dataset before upload.
     purge_existing_resources: bool = False
 

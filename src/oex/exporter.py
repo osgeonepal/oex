@@ -145,6 +145,11 @@ class Exporter:
         publisher: HdxPublisher | None = None
         if self._cfg.hdx.push:
             publisher = HdxPublisher(self._cfg.hdx)
+            if self._cfg.output.s3.enabled:
+                from oex.s3 import preflight as s3_preflight
+
+                logger.info("[%s/%s] s3: preflight check", iso, self._runner.name)
+                s3_preflight(self._cfg.output.s3)
 
         out_root = Path(self._cfg.output.dir) / self._cfg.iso3.lower() / self._runner.name
         out_root.mkdir(parents=True, exist_ok=True)

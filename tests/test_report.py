@@ -225,9 +225,9 @@ def test_ratio_bar_segments_reflect_bucket_counts() -> None:
     meta = _meta(
         columns=[
             ColumnReport("a", "VARCHAR", 0, 0.0, 1, []),
-            ColumnReport("b", "VARCHAR", 19, 19.0, 1, []),
-            ColumnReport("c", "VARCHAR", 35, 35.0, 1, []),
-            ColumnReport("d", "VARCHAR", 80, 80.0, 1, []),
+            ColumnReport("b", "VARCHAR", 10, 10.0, 1, []),
+            ColumnReport("c", "VARCHAR", 70, 70.0, 1, []),
+            ColumnReport("d", "VARCHAR", 90, 90.0, 1, []),
         ]
     )
     html = render_report({"overture": _source(metadata=meta)})
@@ -240,18 +240,18 @@ def test_ratio_legend_carries_per_bucket_counts() -> None:
     meta = _meta(
         columns=[
             ColumnReport("a", "VARCHAR", 0, 0.0, 1, []),
-            ColumnReport("b", "VARCHAR", 35, 35.0, 1, []),
-            ColumnReport("c", "VARCHAR", 80, 80.0, 1, []),
+            ColumnReport("b", "VARCHAR", 70, 70.0, 1, []),
+            ColumnReport("c", "VARCHAR", 90, 90.0, 1, []),
             ColumnReport("d", "VARCHAR", 95, 95.0, 1, []),
         ]
     )
     html = render_report({"overture": _source(metadata=meta)})
-    assert "1 over 80% filled" in html
-    assert "1 between 50 and 80%" in html
-    assert "2 under 50%" in html
+    assert "1 well-populated (50% or more)" in html
+    assert "1 partial (25 to 50%)" in html
+    assert "2 rare (under 25%)" in html
 
 
-def test_quality_caption_when_some_columns_are_sparse() -> None:
+def test_quality_caption_when_some_columns_are_well_populated() -> None:
     meta = _meta(
         columns=[
             ColumnReport("a", "VARCHAR", 0, 0.0, 1, []),
@@ -260,10 +260,10 @@ def test_quality_caption_when_some_columns_are_sparse() -> None:
         ]
     )
     html = render_report({"overture": _source(metadata=meta)})
-    assert "2 of 3 attribute columns are under 80% filled" in html
+    assert "1 of 3 attribute columns are well-populated" in html
 
 
-def test_quality_caption_when_all_columns_are_well_filled() -> None:
+def test_quality_caption_when_all_columns_are_well_populated() -> None:
     meta = _meta(
         columns=[
             ColumnReport("a", "VARCHAR", 0, 0.0, 1, []),
@@ -271,7 +271,18 @@ def test_quality_caption_when_all_columns_are_well_filled() -> None:
         ]
     )
     html = render_report({"overture": _source(metadata=meta)})
-    assert "All 2 attribute columns are at least 80% filled" in html
+    assert "All 2 attribute columns are well-populated" in html
+
+
+def test_quality_caption_when_no_columns_are_well_populated() -> None:
+    meta = _meta(
+        columns=[
+            ColumnReport("a", "VARCHAR", 80, 80.0, 1, []),
+            ColumnReport("b", "VARCHAR", 90, 90.0, 1, []),
+        ]
+    )
+    html = render_report({"overture": _source(metadata=meta)})
+    assert "None of the 2 attribute columns are well-populated" in html
 
 
 def test_quality_block_omitted_when_no_attribute_columns() -> None:

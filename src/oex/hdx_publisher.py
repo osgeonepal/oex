@@ -8,6 +8,7 @@ from pathlib import Path
 from oex.config.schema import CategoryConfig, HdxConfig, RootConfig, S3Config
 from oex.logging_setup import get_logger
 from oex.s3 import build_key
+from oex.s3 import resolve as s3_resolve
 from oex.s3 import upload as s3_upload
 
 logger = get_logger(__name__)
@@ -19,6 +20,35 @@ _HDX_SITE_URLS = {
 }
 
 _HDX_SHORT_SOURCE = {"osm": "OpenStreetMap", "overture": "Overture"}
+
+# Filler words kept lowercase in title-cased category names
+# e.g. "Points of Interest" not "Points Of Interest".
+_TITLE_LOWER_WORDS = {"a", "an", "and", "at", "by", "for", "in", "of", "on", "or", "the", "to"}
+
+
+def _title_case_category(name: str) -> str:
+    words = name.replace("_", " ").split()
+    return " ".join(
+        w.lower() if i > 0 and w.lower() in _TITLE_LOWER_WORDS else w.capitalize()
+        for i, w in enumerate(words)
+    )
+
+
+def _country_name(iso3: str) -> str:
+    import pycountry
+
+    record = pycountry.countries.get(alpha_3=iso3.upper())
+    return record.name if record else iso3.upper()
+
+
+def _resolve_title(cfg: RootConfig, category: CategoryConfig) -> str:
+    if cfg.hdx.title_template:
+        return cfg.hdx.title_template.format(
+            country=_country_name(cfg.iso3),
+            category=_title_case_category(category.name),
+            iso3=cfg.iso3.upper(),
+        )
+    return f"{category.name} of {cfg.dataset_name or cfg.iso3.upper()}"
 
 
 @dataclass
@@ -70,7 +100,7 @@ class HdxPublisher:
 
         category_slug = _slugify(category.name)
         dt_name = f"{cfg.key}_{cfg.iso3.lower()}_{category_slug}"
-        title = category.hdx.title or f"{category.name} of {cfg.dataset_name or cfg.iso3.upper()}"
+        title = category.hdx.title or _resolve_title(cfg, category)
 
         hdx_source = category.hdx.dataset_source or _HDX_SHORT_SOURCE.get(
             ctx.source_name, ctx.dataset_source
@@ -132,7 +162,9 @@ class HdxPublisher:
 
         ok = 0
         failed: list[tuple[str, str]] = []
-        for zip_path in zip_paths:
+        # Largest resource first so HDX's default-resource preview lands on
+        # the richest format instead of a sparse one (e.g., lines over points).
+        for zip_path in sorted(zip_paths, key=lambda p: p.stat().st_size, reverse=True):
             parts = zip_path.stem.rsplit("_", 2)
             source = parts[-2] if len(parts) >= 3 else ""
             fmt = parts[-1]
@@ -292,10 +324,7 @@ def _attach_resource(
     try:
         if use_s3:
             assert s3_cfg is not None
-            bucket = s3_cfg.bucket or os.environ.get("OEX_S3_BUCKET", "")
-            prefix = s3_cfg.prefix or os.environ.get("OEX_S3_PREFIX", "")
-            region = s3_cfg.region or os.environ.get("OEX_S3_REGION", "")
-            endpoint_url = s3_cfg.endpoint_url or os.environ.get("OEX_S3_ENDPOINT_URL")
+            bucket, prefix, region, endpoint_url, acl = s3_resolve(s3_cfg)
             if not bucket:
                 raise ValueError(
                     "output.s3.enabled is true but no bucket given via "
@@ -308,7 +337,7 @@ def _attach_resource(
                 key=key,
                 region=region,
                 endpoint_url=endpoint_url,
-                acl=s3_cfg.acl,
+                acl=acl,
             )
             logger.info("Uploaded %s to s3://%s/%s (%.2f MB)", path.name, bucket, key, size_mb)
             if path.name in existing_by_name:

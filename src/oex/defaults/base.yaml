@@ -56,6 +56,7 @@ hdx:
   user_agent: oex
   methodology: Other
   methodology_other: Open Source Geographic information
+  title_template: ""
   # Destructive: deletes every existing resource on the dataset before upload.
   purge_existing_resources: false
 

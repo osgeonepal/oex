@@ -9,8 +9,8 @@ from oex.metadata import ColumnReport, MetadataReport
 _PCODE_PREFIX = "adm"
 _PCODE_SUFFIX = "_pcode"
 _SOURCE_COL = "source"
-_COVERAGE_HIGH = 80.0
-_COVERAGE_MID = 50.0
+_COVERAGE_HIGH = 50.0
+_COVERAGE_MID = 25.0
 
 
 @dataclass(frozen=True)
@@ -225,11 +225,12 @@ def _render_quality(metadata: MetadataReport) -> str:
         else:
             low += 1
     total = len(metadata.columns)
-    sparse = mid + low
-    if sparse == 0:
-        caption = f"All {total} attribute columns are at least 80% filled."
+    if high == total:
+        caption = f"All {total} attribute columns are well-populated."
+    elif high == 0:
+        caption = f"None of the {total} attribute columns are well-populated."
     else:
-        caption = f"{sparse} of {total} attribute columns are under 80% filled."
+        caption = f"{high} of {total} attribute columns are well-populated."
     return (
         '<div class="quality">'
         f'<div class="quality-caption">{caption}</div>'
@@ -239,9 +240,9 @@ def _render_quality(metadata: MetadataReport) -> str:
         f'<i class="qc-low"  style="width:{low / total * 100:.2f}%"></i>'
         "</div>"
         '<div class="quality-legend">'
-        f'<span><span class="swatch qc-high"></span>{high} over 80% filled</span>'
-        f'<span><span class="swatch qc-mid"></span>{mid} between 50 and 80%</span>'
-        f'<span><span class="swatch qc-low"></span>{low} under 50%</span>'
+        f'<span><span class="swatch qc-high"></span>{high} well-populated (50% or more)</span>'
+        f'<span><span class="swatch qc-mid"></span>{mid} partial (25 to 50%)</span>'
+        f'<span><span class="swatch qc-low"></span>{low} rare (under 25%)</span>'
         "</div>"
         "</div>"
     )

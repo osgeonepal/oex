@@ -17,7 +17,7 @@ iso3: ""
 key: hotosm
 dataset_name: null
 subnational: false
-frequency: yearly
+frequency: monthly
 
 boundary:
   geom: null
@@ -33,10 +33,14 @@ output:
   metadata: true
   report:
     enabled: true
+  s3:
+    enabled: true
+    prefix: "ISO3"
+    acl: public-read
 
 source:
-  osm:
-    engine: planet_parquet
+  # osm:
+  #   engine: planet_parquet
   pcodes:
     enabled: true
 
@@ -45,6 +49,7 @@ hdx:
   site: prod
   user_agent: hotosm-oex
   methodology_other: Volunteered geographic information
+  title_template: "{country} {category} (OpenStreetMap Export)"
   purge_existing_resources: true
 
 categories_file: configs/examples/hot-schema.yaml

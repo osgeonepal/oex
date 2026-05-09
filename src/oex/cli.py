@@ -125,11 +125,12 @@ def _resolve_args(
     configs_dir: Path | None,
     config: Path | None,
 ) -> tuple[str | None, str | None]:
-    # When --config or --configs-dir is given, the first positional is the theme,
-    # not the iso3 (iso3 comes from the YAML).
-    if configs_dir is not None or config is not None:
-        return None, arg1 if arg2 is None else arg2
-    return arg1, arg2
+    if configs_dir is None and config is None:
+        return arg1, arg2
+    # Uppercase 3-letter alpha is the ISO3 convention; everything else is theme.
+    if arg1 is not None and len(arg1) == 3 and arg1.isalpha() and arg1.isupper():
+        return arg1, arg2
+    return None, arg1 if arg2 is None else arg2
 
 
 @app.command("overture")
