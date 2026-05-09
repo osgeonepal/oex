@@ -98,7 +98,7 @@ categories:
       select:
         - id
         - names.primary AS name
-        - names.common->'en' AS name_en
+        - names.common->>'en' AS name_en
         - class
         - subtype
         - height
@@ -145,7 +145,7 @@ categories:
       select:
         - id
         - names.primary AS name
-        - names.common->'en' AS name_en
+        - names.common->>'en' AS name_en
         - class
         - subclass
         - subtype
@@ -180,7 +180,7 @@ categories:
       select:
         - id
         - names.primary AS name
-        - names.common->'en' AS name_en
+        - names.common->>'en' AS name_en
         - categories.primary AS category
         - addresses[1].freeform AS address
         - phones[1] AS phone
@@ -219,7 +219,7 @@ categories:
       select:
         - id
         - names.primary AS name
-        - names.common->'en' AS name_en
+        - names.common->>'en' AS name_en
         - categories.primary AS category
         - addresses[1].freeform AS address
         - phones[1] AS phone
@@ -255,7 +255,7 @@ categories:
       select:
         - id
         - names.primary AS name
-        - names.common->'en' AS name_en
+        - names.common->>'en' AS name_en
         - subtype
         - class
         - is_salt
@@ -291,7 +291,7 @@ categories:
       select:
         - id
         - names.primary AS name
-        - names.common->'en' AS name_en
+        - names.common->>'en' AS name_en
         - subtype
         - class
         - surface
@@ -324,7 +324,7 @@ categories:
       select:
         - id
         - names.primary AS name
-        - names.common->'en' AS name_en
+        - names.common->>'en' AS name_en
         - categories.primary AS category
         - addresses[1].freeform AS address
         - websites[1] AS website
@@ -363,7 +363,7 @@ categories:
       select:
         - id
         - names.primary AS name
-        - names.common->'en' AS name_en
+        - names.common->>'en' AS name_en
         - population
         - region
         - wikidata

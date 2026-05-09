@@ -32,6 +32,17 @@ def _quote(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
+def _require_varchar(table: str, column: str, schema: dict[str, str], role: str) -> None:
+    col_type = schema[column]
+    if col_type.upper().startswith("VARCHAR"):
+        return
+    raise ValueError(
+        f"transliterate {role} column {column!r} on table {table} has type "
+        f"{col_type!r}; expected VARCHAR. For Overture name fields use "
+        f"`names.common->>'en'` (text) instead of `names.common->'en'` (JSON)."
+    )
+
+
 def transliterate_table(
     conn: duckdb.DuckDBPyConnection,
     *,
@@ -41,7 +52,8 @@ def transliterate_table(
     if not rules:
         return
     _ensure_udf(conn)
-    existing = {row[0] for row in conn.execute(f"DESCRIBE {table}").fetchall()}
+    schema = {row[0]: row[1] for row in conn.execute(f"DESCRIBE {table}").fetchall()}
+    existing = set(schema)
     for rule in rules:
         if not rule.target or not rule.source:
             raise ValueError(f"transliterate rule needs both target and source: {rule!r}")
@@ -55,6 +67,9 @@ def transliterate_table(
                 f"transliterate prefer column {rule.prefer!r} not in table {table}; "
                 f"available: {sorted(existing)}"
             )
+        _require_varchar(table, rule.source, schema, "source")
+        if rule.prefer is not None:
+            _require_varchar(table, rule.prefer, schema, "prefer")
 
         target_q = _quote(rule.target)
         source_q = _quote(rule.source)

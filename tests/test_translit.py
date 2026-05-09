@@ -111,6 +111,21 @@ def test_transliterate_raises_on_unknown_prefer(
         )
 
 
+def test_transliterate_rejects_json_typed_source_with_actionable_hint(
+    conn: duckdb.DuckDBPyConnection,
+) -> None:
+    conn.execute("CREATE TABLE features (name VARCHAR, name_en JSON)")
+    conn.execute("INSERT INTO features VALUES ('Foo', '\"Foo\"')")
+    with pytest.raises(ValueError, match=r"->>'en'"):
+        transliterate_table(
+            conn,
+            table="features",
+            rules=[
+                TransliterateRule(target="name_latin", source="name", prefer="name_en"),
+            ],
+        )
+
+
 def test_transliterate_empty_rules_is_a_noop(conn: duckdb.DuckDBPyConnection) -> None:
     _seed(conn)
     cols_before = {r[0] for r in conn.execute("DESCRIBE features").fetchall()}
