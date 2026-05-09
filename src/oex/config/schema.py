@@ -84,6 +84,25 @@ class OsmSourceConfig:
 
 
 @dataclass
+class PcodesSourceConfig:
+    """P-code tagging via fieldmaps.io edge-matched humanitarian admin polygons.
+
+    When enabled, every output feature gets `adm{N}_pcode` and `adm{N}_name`
+    columns for N in `levels`, assigned by centroid via DuckDB ST_Within.
+    Missing levels are left NULL (logged as a warning at runtime).
+    """
+
+    enabled: bool = False
+    cache_dir: str = "data/pcodes"
+    levels: list[int] = field(default_factory=lambda: [1, 2, 3, 4])
+    manifest_url: str = "https://data.fieldmaps.io/edge-matched.json"
+    parquet_url_template: str = (
+        "https://data.fieldmaps.io/edge-matched/humanitarian/intl/adm{level}_polygons.parquet"
+    )
+    manifest_group: str = "humanitarian"
+
+
+@dataclass
 class CategoryHdx:
     title: str | None = None
     notes: str = "Vector data export."
@@ -146,6 +165,7 @@ class RootConfig:
         default_factory=lambda: {
             "overture": OvertureSourceConfig(),
             "osm": OsmSourceConfig(),
+            "pcodes": PcodesSourceConfig(),
         }
     )
     categories: list[CategoryConfig] = field(default_factory=list)

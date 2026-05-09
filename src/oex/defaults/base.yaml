@@ -62,6 +62,13 @@ source:
     pbf_url: https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf
     md5_url: https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf.md5
     keep_pbf: false
+  pcodes:
+    enabled: false
+    cache_dir: data/pcodes
+    levels: [1, 2, 3, 4]
+    manifest_url: https://data.fieldmaps.io/edge-matched.json
+    parquet_url_template: https://data.fieldmaps.io/edge-matched/humanitarian/intl/adm{level}_polygons.parquet
+    manifest_group: humanitarian
 
 categories:
   - name: Buildings

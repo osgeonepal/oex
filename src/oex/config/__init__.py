@@ -15,6 +15,7 @@ from oex.config.schema import (
     OutputConfig,
     OvertureSourceConfig,
     ParallelConfig,
+    PcodesSourceConfig,
     RootConfig,
 )
 
@@ -27,6 +28,7 @@ __all__ = [
     "OutputConfig",
     "OvertureSourceConfig",
     "ParallelConfig",
+    "PcodesSourceConfig",
     "RootConfig",
     "apply_overrides",
     "iter_configs",

@@ -10,6 +10,7 @@ from oex.config.schema import (
     OutputConfig,
     OvertureSourceConfig,
     ParallelConfig,
+    PcodesSourceConfig,
     RootConfig,
 )
 from oex.exporter import Exporter, ExportResult
@@ -27,6 +28,7 @@ __all__ = [
     "OutputConfig",
     "OvertureSourceConfig",
     "ParallelConfig",
+    "PcodesSourceConfig",
     "RootConfig",
     "__version__",
 ]

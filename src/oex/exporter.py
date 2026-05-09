@@ -10,11 +10,17 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 from oex.boundary import resolve_boundary
-from oex.config.schema import CategoryConfig, RootConfig
+from oex.config.schema import CategoryConfig, PcodesSourceConfig, RootConfig
 from oex.duckdb_session import connect
 from oex.hdx_publisher import HdxPublisher, PublishContext
 from oex.logging_setup import get_logger
 from oex.metadata import compute_metadata
+from oex.pcodes import (
+    PcodeCacheEntry,
+    ensure_admin_parquets,
+    resolve_pcodes_config,
+    tag_table,
+)
 from oex.sources.base import CategorySkippedError, SourceQuery, SourceRunner
 from oex.sql import build_select_clause, build_where_clause, materialise
 from oex.system import default_thread_count
@@ -78,6 +84,8 @@ class Exporter:
     def __init__(self, cfg: RootConfig, runner: SourceRunner):
         self._cfg = cfg
         self._runner = runner
+        self._pcodes_cfg: PcodesSourceConfig = resolve_pcodes_config(cfg.source)
+        self._pcode_cache: dict[int, PcodeCacheEntry] | None = None
 
     def run(self) -> ExportResult:
         if not self._cfg.iso3:
@@ -113,6 +121,23 @@ class Exporter:
         )
 
         self._runner.prepare(self._cfg)
+
+        # Serialise the download here so parallel-category threads share one cache.
+        if self._pcodes_cfg.enabled:
+            logger.info(
+                "[%s/%s] pcodes: preparing fieldmaps cache (levels=%s, dir=%s)",
+                iso,
+                self._runner.name,
+                self._pcodes_cfg.levels,
+                self._pcodes_cfg.cache_dir,
+            )
+            self._pcode_cache = ensure_admin_parquets(
+                cache_dir=Path(self._pcodes_cfg.cache_dir),
+                levels=self._pcodes_cfg.levels,
+                manifest_url=self._pcodes_cfg.manifest_url,
+                parquet_url_template=self._pcodes_cfg.parquet_url_template,
+                manifest_group=self._pcodes_cfg.manifest_group,
+            )
 
         publisher: HdxPublisher | None = None
         if self._cfg.hdx.push:
@@ -238,6 +263,23 @@ class Exporter:
                     feature_count=0,
                     duration_s=time.time() - cat_start,
                 )
+
+            if self._pcode_cache is not None:
+                tag_start = time.time()
+                logger.info(
+                    "%s tagging with pcodes (levels=%s)...",
+                    cat_tag,
+                    self._pcodes_cfg.levels,
+                )
+                tag_table(
+                    conn,
+                    table=table,
+                    iso3=self._cfg.iso3,
+                    cache_entries=self._pcode_cache,
+                    levels=self._pcodes_cfg.levels,
+                    geom_column="geom",
+                )
+                logger.info("%s pcodes tagged in %.1fs", cat_tag, time.time() - tag_start)
 
             if self._cfg.output.metadata:
                 logger.info("%s computing metadata...", cat_tag)

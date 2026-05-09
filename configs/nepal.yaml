@@ -35,6 +35,10 @@ hdx:
   methodology: Other
   methodology_other: Open Source Geographic information
 
+source:
+  pcodes:
+    enabled: true
+
 categories:
   - name: Buildings
     hdx:
