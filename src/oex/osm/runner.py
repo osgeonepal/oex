@@ -1,24 +1,29 @@
 """OSM source runner.
 
-Two engines supported:
+Two engines, one unified pipeline. Both produce a single
+``country.parquet`` per (iso3, snapshot) by running quackosm once with the
+union of all category tag filters and ``keep_all_tags=True``. Per-category
+extraction is a tag-predicate ``WHERE`` at query time, no per-category PBF
+reparse.
 
-- ``geofabrik``: download per-country PBF from Geofabrik, build per-theme parquets
-  via quackosm with one tags_filter per category. Output cache layout:
-  ``<cache>/geofabrik/<iso3>/<snapshot>/<theme>.parquet``.
+- ``geofabrik``: download per-country PBF from Geofabrik, then build the
+  country parquet. Cache: ``<cache>/geofabrik/<iso3>/<snapshot>/country.parquet``.
 
 - ``planet``: clip a country PBF out of a local planet PBF via osmium-tool,
-  then run quackosm once with the union of all category tag filters
-  (``keep_all_tags=True``). Per-category extraction is a tag-predicate WHERE
-  at query time (no per-category PBF reparse, no spatial test). Output:
+  then build the country parquet. Cache:
   ``<cache>/planet/<iso3>/<snapshot>/country.parquet``.
-
-The two cache layouts coexist; ``query_for`` dispatches on the active engine.
 """
 
 import json
+import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
+
+import requests
+
+if TYPE_CHECKING:
+    from shapely.geometry.base import BaseGeometry
 
 from oex.boundary import resolve_boundary
 from oex.config.schema import (
@@ -28,7 +33,6 @@ from oex.config.schema import (
 )
 from oex.locale import local_osm_languages
 from oex.logging_setup import get_logger
-from oex.osm.build_cache import build_cache, theme_slug
 from oex.osm.category_filter import category_where_predicate, union_tag_filter
 from oex.osm.extract import osmium_polygon_extract
 from oex.osm.fetch_planet import download_pbf
@@ -36,6 +40,10 @@ from oex.osm.geofabrik import GeofabrikUnavailableError, lookup_country
 from oex.sources.base import CategorySkippedError, SourceQuery, SourceRunner
 
 logger = get_logger(__name__)
+
+_GEOFABRIK_DOWNLOAD_ATTEMPTS = 2
+_GEOFABRIK_RETRY_BACKOFF_SECONDS = 5
+_GeofabrikFallbackError = (GeofabrikUnavailableError, requests.RequestException)
 
 
 def _inject_local_name(select_fields: list[str], iso3: str) -> list[str]:
@@ -100,11 +108,11 @@ class OsmRunner(SourceRunner):
         if engine == "geofabrik":
             try:
                 self._prepare_geofabrik(cfg, src)
-            except GeofabrikUnavailableError as exc:
+            except _GeofabrikFallbackError as exc:
                 if not src.planet_fallback:
                     raise
                 logger.warning(
-                    "Geofabrik unavailable for %s (%s); falling back to planet engine",
+                    "Geofabrik failed for %s (%s); falling back to planet engine",
                     cfg.iso3,
                     exc,
                 )
@@ -158,7 +166,9 @@ class OsmRunner(SourceRunner):
                 osmium_polygon_extract(planet_pbf, json.loads(boundary.geojson), country_pbf)
             else:
                 logger.info("Reusing existing country PBF %s", country_pbf)
-            self._build_country_parquet(cfg, country_pbf, country_parquet, snapshot_dir)
+            self._build_country_parquet(
+                cfg, country_pbf, country_parquet, snapshot_dir, engine="planet"
+            )
         else:
             logger.info("Reusing existing country parquet %s", country_parquet)
 
@@ -182,12 +192,17 @@ class OsmRunner(SourceRunner):
         country_pbf: Path,
         country_parquet: Path,
         snapshot_dir: Path,
+        *,
+        engine: str,
+        geometry_filter: "BaseGeometry | None" = None,
     ) -> None:
         from quackosm.functions import convert_pbf_to_parquet
 
         union_filter = union_tag_filter(cfg.categories)
         if not union_filter:
-            raise ValueError("planet engine requires at least one enabled category with osm.filter")
+            raise ValueError(
+                f"{engine} engine requires at least one enabled category with osm.filter"
+            )
 
         work_dir = snapshot_dir / "_qosm_work"
         if work_dir.exists():
@@ -205,7 +220,7 @@ class OsmRunner(SourceRunner):
         convert_pbf_to_parquet(
             pbf_path=country_pbf,
             tags_filter=union_filter,
-            geometry_filter=None,
+            geometry_filter=geometry_filter,
             result_file_path=country_parquet,
             keep_all_tags=True,
             sort_result=True,
@@ -219,7 +234,7 @@ class OsmRunner(SourceRunner):
         manifest = {
             "snapshot": snapshot_dir.name,
             "iso3": cfg.iso3.upper(),
-            "engine": "planet",
+            "engine": engine,
             "country_parquet": country_parquet.name,
             "filter_keys": sorted(union_filter.keys()),
         }
@@ -249,41 +264,93 @@ class OsmRunner(SourceRunner):
         snapshot = self._resolve_or_create_snapshot(country_root, src.snapshot)
         snapshot_dir = country_root / snapshot
         snapshot_dir.mkdir(parents=True, exist_ok=True)
+        country_parquet = snapshot_dir / "country.parquet"
 
-        expected = self._expected_themes(cfg)
-        existing = {p.stem for p in snapshot_dir.glob("*.parquet")}
-        missing = expected - existing
+        if not country_parquet.exists():
+            extract = lookup_country(cfg.iso3, index_url=src.geofabrik_index_url)
+            pbf_dir = country_root / "_pbf"
+            pbf_path = pbf_dir / f"{extract.geofabrik_id}-latest.osm.pbf"
 
-        if missing:
-            logger.info(
-                "Geofabrik %s snapshot %s missing themes: %s; building",
-                cfg.iso3,
-                snapshot,
-                sorted(missing),
+            if not pbf_path.exists():
+                logger.info(
+                    "Geofabrik extract for %s: %s (%s)",
+                    cfg.iso3,
+                    extract.geofabrik_id,
+                    extract.pbf_url,
+                )
+                result = self._download_geofabrik_with_retry(
+                    extract.pbf_url,
+                    pbf_dir,
+                    md5_url=extract.md5_url,
+                    filename=pbf_path.name,
+                )
+                pbf_path = result.path
+            else:
+                logger.info("Reusing already-downloaded PBF: %s", pbf_path)
+
+            geometry_filter = None
+            if src.geofabrik_clip_to_boundary:
+                from shapely.geometry import shape
+
+                boundary = resolve_boundary(cfg.iso3, cfg.boundary)
+                geometry_filter = shape(json.loads(boundary.geojson))
+
+            self._build_country_parquet(
+                cfg,
+                pbf_path,
+                country_parquet,
+                snapshot_dir,
+                engine="geofabrik",
+                geometry_filter=geometry_filter,
             )
-            self._build_geofabrik_themes(cfg, src, country_root, snapshot)
+
+            if not src.keep_pbf:
+                try:
+                    pbf_path.unlink()
+                    logger.info("Removed PBF after parquet build: %s", pbf_path)
+                except OSError as exc:
+                    logger.warning("Could not remove PBF %s: %s", pbf_path, exc)
         else:
-            logger.info(
-                "Geofabrik %s snapshot %s already has all required themes; reusing",
-                cfg.iso3,
-                snapshot,
-            )
+            logger.info("Reusing existing country parquet %s", country_parquet)
 
         self._engine = "geofabrik"
         self._snapshot_dir = snapshot_dir
         self._snapshot_label = snapshot
-        self._snapshot_date = self._infer_snapshot_date(self._snapshot_dir, snapshot)
+        self._snapshot_date = self._infer_snapshot_date(snapshot_dir, snapshot)
         self._dataset_source = f"OpenStreetMap (Geofabrik {cfg.iso3.upper()} {snapshot})"
+        self._country_parquet = country_parquet
         logger.info(
-            "OSM source: geofabrik %s, snapshot=%s, cache=%s",
+            "OSM source: geofabrik %s, snapshot=%s, parquet=%s",
             cfg.iso3.upper(),
             snapshot,
-            self._snapshot_dir,
+            country_parquet,
         )
 
     @staticmethod
-    def _expected_themes(cfg: RootConfig) -> set[str]:
-        return {theme_slug(c) for c in cfg.categories if c.osm.enabled}
+    def _download_geofabrik_with_retry(
+        url: str,
+        dest_dir: Path,
+        *,
+        md5_url: str | None,
+        filename: str,
+    ):  # noqa: ANN202 - returns whatever download_pbf returns
+        last_exc: requests.RequestException | None = None
+        for attempt in range(1, _GEOFABRIK_DOWNLOAD_ATTEMPTS + 1):
+            try:
+                return download_pbf(url, dest_dir, md5_url=md5_url, filename=filename)
+            except requests.RequestException as exc:
+                last_exc = exc
+                if attempt < _GEOFABRIK_DOWNLOAD_ATTEMPTS:
+                    logger.warning(
+                        "Geofabrik download attempt %d/%d failed (%s); retrying in %ds",
+                        attempt,
+                        _GEOFABRIK_DOWNLOAD_ATTEMPTS,
+                        exc,
+                        _GEOFABRIK_RETRY_BACKOFF_SECONDS,
+                    )
+                    time.sleep(_GEOFABRIK_RETRY_BACKOFF_SECONDS)
+        assert last_exc is not None
+        raise last_exc
 
     @staticmethod
     def _resolve_or_create_snapshot(country_root: Path, requested: str) -> str:
@@ -294,59 +361,11 @@ class OsmRunner(SourceRunner):
             return existing[-1]
         return datetime.now(UTC).date().isoformat()
 
-    def _build_geofabrik_themes(
-        self,
-        cfg: RootConfig,
-        src: OsmSourceConfig,
-        country_root: Path,
-        snapshot: str,
-    ) -> None:
-        extract = lookup_country(cfg.iso3, index_url=src.geofabrik_index_url)
-        pbf_dir = country_root / "_pbf"
-        pbf_path = pbf_dir / f"{extract.geofabrik_id}-latest.osm.pbf"
-
-        if not pbf_path.exists():
-            logger.info(
-                "Geofabrik extract for %s: %s (%s)",
-                cfg.iso3,
-                extract.geofabrik_id,
-                extract.pbf_url,
-            )
-            result = download_pbf(
-                extract.pbf_url,
-                pbf_dir,
-                md5_url=extract.md5_url,
-                filename=pbf_path.name,
-            )
-            pbf_path = result.path
-        else:
-            logger.info("Reusing already-downloaded PBF: %s", pbf_path)
-
-        geometry_filter = None
-        if src.geofabrik_clip_to_boundary:
-            from shapely.geometry import shape
-
-            boundary = resolve_boundary(cfg.iso3, cfg.boundary)
-            geometry_filter = shape(json.loads(boundary.geojson))
-
-        build_cache(
-            cfg,
-            pbf_path,
-            cache_root=country_root,
-            snapshot=snapshot,
-            geometry_filter=geometry_filter,
-        )
-
-        if not src.keep_pbf:
-            try:
-                pbf_path.unlink()
-                logger.info("Removed PBF after cache build: %s", pbf_path)
-            except OSError as exc:
-                logger.warning("Could not remove PBF %s: %s", pbf_path, exc)
-
     def query_for(self, cfg: RootConfig, category: CategoryConfig) -> SourceQuery:
-        if self._snapshot_dir is None:
-            raise RuntimeError("OsmRunner.prepare must run before query_for")
+        if self._country_parquet is None or not self._country_parquet.exists():
+            raise CategorySkippedError(
+                f"{category.name}: country parquet missing at {self._country_parquet}"
+            )
         if not category.osm.enabled:
             raise CategorySkippedError(f"{category.name}: osm disabled for category")
 
@@ -354,25 +373,12 @@ class OsmRunner(SourceRunner):
         snapshot_date = self._snapshot_date or datetime.now(UTC)
         select_fields = _inject_local_name(list(category.osm.select), cfg.iso3)
 
-        if self._engine == "planet":
-            return self._planet_query(category, select_fields, snapshot_label, snapshot_date)
-        return self._geofabrik_query(category, select_fields, snapshot_label, snapshot_date)
-
-    def _planet_query(
-        self,
-        category: CategoryConfig,
-        select_fields: list[str],
-        snapshot_label: str,
-        snapshot_date: datetime,
-    ) -> SourceQuery:
-        if self._country_parquet is None or not self._country_parquet.exists():
-            raise CategorySkippedError(
-                f"{category.name}: planet country parquet missing at {self._country_parquet}"
-            )
         tag_predicate = category_where_predicate(category)
         where = list(category.osm.where)
         if tag_predicate != "TRUE":
             where.append(tag_predicate)
+
+        engine_label = self._engine or "osm"
         return SourceQuery(
             source_expr=f"read_parquet('{self._country_parquet}')",
             select_fields=select_fields,
@@ -382,41 +388,13 @@ class OsmRunner(SourceRunner):
             source_url="https://www.openstreetmap.org/",
             source_description=(
                 "OpenStreetMap is a community-edited geographic dataset of the world. "
-                "Country features extracted from a local planet PBF via osmium-tool, "
-                "then converted to GeoParquet by quackosm with the union of all category filters."
+                "Country features are extracted from the source PBF via quackosm with "
+                "the union of all category tag filters; per-category exports apply "
+                "tag predicates at query time."
             ),
             snapshot_date=snapshot_date,
             snapshot_label=snapshot_label,
-            extra_readme_lines=["Engine: planet (osmium polygon extract + quackosm)"],
-        )
-
-    def _geofabrik_query(
-        self,
-        category: CategoryConfig,
-        select_fields: list[str],
-        snapshot_label: str,
-        snapshot_date: datetime,
-    ) -> SourceQuery:
-        slug = theme_slug(category)
-        assert self._snapshot_dir is not None
-        parquet = self._snapshot_dir / f"{slug}.parquet"
-        if not parquet.exists():
-            raise CategorySkippedError(f"{category.name}: no parquet at {parquet}. Skipping.")
-        return SourceQuery(
-            source_expr=f"read_parquet('{parquet}')",
-            select_fields=select_fields,
-            where_conditions=list(category.osm.where),
-            bbox_cols="geom",
-            dataset_source=self._dataset_source,
-            source_url="https://www.openstreetmap.org/",
-            source_description=(
-                "OpenStreetMap is a community-edited geographic dataset of the world. "
-                "Tag-based features (highway, building, amenity, ...) are extracted "
-                "from the country PBF via quackosm."
-            ),
-            snapshot_date=snapshot_date,
-            snapshot_label=snapshot_label,
-            extra_readme_lines=[f"Cache slug: {slug}"],
+            extra_readme_lines=[f"Engine: {engine_label}"],
         )
 
     @staticmethod

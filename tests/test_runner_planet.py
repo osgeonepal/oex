@@ -250,6 +250,59 @@ def test_planet_engine_auto_downloads_when_flag_set(tmp_path: Path) -> None:
     assert runner._engine == "planet"
 
 
+def test_geofabrik_engine_runs_strategy_b_pipeline(tmp_path: Path) -> None:
+    """Geofabrik engine should: download PBF, run quackosm once, write country.parquet."""
+    cfg = _planet_cfg(tmp_path, planet_pbf=tmp_path / "unused.pbf")
+    cfg.source["osm"].engine = "geofabrik"
+    cfg.source["osm"].pbf_path = ""
+    cfg.source["osm"].planet_fallback = False
+
+    download_called: dict = {}
+    quackosm_args: dict = {}
+
+    def fake_lookup_country(iso3, *, index_url):  # noqa: ANN001
+        return type(
+            "GE",
+            (),
+            {
+                "geofabrik_id": "asia/nepal",
+                "pbf_url": "https://example.com/nepal-latest.osm.pbf",
+                "md5_url": "https://example.com/nepal-latest.osm.pbf.md5",
+            },
+        )()
+
+    def fake_download(url, dest_dir, *, md5_url=None, filename=None):  # noqa: ANN001
+        download_called["url"] = url
+        download_called["filename"] = filename
+        out = Path(dest_dir) / (filename or "fallback.pbf")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"\x00")
+        return type("R", (), {"path": out})()
+
+    def fake_quackosm(**kw):
+        quackosm_args.update(kw)
+        _seed_country_parquet(kw["result_file_path"])
+
+    with (
+        patch("oex.osm.runner.lookup_country", side_effect=fake_lookup_country),
+        patch("oex.osm.runner.download_pbf", side_effect=fake_download),
+        patch(
+            "oex.osm.runner.resolve_boundary",
+            return_value=type("B", (), {"geojson": json.dumps(NPL_GEOJSON)})(),
+        ),
+        patch("quackosm.functions.convert_pbf_to_parquet", side_effect=fake_quackosm),
+    ):
+        runner = OsmRunner()
+        runner.prepare(cfg)
+
+    assert download_called["url"] == "https://example.com/nepal-latest.osm.pbf"
+    assert quackosm_args["keep_all_tags"] is True
+    assert quackosm_args["tags_filter"] == {"building": True, "highway": True}
+    assert runner._engine == "geofabrik"
+    assert runner._country_parquet is not None
+    assert runner._country_parquet.name == "country.parquet"
+
+
 def test_planet_engine_does_not_auto_download_by_default(tmp_path: Path) -> None:
     cfg = _planet_cfg(tmp_path, planet_pbf=tmp_path / "missing.pbf")
     assert cfg.source["osm"].auto_download_planet is False
@@ -296,7 +349,8 @@ def test_geofabrik_falls_back_to_planet_when_unavailable(tmp_path: Path) -> None
     assert runner._engine == "planet"
 
 
-def test_geofabrik_propagates_other_errors_even_with_fallback(tmp_path: Path) -> None:
+def test_geofabrik_propagates_programmer_errors_even_with_fallback(tmp_path: Path) -> None:
+    """ValueError (config bug) propagates; only network errors trigger fallback."""
     planet_pbf = tmp_path / "planet.osm.pbf"
     planet_pbf.write_bytes(b"\x00")
     cfg = _planet_cfg(tmp_path, planet_pbf=planet_pbf)
@@ -305,10 +359,99 @@ def test_geofabrik_propagates_other_errors_even_with_fallback(tmp_path: Path) ->
 
     with patch(
         "oex.osm.runner.OsmRunner._prepare_geofabrik",
-        side_effect=ConnectionError("network down"),
+        side_effect=ValueError("bad config"),
     ):
-        with pytest.raises(ConnectionError):
+        with pytest.raises(ValueError, match="bad config"):
             OsmRunner().prepare(cfg)
+
+
+def test_geofabrik_falls_back_on_http_error_when_flag_set(tmp_path: Path) -> None:
+    """Network-style failures (502/503/timeout) trigger planet fallback when configured."""
+    import requests
+
+    planet_pbf = tmp_path / "planet.osm.pbf"
+    planet_pbf.write_bytes(b"\x00")
+    cfg = _planet_cfg(tmp_path, planet_pbf=planet_pbf)
+    cfg.source["osm"].engine = "geofabrik"
+    cfg.source["osm"].planet_fallback = True
+
+    def fake_quackosm(**kw):
+        _seed_country_parquet(kw["result_file_path"])
+
+    with (
+        patch(
+            "oex.osm.runner.OsmRunner._prepare_geofabrik",
+            side_effect=requests.HTTPError("503 Service Unavailable"),
+        ),
+        patch(
+            "oex.osm.runner.resolve_boundary",
+            return_value=type("B", (), {"geojson": json.dumps(NPL_GEOJSON)})(),
+        ),
+        patch(
+            "oex.osm.runner.osmium_polygon_extract",
+            side_effect=lambda pbf, geom, out, **_: out.write_bytes(b"\x00"),
+        ),
+        patch("quackosm.functions.convert_pbf_to_parquet", side_effect=fake_quackosm),
+    ):
+        runner = OsmRunner()
+        runner.prepare(cfg)
+
+    assert runner._engine == "planet"
+
+
+def test_geofabrik_propagates_http_error_when_fallback_off(tmp_path: Path) -> None:
+    import requests
+
+    planet_pbf = tmp_path / "planet.osm.pbf"
+    planet_pbf.write_bytes(b"\x00")
+    cfg = _planet_cfg(tmp_path, planet_pbf=planet_pbf)
+    cfg.source["osm"].engine = "geofabrik"
+    cfg.source["osm"].planet_fallback = False
+
+    with patch(
+        "oex.osm.runner.OsmRunner._prepare_geofabrik",
+        side_effect=requests.HTTPError("503"),
+    ):
+        with pytest.raises(requests.HTTPError):
+            OsmRunner().prepare(cfg)
+
+
+def test_geofabrik_download_retries_twice_before_giving_up(tmp_path: Path) -> None:
+    """First HTTP error retries, second raises through to caller (or fallback)."""
+    import requests
+
+    cfg = _planet_cfg(tmp_path, planet_pbf=tmp_path / "unused.pbf")
+    cfg.source["osm"].engine = "geofabrik"
+    cfg.source["osm"].pbf_path = ""
+    cfg.source["osm"].planet_fallback = False
+
+    attempts: list[int] = []
+
+    def fake_lookup_country(iso3, *, index_url):  # noqa: ANN001
+        return type(
+            "GE",
+            (),
+            {
+                "geofabrik_id": "asia/nepal",
+                "pbf_url": "https://example.com/nepal-latest.osm.pbf",
+                "md5_url": "https://example.com/nepal-latest.osm.pbf.md5",
+            },
+        )()
+
+    def always_fails(url, dest_dir, *, md5_url=None, filename=None):  # noqa: ANN001
+        attempts.append(len(attempts) + 1)
+        raise requests.HTTPError("503")
+
+    with (
+        patch("oex.osm.runner.lookup_country", side_effect=fake_lookup_country),
+        patch("oex.osm.runner.download_pbf", side_effect=always_fails),
+        # zero out backoff so the test stays fast
+        patch("oex.osm.runner._GEOFABRIK_RETRY_BACKOFF_SECONDS", 0),
+    ):
+        with pytest.raises(requests.HTTPError):
+            OsmRunner().prepare(cfg)
+
+    assert len(attempts) == 2, f"expected 2 download attempts, got {len(attempts)}"
 
 
 def test_geofabrik_does_not_fall_back_when_flag_off(tmp_path: Path) -> None:

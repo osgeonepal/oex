@@ -66,11 +66,11 @@ categories: []
 
 
 def test_geofabrik_reuses_existing_snapshot(tmp_path: Path) -> None:
-    """When a snapshot has every required theme, no download/build is triggered."""
+    """When country.parquet already exists, no download/quackosm rebuild runs."""
     cache_dir = tmp_path / "osm"
     snapshot_dir = cache_dir / "geofabrik" / "npl" / "2026-04-01"
     snapshot_dir.mkdir(parents=True)
-    (snapshot_dir / "buildings.parquet").write_bytes(b"placeholder")
+    (snapshot_dir / "country.parquet").write_bytes(b"placeholder")
 
     yaml = tmp_path / "c.yaml"
     yaml.write_text(
@@ -96,3 +96,4 @@ categories:
     runner.prepare(cfg)
     assert runner._snapshot_label == "2026-04-01"
     assert runner._snapshot_dir == snapshot_dir
+    assert runner._country_parquet == snapshot_dir / "country.parquet"

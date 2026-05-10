@@ -358,9 +358,6 @@ def _attach_resource(
                 res = existing_by_name[path.name]
                 res["description"] = description
                 res["url"] = url
-                # url_type must be "api", not "" — CKAN's resource detail page
-                # only renders "size" for resources whose url_type is one of
-                # the recognised classifications.
                 res["url_type"] = "api"
                 res["resource_type"] = "api"
                 res["size"] = size_bytes
