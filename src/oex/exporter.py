@@ -25,6 +25,7 @@ from oex.pcodes import (
 from oex.report import SourceMetadata, render_report
 from oex.sources.base import CategorySkippedError, SourceQuery, SourceRunner
 from oex.sql import build_select_clause, build_where_clause, materialise
+from oex.state import StateStore
 from oex.system import default_thread_count
 from oex.translit import transliterate_table
 from oex.writers import write_format
@@ -89,6 +90,7 @@ class Exporter:
         self._runner = runner
         self._pcodes_cfg: PcodesSourceConfig = resolve_pcodes_config(cfg.source)
         self._pcode_cache: dict[int, PcodeCacheEntry] | None = None
+        self._state: StateStore | None = None
 
     def run(self) -> ExportResult:
         if not self._cfg.iso3:
@@ -153,6 +155,11 @@ class Exporter:
 
         out_root = Path(self._cfg.output.dir) / self._cfg.iso3.lower() / self._runner.name
         out_root.mkdir(parents=True, exist_ok=True)
+        self._state = StateStore(
+            path=out_root / ".state.json",
+            iso3=self._cfg.iso3,
+            source=self._runner.name,
+        )
 
         result = ExportResult(iso3=iso, source_name=self._runner.name)
         start = time.time()
@@ -221,6 +228,48 @@ class Exporter:
                 duration_s=time.time() - cat_start,
                 error="no output formats configured",
             )
+
+        if self._cfg.output.resume and self._state is not None:
+            entry = self._state.get(slug)
+            snapshot_label = query.snapshot_label or "unknown"
+            if entry and self._state.is_uploaded(slug, snapshot_label=snapshot_label):
+                logger.info(
+                    "%s resume: already built and uploaded (%s); skipping",
+                    cat_tag,
+                    entry.uploaded_utc,
+                )
+                return CategoryResult(
+                    name=category.name,
+                    status="ok",
+                    feature_count=0,
+                    duration_s=time.time() - cat_start,
+                    zip_paths=[Path(p) for p in entry.zip_paths],
+                    hdx_dataset=entry.hdx_dataset,
+                )
+            if (
+                entry
+                and self._state.is_built(slug, snapshot_label=snapshot_label)
+                and publisher is not None
+            ):
+                logger.info(
+                    "%s resume: already built (%s); attempting upload only",
+                    cat_tag,
+                    entry.built_utc,
+                )
+                try:
+                    return self._upload_only(
+                        category=category,
+                        cat_start=cat_start,
+                        cat_tag=cat_tag,
+                        entry=entry,
+                        publisher=publisher,
+                        query=query,
+                        out_root=out_root,
+                        slug=slug,
+                    )
+                except Exception:
+                    logger.exception("%s resume upload failed; rebuilding", cat_tag)
+                    self._state.reset(slug)
 
         logger.info(
             "%s source: %s | snapshot: %s",
@@ -363,6 +412,14 @@ class Exporter:
 
             total_mb = sum(p.stat().st_size for p in zip_paths) / (1024 * 1024)
 
+            if self._state is not None:
+                self._state.mark_built(
+                    slug,
+                    snapshot_label=query.snapshot_label or "unknown",
+                    zip_paths=zip_paths,
+                    metadata_json_path=metadata_json_path,
+                )
+
             dataset_name: str | None = None
             if publisher is not None:
                 logger.info("%s uploading %d zip(s) to HDX...", cat_tag, len(zip_paths))
@@ -376,6 +433,8 @@ class Exporter:
                     s3=self._cfg.output.s3,
                 )
                 dataset_name = publisher.publish(self._cfg, category, zip_paths, ctx)
+                if self._state is not None:
+                    self._state.mark_uploaded(slug, hdx_dataset=dataset_name)
 
             logger.info(
                 "%s done: %s features, %d zip(s), %.0f MB total in %.1fs",
@@ -403,6 +462,42 @@ class Exporter:
             )
         finally:
             conn.close()
+
+    def _upload_only(
+        self,
+        *,
+        category: CategoryConfig,
+        cat_start: float,
+        cat_tag: str,
+        entry,  # CategoryState
+        publisher: HdxPublisher,
+        query: SourceQuery,
+        out_root: Path,
+        slug: str,
+    ) -> CategoryResult:
+        zip_paths = [Path(p) for p in entry.zip_paths]
+        metadata_json_path = Path(entry.metadata_json_path) if entry.metadata_json_path else None
+        logger.info("%s uploading %d cached zip(s) to HDX...", cat_tag, len(zip_paths))
+        ctx = PublishContext(
+            dataset_source=query.dataset_source,
+            snapshot_date=query.snapshot_date,
+            source_name=self._runner.name,
+            metadata_json_path=metadata_json_path,
+            combined_report_enabled=self._cfg.output.report.enabled,
+            output_dir=out_root,
+            s3=self._cfg.output.s3,
+        )
+        dataset_name = publisher.publish(self._cfg, category, zip_paths, ctx)
+        if self._state is not None:
+            self._state.mark_uploaded(slug, hdx_dataset=dataset_name)
+        return CategoryResult(
+            name=category.name,
+            status="ok",
+            feature_count=0,
+            duration_s=time.time() - cat_start,
+            zip_paths=zip_paths,
+            hdx_dataset=dataset_name,
+        )
 
     def _materialise_outputs(
         self,

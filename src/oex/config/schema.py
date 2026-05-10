@@ -63,6 +63,7 @@ class OutputConfig:
     metadata: bool = False
     report: ReportConfig = field(default_factory=ReportConfig)
     s3: S3Config = field(default_factory=S3Config)
+    resume: bool = True
 
 
 @dataclass

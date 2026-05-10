@@ -1,9 +1,12 @@
 """HDX dataset and resource publication. Imports hdx-python-api lazily."""
 
 import os
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+
+import requests
 
 from oex.config.schema import CategoryConfig, HdxConfig, RootConfig, S3Config
 from oex.logging_setup import get_logger
@@ -12,6 +15,9 @@ from oex.s3 import resolve as s3_resolve
 from oex.s3 import upload as s3_upload
 
 logger = get_logger(__name__)
+
+_HDX_PUBLISH_BACKOFF_SECONDS = (5, 15, 45, 135)
+_HDX_TRANSIENT_HTTP_STATUSES = {429, 502, 503, 504}
 
 _HDX_SITE_URLS = {
     "prod": "https://data.humdata.org",
@@ -96,12 +102,88 @@ class HdxPublisher:
         ctx: PublishContext,
     ) -> str:
         from hdx.data.dataset import Dataset
-        from hdx.data.resource import Resource
 
         category_slug = _slugify(category.name)
         dt_name = f"{cfg.key}_{cfg.iso3.lower()}_{category_slug}"
-        title = category.hdx.title or _resolve_title(cfg, category)
+        dataset = self._build_dataset_object(cfg, category, dt_name, ctx)
 
+        # Largest resource first so HDX's default-resource preview lands on
+        # the richest format instead of a sparse one (e.g., lines over points).
+        sorted_zips = sorted(zip_paths, key=lambda p: p.stat().st_size, reverse=True)
+        for zip_path in sorted_zips:
+            res = self._make_resource_for_zip(zip_path, category, ctx, cfg.iso3, category_slug)
+            dataset.add_update_resource(res)
+
+        if ctx.metadata_json_path is not None:
+            res = self._make_resource_for_path(
+                path=ctx.metadata_json_path,
+                fmt="json",
+                description=f"{category.name} ({ctx.source_name}) feature-level metadata",
+                ctx=ctx,
+                iso3=cfg.iso3,
+                category_slug=category_slug,
+            )
+            dataset.add_update_resource(res)
+
+        existing = Dataset.read_from_hdx(dt_name)
+        if existing is not None:
+            existing_org = existing.get("owner_org")
+            if existing_org and existing_org != self._owner_org:
+                raise RuntimeError(
+                    f"HDX dataset {dt_name} exists under a different organisation "
+                    f"(owner_org={existing_org!r}; you are publishing as "
+                    f"{self._owner_org!r}). Pick a different `key` in your config "
+                    "to namespace your datasets, or have HDX transfer ownership."
+                )
+            dataset["id"] = existing["id"]
+            logger.info(
+                "Updating HDX dataset %s with %d resources",
+                dt_name,
+                len(dataset.get_resources()),
+            )
+            _hdx_publish_with_retry(
+                lambda: dataset.update_in_hdx(
+                    remove_additional_resources=True,
+                    match_resources_by_metadata=True,
+                    hxl_update=False,
+                ),
+                label=f"update {dt_name}",
+            )
+        else:
+            logger.info(
+                "Creating HDX dataset %s with %d resources",
+                dt_name,
+                len(dataset.get_resources()),
+            )
+            _hdx_publish_with_retry(
+                lambda: dataset.create_in_hdx(
+                    allow_no_resources=False,
+                    hxl_update=False,
+                ),
+                label=f"create {dt_name}",
+            )
+
+        if ctx.combined_report_enabled and ctx.output_dir is not None:
+            self._build_and_publish_combined_report(
+                dt_name=dt_name,
+                category=category,
+                cfg=cfg,
+                category_slug=category_slug,
+                output_dir=ctx.output_dir,
+                s3_cfg=ctx.s3,
+            )
+        return dt_name
+
+    def _build_dataset_object(
+        self,
+        cfg: RootConfig,
+        category: CategoryConfig,
+        dt_name: str,
+        ctx: PublishContext,
+    ):  # noqa: ANN202 - hdx-python-api Dataset, imported lazily
+        from hdx.data.dataset import Dataset
+
+        title = category.hdx.title or _resolve_title(cfg, category)
         hdx_source = category.hdx.dataset_source or _HDX_SHORT_SOURCE.get(
             ctx.source_name, ctx.dataset_source
         )
@@ -132,117 +214,87 @@ class HdxPublisher:
         dataset.add_other_location(cfg.iso3.upper())
         for tag in category.hdx.tags:
             dataset.add_tag(tag)
+        return dataset
 
-        existing = Dataset.read_from_hdx(dt_name)
-        if existing is None:
-            logger.info("Creating HDX dataset %s", dt_name)
-            dataset.create_in_hdx(allow_no_resources=True)
-        else:
-            existing_org = existing.get("owner_org")
-            if existing_org and existing_org != self._owner_org:
-                raise RuntimeError(
-                    f"HDX dataset {dt_name} exists under a different organisation "
-                    f"(owner_org={existing_org!r}; you are publishing as "
-                    f"{self._owner_org!r}). Pick a different `key` in your config "
-                    "to namespace your datasets, or have HDX transfer ownership."
-                )
-            logger.info("Updating HDX dataset %s", dt_name)
-            dataset["id"] = existing["id"]
-            dataset.update_in_hdx(allow_no_resources=True)
+    def _make_resource_for_zip(
+        self,
+        zip_path: Path,
+        category: CategoryConfig,
+        ctx: PublishContext,
+        iso3: str,
+        category_slug: str,
+    ):  # noqa: ANN202 - hdx-python-api Resource
+        parts = zip_path.stem.rsplit("_", 2)
+        source = parts[-2] if len(parts) >= 3 else ""
+        fmt = parts[-1]
+        description = (
+            f"{category.name} ({source}) data in {fmt.upper()} format"
+            if source
+            else f"{category.name} data in {fmt.upper()} format"
+        )
+        return self._make_resource_for_path(
+            path=zip_path,
+            fmt=fmt,
+            description=description,
+            ctx=ctx,
+            iso3=iso3,
+            category_slug=category_slug,
+        )
 
-        fresh = Dataset.read_from_hdx(dt_name)
-        if fresh is None:
-            raise RuntimeError(f"HDX dataset {dt_name} not visible after create")
-        package_id = fresh["id"]
-        existing_by_name: dict[str, Resource] = {
-            r["name"]: r for r in (fresh.get_resources() or [])
+    def _make_resource_for_path(
+        self,
+        *,
+        path: Path,
+        fmt: str,
+        description: str,
+        ctx: PublishContext,
+        iso3: str,
+        category_slug: str,
+    ):  # noqa: ANN202 - hdx-python-api Resource
+        from hdx.data.resource import Resource
+
+        size_bytes = path.stat().st_size
+        resource_data: dict[str, object] = {
+            "name": path.name,
+            "description": description,
+            "format": fmt,
+            "size": int(size_bytes),
         }
-
-        if cfg.hdx.purge_existing_resources and existing_by_name:
-            logger.warning(
-                "PURGE: deleting %d existing resource(s) on %s before upload",
-                len(existing_by_name),
-                dt_name,
-            )
-            for name, res in existing_by_name.items():
-                try:
-                    res.delete_from_hdx()
-                    logger.info("Purged resource %s", name)
-                except Exception as exc:
-                    raise RuntimeError(
-                        f"HDX dataset {dt_name}: failed to purge {name}: {exc}"
-                    ) from exc
-            existing_by_name = {}
-
-        ok = 0
-        failed: list[tuple[str, str]] = []
-        # Largest resource first so HDX's default-resource preview lands on
-        # the richest format instead of a sparse one (e.g., lines over points).
-        for zip_path in sorted(zip_paths, key=lambda p: p.stat().st_size, reverse=True):
-            parts = zip_path.stem.rsplit("_", 2)
-            source = parts[-2] if len(parts) >= 3 else ""
-            fmt = parts[-1]
-            description = (
-                f"{category.name} ({source}) data in {fmt.upper()} format"
-                if source
-                else f"{category.name} data in {fmt.upper()} format"
-            )
-            try:
-                _attach_resource(
-                    package_id=package_id,
-                    existing_by_name=existing_by_name,
-                    path=zip_path,
-                    fmt=fmt,
-                    description=description,
-                    dt_name=dt_name,
-                    s3_cfg=ctx.s3,
-                    iso3=cfg.iso3,
-                    category_slug=category_slug,
+        if ctx.s3 is not None and ctx.s3.enabled:
+            bucket, prefix, region, endpoint_url, acl = s3_resolve(ctx.s3)
+            if not bucket:
+                raise ValueError(
+                    "output.s3.enabled is true but no bucket given via "
+                    "output.s3.bucket or OEX_S3_BUCKET"
                 )
-                ok += 1
-            except Exception as exc:  # noqa: BLE001  per-resource boundary; reported below
-                size_mb = zip_path.stat().st_size / (1024 * 1024)
-                logger.exception("Resource upload failed for %s (%.0f MB)", zip_path.name, size_mb)
-                failed.append((zip_path.name, str(exc)))
-
-        if failed:
-            summary = "; ".join(f"{name}: {err}" for name, err in failed)
-            raise RuntimeError(
-                f"HDX dataset {dt_name}: {ok}/{len(zip_paths)} resources uploaded; "
-                f"failures: {summary}"
+            key = build_key(prefix, iso3, category_slug, path.name)
+            url = s3_upload(
+                path,
+                bucket=bucket,
+                key=key,
+                region=region,
+                endpoint_url=endpoint_url,
+                acl=acl,
             )
-        logger.info("Saved HDX dataset %s with %d resources", dt_name, len(zip_paths))
-
-        if ctx.metadata_json_path is not None:
-            _attach_resource(
-                package_id=package_id,
-                existing_by_name=existing_by_name,
-                path=ctx.metadata_json_path,
-                fmt="JSON",
-                description=f"{category.name} ({ctx.source_name}) feature-level metadata",
-                dt_name=dt_name,
-                s3_cfg=ctx.s3,
-                iso3=cfg.iso3,
-                category_slug=category_slug,
+            logger.info(
+                "Uploaded %s to s3://%s/%s (%.2f MB)",
+                path.name,
+                bucket,
+                key,
+                size_bytes / (1024 * 1024),
             )
-
-        if ctx.combined_report_enabled and ctx.output_dir is not None:
-            self._build_and_publish_combined_report(
-                dt_name=dt_name,
-                package_id=package_id,
-                category=category,
-                cfg=cfg,
-                category_slug=category_slug,
-                output_dir=ctx.output_dir,
-                s3_cfg=ctx.s3,
-            )
-        return dt_name
+            resource_data["url"] = url
+            res = Resource(resource_data)
+        else:
+            res = Resource(resource_data)
+            res.set_file_to_upload(str(path))
+        res.mark_data_updated()
+        return res
 
     def _build_and_publish_combined_report(
         self,
         *,
         dt_name: str,
-        package_id: str,
         category: CategoryConfig,
         cfg: RootConfig,
         category_slug: str,
@@ -251,7 +303,6 @@ class HdxPublisher:
     ) -> None:
         # HDX serves uploaded HTML with text/html + SAMEORIGIN, so the resource URL self-iframes.
         from hdx.data.dataset import Dataset
-        from hdx.data.resource import Resource
 
         from oex.report import SourceMetadata, render_report
 
@@ -288,123 +339,88 @@ class HdxPublisher:
             report_path,
         )
 
-        existing_by_name: dict[str, Resource] = {r["name"]: r for r in resources}
-        _attach_resource(
-            package_id=package_id,
-            existing_by_name=existing_by_name,
+        report_ctx = PublishContext(
+            dataset_source="",
+            snapshot_date=datetime.now(),
+            source_name="report",
+            s3=s3_cfg,
+        )
+        report_resource = self._make_resource_for_path(
             path=report_path,
-            fmt="HTML",
+            fmt="html",
             description=f"{category.name} (interactive report)",
-            dt_name=dt_name,
-            s3_cfg=s3_cfg,
+            ctx=report_ctx,
             iso3=cfg.iso3,
             category_slug=category_slug,
         )
-
-        refreshed = Dataset.read_from_hdx(dt_name)
-        if refreshed is None:
-            raise RuntimeError(f"HDX dataset {dt_name} not visible after report upload")
-        report_url = next(
-            (r["url"] for r in (refreshed.get_resources() or []) if r["name"] == report_path.name),
-            None,
+        fresh.add_update_resource(report_resource)
+        report_url = report_resource["url"] if "url" in report_resource.data else None
+        if report_url:
+            logger.info("Setting customviz: %s", report_url)
+            fresh.set_custom_viz(report_url)
+        _hdx_publish_with_retry(
+            lambda: fresh.update_in_hdx(
+                remove_additional_resources=False,
+                match_resources_by_metadata=True,
+                hxl_update=False,
+            ),
+            label=f"report update {dt_name}",
         )
-        if not report_url:
-            raise RuntimeError(
-                f"HDX dataset {dt_name}: uploaded report {report_path.name} has no URL"
-            )
-
-        logger.info("Setting customviz: %s", report_url)
-        refreshed.set_custom_viz(report_url)
-        refreshed.update_in_hdx()
 
 
-def _attach_resource(
-    *,
-    package_id: str,
-    existing_by_name: dict,
-    path: Path,
-    fmt: str,
-    description: str,
-    dt_name: str,
-    s3_cfg: S3Config | None,
-    iso3: str,
-    category_slug: str,
-) -> None:
-    from hdx.data.resource import Resource
+def _hdx_publish_with_retry(call, label: str):  # noqa: ANN001 - lambda
+    """Run an HDX publish call with backoff on 429/5xx/connection-style errors."""
+    from hdx.data.hdxobject import HDXError
 
-    size_bytes = path.stat().st_size
-    size_mb = size_bytes / (1024 * 1024)
-    use_s3 = s3_cfg is not None and s3_cfg.enabled
-    try:
-        if use_s3:
-            assert s3_cfg is not None
-            bucket, prefix, region, endpoint_url, acl = s3_resolve(s3_cfg)
-            if not bucket:
-                raise ValueError(
-                    "output.s3.enabled is true but no bucket given via "
-                    "output.s3.bucket or OEX_S3_BUCKET"
+    last_exc: Exception | None = None
+    for attempt, sleep_s in enumerate(_HDX_PUBLISH_BACKOFF_SECONDS, start=1):
+        try:
+            return call()
+        except HDXError as exc:
+            if not _is_transient_hdx_error(exc):
+                raise
+            last_exc = exc
+            if attempt < len(_HDX_PUBLISH_BACKOFF_SECONDS):
+                logger.warning(
+                    "HDX %s attempt %d/%d hit transient error (%s); retrying in %ds",
+                    label,
+                    attempt,
+                    len(_HDX_PUBLISH_BACKOFF_SECONDS),
+                    _summarise_hdx_error(exc),
+                    sleep_s,
                 )
-            key = build_key(prefix, iso3, category_slug, path.name)
-            url = s3_upload(
-                path,
-                bucket=bucket,
-                key=key,
-                region=region,
-                endpoint_url=endpoint_url,
-                acl=acl,
-            )
-            logger.info("Uploaded %s to s3://%s/%s (%.2f MB)", path.name, bucket, key, size_mb)
-            if path.name in existing_by_name:
-                res = existing_by_name[path.name]
-                res["description"] = description
-                res["url"] = url
-                res["url_type"] = "api"
-                res["resource_type"] = "api"
-                res["size"] = size_bytes
-                res.set_format(fmt)
-                res.update_in_hdx()
-            else:
-                res = Resource(
-                    {
-                        "package_id": package_id,
-                        "name": path.name,
-                        "description": description,
-                        "url": url,
-                        "url_type": "api",
-                        "resource_type": "api",
-                        "size": size_bytes,
-                    }
-                )
-                res.set_format(fmt)
-                res.create_in_hdx()
-            return
+                time.sleep(sleep_s)
+    assert last_exc is not None
+    raise last_exc
 
-        if path.name in existing_by_name:
-            res = existing_by_name[path.name]
-            res["description"] = description
-            res.set_format(fmt)
-            res.set_file_to_upload(str(path))
-            logger.info("Updating resource %s (%.2f MB)", path.name, size_mb)
-            res.update_in_hdx()
-        else:
-            res = Resource(
-                {
-                    "package_id": package_id,
-                    "name": path.name,
-                    "description": description,
-                }
-            )
-            res.set_format(fmt)
-            res.set_file_to_upload(str(path))
-            logger.info("Creating resource %s (%.2f MB)", path.name, size_mb)
-            res.create_in_hdx()
-    except Exception as exc:
-        raise RuntimeError(f"HDX dataset {dt_name}: failed to attach {path.name}: {exc}") from exc
+
+def _is_transient_hdx_error(exc: BaseException) -> bool:
+    cur: BaseException | None = exc
+    while cur is not None:
+        if isinstance(cur, requests.exceptions.RetryError):
+            return True
+        if isinstance(cur, requests.exceptions.ConnectionError):
+            return True
+        if isinstance(cur, requests.exceptions.Timeout):
+            return True
+        if isinstance(cur, requests.exceptions.HTTPError):
+            response = getattr(cur, "response", None)
+            if response is not None and response.status_code in _HDX_TRANSIENT_HTTP_STATUSES:
+                return True
+        cur = cur.__cause__
+    return False
+
+
+def _summarise_hdx_error(exc: BaseException) -> str:
+    cur: BaseException | None = exc
+    while cur is not None:
+        if isinstance(cur, requests.exceptions.RequestException):
+            return f"{type(cur).__name__}: {cur}"
+        cur = cur.__cause__
+    return f"{type(exc).__name__}: {exc}"
 
 
 def _download_json(url: str, *, timeout: float = 60.0) -> dict:
-    import requests
-
     resp = requests.get(url, timeout=timeout)
     resp.raise_for_status()
     return resp.json()
@@ -420,8 +436,6 @@ def _preflight_check(api_key: str, owner_org: str, maintainer: str, site: str) -
     """Fail fast with a precise message if HDX credentials cannot publish to owner_org.
     This runs three cheap CKAN action calls before any export work begins.
     """
-    import requests
-
     base = _HDX_SITE_URLS.get(site)
     if base is None:
         raise ValueError(f"Unknown hdx.site={site!r}. Expected one of {sorted(_HDX_SITE_URLS)}.")

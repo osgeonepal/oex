@@ -72,6 +72,7 @@ def _build_overrides(
     osm_engine: str | None = None,
     hdx_purge: bool | None = None,
     download_if_missing: bool | None = None,
+    resume: bool | None = None,
 ) -> dict[str, object]:
     overrides: dict[str, object] = {}
     if iso3_or_yaml and len(iso3_or_yaml) <= 3 and iso3_or_yaml.isalpha():
@@ -92,6 +93,10 @@ def _build_overrides(
         overrides["source.osm.auto_download_planet"] = True
     if download_if_missing is False:
         overrides["source.osm.auto_download_planet"] = False
+    if resume is True:
+        overrides["output.resume"] = True
+    if resume is False:
+        overrides["output.resume"] = False
     return overrides
 
 
@@ -192,6 +197,14 @@ def cmd_osm(
             "before running. Overrides source.osm.auto_download_planet."
         ),
     ),
+    resume: bool | None = typer.Option(
+        None,
+        "--resume/--no-resume",
+        help=(
+            "Skip categories already built and uploaded according to the "
+            "state file. Default: enabled (configurable via output.resume)."
+        ),
+    ),
 ) -> None:
     """Export OSM data via the configured engine."""
     iso3_resolved, theme_resolved = _resolve_args(iso3_or_yaml, theme, configs_dir, config)
@@ -203,6 +216,7 @@ def cmd_osm(
         osm_engine=engine,
         hdx_purge=hdx_purge,
         download_if_missing=download_if_missing,
+        resume=resume,
     )
     results = [_run_one(y, overrides, theme_resolved, OsmRunner) for y in yamls]
     raise typer.Exit(code=_summarise(results))
