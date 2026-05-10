@@ -19,6 +19,10 @@ dataset_name: null
 subnational: false
 frequency: monthly
 
+parallel:
+  threads: 4
+  memory_gb: 12
+
 boundary:
   geom: null
   geoboundaries_release: CGAZ

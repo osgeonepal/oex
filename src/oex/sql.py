@@ -32,9 +32,17 @@ def build_where_clause(boundary: Boundary, where_conditions: list[str], bbox_col
             f"bbox.ymin <= {maxy} AND bbox.ymax >= {miny}"
         )
 
+    # Some OSM PBFs include nodes with corrupt lat/lon (e.g. lat=115). The
+    # GDAL writer rejects them mid-COPY, killing the category. Drop any
+    # geometry with a vertex outside Earth before write.
+    earth_filter = (
+        "ST_YMin(geometry) >= -90 AND ST_YMax(geometry) <= 90 AND "
+        "ST_XMin(geometry) >= -180 AND ST_XMax(geometry) <= 180"
+    )
+
     geojson_literal = boundary.geojson.replace("'", "''")
     intersect = f"ST_Intersects(geometry, ST_GeomFromGeoJSON('{geojson_literal}'))"
-    parts = [bbox_filter, intersect]
+    parts = [bbox_filter, earth_filter, intersect]
     parts.extend(f"({cond})" for cond in where_conditions if cond)
     return " AND ".join(parts)
 

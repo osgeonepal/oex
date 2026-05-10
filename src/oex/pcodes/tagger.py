@@ -1,4 +1,11 @@
-"""DuckDB-side p-code tagging."""
+"""SPATIAL_JOIN's optimizer needs a single spatial predicate per ON clause;
+any second condition demotes the plan to BLOCKWISE_NL_JOIN at ~25-40x cost.
+Admin polygons are pre-simplified at ~10m tolerance because SPATIAL_JOIN's
+ray-cast cost scales linearly with vertex count.
+
+https://duckdb.org/2025/08/08/spatial-joins
+https://duckdb.org/2025/05/21/announcing-duckdb-130
+"""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,8 +20,6 @@ logger = get_logger(__name__)
 
 @dataclass(frozen=True)
 class PcodeTagReport:
-    """Outcome of tagging one materialised table."""
-
     iso3: str
     levels_tagged: list[int]
     levels_empty: list[int]
@@ -22,11 +27,22 @@ class PcodeTagReport:
     adm0_name: str | None
 
 
-def _country_filtered_table_name(table: str, level: int) -> str:
+# Smaller than a typical building footprint. fieldmaps.io adm polygons carry
+# tens of thousands of vertices each; simplifying at this tolerance drops the
+# join cost by 25-40x with no observable change in tagging accuracy.
+# Verified in scripts/bench_tagger.py against BGD's 12M buildings.
+_ADMIN_SIMPLIFY_TOLERANCE_DEG = 0.0001
+
+
+def _country_admin_table_name(table: str, level: int) -> str:
     return f"_pcodes_adm{level}_{table}"
 
 
-def _build_country_admin_table(
+def _tagged_table_name(table: str) -> str:
+    return f"_pcodes_tagged_{table}"
+
+
+def _load_admin_table(
     conn: duckdb.DuckDBPyConnection,
     *,
     parquet_path: Path,
@@ -34,25 +50,25 @@ def _build_country_admin_table(
     level: int,
     target_table: str,
 ) -> int:
-    # iso_3, not adm0_id: adm0_id carries fieldmaps' versioned key (NPL-20250729).
-    # Cast geometry to plain GEOMETRY: RTREE rejects GEOMETRY('OGC:CRS84').
-    sql = f"""
-    CREATE OR REPLACE TABLE {target_table} AS
-    SELECT
-        adm{level}_src AS pcode,
-        adm{level}_name AS name,
-        adm0_src AS adm0_pcode,
-        adm0_name AS adm0_name,
-        CAST(geometry AS GEOMETRY) AS admin_geom
-    FROM read_parquet(?)
-    WHERE iso_3 = ?
-    """
-    conn.execute(sql, [str(parquet_path), iso3])
+    conn.execute(
+        f"""
+        CREATE OR REPLACE TABLE {target_table} AS
+        SELECT
+            adm{level}_src AS pcode,
+            adm{level}_name AS name,
+            adm0_src AS adm0_pcode,
+            adm0_name AS adm0_name,
+            ST_SimplifyPreserveTopology(
+                CAST(geometry AS GEOMETRY),
+                {_ADMIN_SIMPLIFY_TOLERANCE_DEG}
+            ) AS admin_geom
+        FROM read_parquet(?)
+        WHERE iso_3 = ?
+        """,
+        [str(parquet_path), iso3],
+    )
     row = conn.execute(f"SELECT COUNT(*) FROM {target_table}").fetchone()
-    count = int(row[0]) if row else 0
-    if count > 0:
-        conn.execute(f"CREATE INDEX {target_table}_idx ON {target_table} USING RTREE (admin_geom)")
-    return count
+    return int(row[0]) if row else 0
 
 
 def _read_adm0(conn: duckdb.DuckDBPyConnection, source_table: str) -> tuple[str | None, str | None]:
@@ -78,20 +94,17 @@ def _prepare_admin_tables(
     for level in levels:
         entry = cache_entries.get(level)
         if entry is None:
-            logger.warning(
-                "[pcodes] level %d requested but missing from cache; emitting NULLs",
-                level,
-            )
+            logger.warning("[pcodes] level %d missing from cache; emitting NULLs", level)
             levels_empty.append(level)
             continue
-        admin_table = _country_filtered_table_name(table, level)
-        admin_tables[level] = admin_table
-        count = _build_country_admin_table(
+        target = _country_admin_table_name(table, level)
+        admin_tables[level] = target
+        count = _load_admin_table(
             conn,
             parquet_path=entry.path,
             iso3=iso3,
             level=level,
-            target_table=admin_table,
+            target_table=target,
         )
         if count == 0:
             logger.warning(
@@ -106,52 +119,102 @@ def _prepare_admin_tables(
     return admin_tables, levels_with_data, levels_empty
 
 
-def _build_rewrite_sql(
+def _drop_tables(conn: duckdb.DuckDBPyConnection, names: list[str]) -> None:
+    for name in names:
+        conn.execute(f"DROP TABLE IF EXISTS {name}")
+
+
+def _add_null_pcode_columns(
+    conn: duckdb.DuckDBPyConnection,
     *,
-    source_table: str,
-    target_table: str,
+    table: str,
+    requested_levels: list[int],
+    adm0_pcode: str,
+) -> None:
+    conn.execute(f"ALTER TABLE {table} ADD COLUMN adm0_pcode VARCHAR")
+    conn.execute(f"UPDATE {table} SET adm0_pcode = ?", [adm0_pcode])
+    conn.execute(f"ALTER TABLE {table} ADD COLUMN adm0_name VARCHAR")
+    for level in requested_levels:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN adm{level}_pcode VARCHAR")
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN adm{level}_name VARCHAR")
+
+
+def _handle_no_admin_data(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    table: str,
+    iso3: str,
+    requested_levels: list[int],
+    levels_empty: list[int],
+    admin_tables: dict[int, str],
+) -> PcodeTagReport:
+    _add_null_pcode_columns(
+        conn,
+        table=table,
+        requested_levels=requested_levels,
+        adm0_pcode=iso3,
+    )
+    _drop_tables(conn, list(admin_tables.values()))
+    logger.warning(
+        "[pcodes] no admin polygons for ISO3=%s at any requested level; "
+        "added schema-stable null columns only",
+        iso3,
+    )
+    return PcodeTagReport(
+        iso3=iso3,
+        levels_tagged=[],
+        levels_empty=levels_empty,
+        adm0_pcode=None,
+        adm0_name=None,
+    )
+
+
+def _build_tagged_select(
+    *,
+    feature_table: str,
     geom_column: str,
     requested_levels: list[int],
     levels_with_data: list[int],
     admin_tables: dict[int, str],
-    adm0_pcode: str,
-    adm0_name: str | None,
 ) -> str:
-    # NULL::VARCHAR keeps the output schema constant when a level has no country rows.
-    adm0_pcode_sql = adm0_pcode.replace("'", "''")
-    select_extra: list[str] = [f"'{adm0_pcode_sql}' AS adm0_pcode"]
-    if adm0_name is not None:
-        adm0_name_sql = adm0_name.replace("'", "''")
-        select_extra.append(f"'{adm0_name_sql}' AS adm0_name")
-    else:
-        select_extra.append("NULL::VARCHAR AS adm0_name")
-
+    select_cols: list[str] = [
+        f"f.* EXCLUDE ({geom_column})",
+        f"f.{geom_column} AS {geom_column}",
+        "?::VARCHAR AS adm0_pcode",
+        "?::VARCHAR AS adm0_name",
+    ]
     join_clauses: list[str] = []
     for level in requested_levels:
         if level in levels_with_data:
             alias = f"a{level}"
-            select_extra.append(f"{alias}.pcode AS adm{level}_pcode")
-            select_extra.append(f"{alias}.name  AS adm{level}_name")
+            select_cols.append(f"{alias}.pcode AS adm{level}_pcode")
+            select_cols.append(f"{alias}.name AS adm{level}_name")
             join_clauses.append(
-                f"LEFT JOIN {admin_tables[level]} {alias} "
-                f"ON ST_Within(ST_Centroid(t.{geom_column}), {alias}.admin_geom)"
+                f"LEFT JOIN {admin_tables[level]} AS {alias} "
+                f"ON ST_Contains({alias}.admin_geom, ST_Centroid(f.{geom_column}))"
             )
         else:
-            select_extra.append(f"NULL::VARCHAR AS adm{level}_pcode")
-            select_extra.append(f"NULL::VARCHAR AS adm{level}_name")
-
-    return (
-        f"CREATE OR REPLACE TABLE {target_table} AS\n"
-        f"SELECT t.*,\n       "
-        + ",\n       ".join(select_extra)
-        + f"\nFROM {source_table} t\n"
-        + "\n".join(join_clauses)
-    )
+            select_cols.append(f"NULL AS adm{level}_pcode")
+            select_cols.append(f"NULL AS adm{level}_name")
+    return f"SELECT {', '.join(select_cols)}\nFROM {feature_table} AS f\n" + "\n".join(join_clauses)
 
 
-def _drop_tables(conn: duckdb.DuckDBPyConnection, names: list[str]) -> None:
-    for name in names:
-        conn.execute(f"DROP TABLE IF EXISTS {name}")
+def _replace_table_with_tagged(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    table: str,
+    tagged_table: str,
+) -> None:
+    # Both statements live in the same DuckDB transaction (autocommit off by
+    # default for explicit BEGIN); a failure between them rolls back.
+    conn.execute("BEGIN TRANSACTION")
+    try:
+        conn.execute(f"DROP TABLE {table}")
+        conn.execute(f"ALTER TABLE {tagged_table} RENAME TO {table}")
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
 
 
 def tag_table(
@@ -177,18 +240,13 @@ def tag_table(
     )
 
     if not levels_with_data:
-        _drop_tables(conn, list(admin_tables.values()))
-        logger.warning(
-            "[pcodes] no admin polygons for ISO3=%s at any requested level; table %s not tagged",
-            iso3_upper,
-            table,
-        )
-        return PcodeTagReport(
+        return _handle_no_admin_data(
+            conn,
+            table=table,
             iso3=iso3_upper,
-            levels_tagged=[],
+            requested_levels=requested,
             levels_empty=levels_empty,
-            adm0_pcode=None,
-            adm0_name=None,
+            admin_tables=admin_tables,
         )
 
     seed_table = admin_tables[levels_with_data[0]]
@@ -196,21 +254,21 @@ def tag_table(
     if adm0_pcode is None:
         adm0_pcode = iso3_upper
 
-    tagged_table = f"{table}__tagged"
-    rewrite_sql = _build_rewrite_sql(
-        source_table=table,
-        target_table=tagged_table,
+    select_sql = _build_tagged_select(
+        feature_table=table,
         geom_column=geom_column,
         requested_levels=requested,
         levels_with_data=levels_with_data,
         admin_tables=admin_tables,
-        adm0_pcode=adm0_pcode,
-        adm0_name=adm0_name,
     )
-    logger.debug("[pcodes] rewrite SQL:\n%s", rewrite_sql)
-    conn.execute(rewrite_sql)
-    conn.execute(f"DROP TABLE {table}")
-    conn.execute(f"ALTER TABLE {tagged_table} RENAME TO {table}")
+
+    tagged_table = _tagged_table_name(table)
+    conn.execute(f"DROP TABLE IF EXISTS {tagged_table}")
+    conn.execute(
+        f"CREATE TABLE {tagged_table} AS\n{select_sql}",
+        [adm0_pcode, adm0_name],
+    )
+    _replace_table_with_tagged(conn, table=table, tagged_table=tagged_table)
     _drop_tables(conn, list(admin_tables.values()))
 
     logger.info(

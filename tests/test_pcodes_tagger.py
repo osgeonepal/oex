@@ -230,9 +230,12 @@ def test_tag_table_handles_country_with_no_admin_data(
     conn: duckdb.DuckDBPyConnection,
     admin_cache: dict[int, PcodeCacheEntry],
 ) -> None:
-    """When no level has rows for the ISO3, the table is left untouched."""
+    """No-data ISO3 still gets schema-stable null pcode columns.
+
+    Per-row nulls for unmappable countries keep downstream writers happy
+    across a 200-country sweep.
+    """
     _make_features_table(conn, "features")
-    cols_before = sorted(r[0] for r in conn.execute("DESCRIBE features").fetchall())
 
     report = tag_table(
         conn,
@@ -246,8 +249,23 @@ def test_tag_table_handles_country_with_no_admin_data(
     assert sorted(report.levels_empty) == [1, 2]
     assert report.adm0_pcode is None
 
-    cols_after = sorted(r[0] for r in conn.execute("DESCRIBE features").fetchall())
-    assert cols_after == cols_before, "untagged run must not mutate schema"
+    cols_after = {r[0] for r in conn.execute("DESCRIBE features").fetchall()}
+    assert {
+        "adm0_pcode",
+        "adm0_name",
+        "adm1_pcode",
+        "adm1_name",
+        "adm2_pcode",
+        "adm2_name",
+    } <= cols_after
+    rows = conn.execute(
+        "SELECT adm0_pcode, adm0_name, adm1_pcode, adm2_pcode FROM features"
+    ).fetchall()
+    for r in rows:
+        assert r[0] == "ATA"
+        assert r[1] is None
+        assert r[2] is None
+        assert r[3] is None
 
 
 def test_tag_table_drops_temp_admin_tables(
@@ -272,9 +290,11 @@ def test_tag_table_treats_iso3_as_data_not_sql(
     conn: duckdb.DuckDBPyConnection,
     admin_cache: dict[int, PcodeCacheEntry],
 ) -> None:
-    """A malicious iso3 must not execute as SQL; it just yields zero rows."""
+    """A malicious iso3 must not execute as SQL: features table survives."""
     _make_features_table(conn, "features")
-    cols_before = sorted(r[0] for r in conn.execute("DESCRIBE features").fetchall())
+    row = conn.execute("SELECT COUNT(*) FROM features").fetchone()
+    assert row is not None
+    feature_count_before = row[0]
 
     report = tag_table(
         conn,
@@ -284,8 +304,9 @@ def test_tag_table_treats_iso3_as_data_not_sql(
         levels=[1, 2],
     )
     assert report.levels_tagged == []
-    cols_after = sorted(r[0] for r in conn.execute("DESCRIBE features").fetchall())
-    assert cols_after == cols_before, "iso3 must be parameterised, not interpolated"
+    rows = conn.execute("SELECT COUNT(*) FROM features").fetchone()
+    assert rows is not None
+    assert rows[0] == feature_count_before, "iso3 must be parameterised, not interpolated"
 
 
 def test_tag_table_quotes_apostrophes_in_adm0_name(

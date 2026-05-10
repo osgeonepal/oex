@@ -1,5 +1,3 @@
-"""DuckDB connection factory for spatial + httpfs workloads."""
-
 import os
 from pathlib import Path
 
@@ -37,8 +35,13 @@ def connect(
         f"SET s3_region='{s3_region}'",
         f"PRAGMA memory_limit='{resolved_memory}GB'",
         f"PRAGMA threads={resolved_threads}",
-        "PRAGMA enable_object_cache",
+        # Lets DuckDB spill intermediates to temp_directory under memory
+        # pressure, avoiding OOM on heavy COPY / spatial-join passes.
+        "SET preserve_insertion_order=false",
         f"PRAGMA temp_directory='{resolved_temp}'",
+        # Background-thread free() reduces alloc churn on long-running
+        # joins; otherwise the worker threads stall on deallocation.
+        "SET allocator_background_threads=true",
         f"SET http_retries={http_retries}",
         f"SET http_retry_wait_ms={http_retry_wait_ms}",
         f"SET http_retry_backoff={http_retry_backoff}",

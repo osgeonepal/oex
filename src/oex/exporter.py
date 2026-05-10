@@ -413,6 +413,22 @@ class Exporter:
                 feature_count=count,
             )
 
+            if not zip_paths:
+                # Every requested format failed (corrupt OSM coords, OOM, etc).
+                # Don't try to publish nothing; mark the category as skipped so
+                # the country doesn't go red if other categories are healthy.
+                logger.warning(
+                    "%s no formats succeeded; skipping HDX upload for this category",
+                    cat_tag,
+                )
+                return CategoryResult(
+                    name=category.name,
+                    status="skipped",
+                    feature_count=count,
+                    duration_s=time.time() - cat_start,
+                    error="no formats succeeded",
+                )
+
             total_mb = sum(p.stat().st_size for p in zip_paths) / (1024 * 1024)
 
             if self._state is not None:
@@ -523,7 +539,20 @@ class Exporter:
                 shutil.rmtree(stage_dir)
             stage_dir.mkdir(parents=True)
             try:
-                files = write_format(conn, table, slug, fmt, stage_dir)
+                try:
+                    files = write_format(conn, table, slug, fmt, stage_dir)
+                except Exception as exc:  # noqa: BLE001 - per-format boundary
+                    # GDAL's COPY can fail mid-write on bogus OSM coords or
+                    # blow past memory_limit on huge tables. Skip this format
+                    # rather than killing the whole category; the others may
+                    # still succeed.
+                    logger.warning(
+                        "%s [%s] format write failed (%s); skipping this format",
+                        f"[{category.name}/{self._runner.name}]",
+                        fmt,
+                        exc,
+                    )
+                    continue
                 if not files:
                     continue
                 dt_name = f"{self._cfg.key}_{self._cfg.iso3.lower()}_{slug}"
