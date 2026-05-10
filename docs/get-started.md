@@ -83,7 +83,7 @@ Three schemas are bundled in `configs/examples/`. Reference one with
 `--config`:
 
 ```bash
-# HOT-style HDX layers (11 categories matching hotosm_<iso3>_*)
+# HOT-style HDX layers (12 categories matching hotosm_<iso3>_*)
 oex-cli osm --config configs/examples/hot-schema.yaml --iso3 NPL
 
 # Full Overture data package (15 datasets, one per theme/feature_type)
@@ -112,8 +112,8 @@ categories:
         amenity: ["cafe"]
       select:
         - feature_id AS id
-        - tags['name'][1] AS name
-        - tags['opening_hours'][1] AS opening_hours
+        - tags['name'] AS name
+        - tags['opening_hours'] AS opening_hours
 ```
 
 Run it:
@@ -139,6 +139,73 @@ output/
 Each zip contains the GIS file(s) plus `README.txt`, `config.yaml`, and
 optionally `metadata.json` (when `output.metadata: true`) with per-column
 null shares, distinct counts, geometry types, and bbox.
+
+## OSM engine: geofabrik vs planet
+
+Two engines feed the OSM exporter. The right one depends on how you want
+country PBFs to land on disk.
+
+- `engine: geofabrik` (default). Downloads the per-country PBF from
+  Geofabrik's mirror (~30 to 200 MB depending on country). One run per
+  country pays a small download. Snapshot date is whatever Geofabrik
+  publishes that day.
+
+- `engine: planet`. Clips the country PBF out of a local planet PBF
+  (~87 GB) using `osmium extract --strategy=complete_ways`, then runs
+  quackosm once with the union of all category tag filters. Picks every
+  feature the schema cares about in a single PBF parse, no per-category
+  reparse. Useful when you control the snapshot date or are sweeping
+  many countries from one local planet.
+
+  Requires `osmium-tool` on PATH:
+
+  ```bash
+  # Fedora / RHEL
+  sudo dnf install osmium-tool
+
+  # Debian / Ubuntu
+  sudo apt install osmium-tool
+
+  # macOS
+  brew install osmium-tool
+  ```
+
+  And a planet PBF locally; download once with:
+
+  ```bash
+  oex-cli osm-build-cache
+  ```
+
+  Point your config at it:
+
+  ```yaml
+  source:
+    osm:
+      engine: planet
+      pbf_path: /path/to/planet-latest.osm.pbf
+  ```
+
+  Or, to prefer geofabrik but fall back to planet for countries Geofabrik
+  doesn't publish (e.g. some small territories):
+
+  ```yaml
+  source:
+    osm:
+      engine: geofabrik
+      planet_fallback: true
+      pbf_path: /path/to/planet-latest.osm.pbf
+  ```
+
+  By default a missing `pbf_path` is a loud failure. To download the
+  planet PBF the first time the planet path is needed, opt in:
+
+  ```yaml
+  source:
+    osm:
+      auto_download_planet: true
+  ```
+
+  or pass `--download-if-missing` on the CLI.
 
 ## Develop from source
 

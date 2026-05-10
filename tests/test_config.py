@@ -90,6 +90,51 @@ def test_select_categories_unknown_theme_raises() -> None:
         select_categories(cfg, "nonexistent_theme")
 
 
+def _write_planet_yaml(tmp_path: Path, body: str) -> Path:
+    p = tmp_path / "cfg.yaml"
+    p.write_text(body, encoding="utf-8")
+    return p
+
+
+def test_planet_engine_requires_pbf_path(tmp_path: Path) -> None:
+    yaml_path = _write_planet_yaml(
+        tmp_path,
+        "iso3: NPL\nsource:\n  osm:\n    engine: planet\n",
+    )
+    with pytest.raises(ConfigError, match="pbf_path"):
+        load_config(yaml_path)
+
+
+def test_planet_engine_with_pbf_path_loads(tmp_path: Path) -> None:
+    pbf = tmp_path / "planet.osm.pbf"
+    pbf.write_bytes(b"\x00")
+    yaml_path = _write_planet_yaml(
+        tmp_path,
+        f"iso3: NPL\nsource:\n  osm:\n    engine: planet\n    pbf_path: {pbf}\n",
+    )
+    cfg = load_config(yaml_path)
+    assert cfg.source["osm"].engine == "planet"
+    assert cfg.source["osm"].pbf_path == str(pbf)
+
+
+def test_planet_fallback_requires_pbf_path(tmp_path: Path) -> None:
+    yaml_path = _write_planet_yaml(
+        tmp_path,
+        "iso3: NPL\nsource:\n  osm:\n    engine: geofabrik\n    planet_fallback: true\n",
+    )
+    with pytest.raises(ConfigError, match="planet_fallback"):
+        load_config(yaml_path)
+
+
+def test_unknown_osm_engine_raises(tmp_path: Path) -> None:
+    yaml_path = _write_planet_yaml(
+        tmp_path,
+        "iso3: NPL\nsource:\n  osm:\n    engine: bogus\n",
+    )
+    with pytest.raises(ConfigError, match="bogus"):
+        load_config(yaml_path)
+
+
 def test_iter_configs_yields_yamls(tmp_path: Path) -> None:
     (tmp_path / "a.yaml").write_text("iso3: ABC\n", encoding="utf-8")
     (tmp_path / "b.yml").write_text("iso3: BCD\n", encoding="utf-8")

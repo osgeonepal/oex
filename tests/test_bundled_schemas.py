@@ -18,7 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
     ("schema_filename", "expected_count", "description"),
     [
         ("custom-schema.yaml", 2, "Hospitals + Healthcare POIs"),
-        ("hot-schema.yaml", 11, "11 HOT HDX layers"),
+        ("hot-schema.yaml", 12, "12 HOT HDX layers"),
         ("overture-package-schema.yaml", 15, "15 Overture (theme,type) pairs"),
     ],
 )
@@ -68,6 +68,7 @@ def test_hot_schema_layer_names_match_hdx() -> None:
         "airports",
         "sea_ports",
         "points_of_interest",
+        "cultural_places",
     }
     assert {c.name for c in cfg.categories} == expected
 

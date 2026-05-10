@@ -13,13 +13,9 @@ setup:
 lint:
     uv run pre-commit run --all-files
 
-# Run the test suite with coverage (skips integration tests by default)
+# Run the test suite with coverage
 test *ARGS:
-    uv run pytest -m "not integration" {{ARGS}}
-
-# Run integration tests (network + larger downloads)
-test-integration *ARGS:
-    uv run pytest -m integration {{ARGS}}
+    uv run pytest {{ARGS}}
 
 # Build sdist and wheel into dist/
 build:

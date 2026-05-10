@@ -9,9 +9,9 @@
 #
 #   xargs -a hot_countries.txt -I{} oex-cli osm {} --config configs/hot.yaml --hdx-purge
 #
-# Run `oex-cli osm-build-cache --planet` once first to populate the planet
-# parquet cache. Each country then reads from the same cache, no per-country
-# PBF download.
+# Run `oex-cli osm-build-cache` once first to download the planet PBF
+# (~87 GB). Each country then clips its own PBF out of it on demand via
+# osmium-tool. Requires `osmium-tool` on PATH.
 
 iso3: ""
 key: hotosm
@@ -39,8 +39,11 @@ output:
     acl: public-read
 
 source:
-  # osm:
-  #   engine: planet_parquet
+  osm:
+    engine: geofabrik
+    planet_fallback: true
+    pbf_path: data/osm/_pbf/planet-latest.osm.pbf
+    auto_download_planet: true
   pcodes:
     enabled: true
 

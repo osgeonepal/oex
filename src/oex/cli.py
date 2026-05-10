@@ -71,6 +71,7 @@ def _build_overrides(
     output_dir: Path | None,
     osm_engine: str | None = None,
     hdx_purge: bool | None = None,
+    download_if_missing: bool | None = None,
 ) -> dict[str, object]:
     overrides: dict[str, object] = {}
     if iso3_or_yaml and len(iso3_or_yaml) <= 3 and iso3_or_yaml.isalpha():
@@ -87,6 +88,10 @@ def _build_overrides(
         overrides["output.dir"] = str(output_dir)
     if osm_engine is not None:
         overrides["source.osm.engine"] = osm_engine
+    if download_if_missing is True:
+        overrides["source.osm.auto_download_planet"] = True
+    if download_if_missing is False:
+        overrides["source.osm.auto_download_planet"] = False
     return overrides
 
 
@@ -177,14 +182,27 @@ def cmd_osm(
     engine: str | None = typer.Option(
         None,
         "--engine",
-        help="OSM engine: 'geofabrik' (default) or 'planet_parquet'",
+        help="OSM engine: 'geofabrik' (default) or 'planet'",
+    ),
+    download_if_missing: bool | None = typer.Option(
+        None,
+        "--download-if-missing/--no-download-if-missing",
+        help=(
+            "When the planet path is missing, download the ~87 GB planet PBF "
+            "before running. Overrides source.osm.auto_download_planet."
+        ),
     ),
 ) -> None:
     """Export OSM data via the configured engine."""
     iso3_resolved, theme_resolved = _resolve_args(iso3_or_yaml, theme, configs_dir, config)
     yamls = _resolve_config(iso3_resolved, configs_dir, config)
     overrides = _build_overrides(
-        iso3_resolved, hdx_push, output_dir, osm_engine=engine, hdx_purge=hdx_purge
+        iso3_resolved,
+        hdx_push,
+        output_dir,
+        osm_engine=engine,
+        hdx_purge=hdx_purge,
+        download_if_missing=download_if_missing,
     )
     results = [_run_one(y, overrides, theme_resolved, OsmRunner) for y in yamls]
     raise typer.Exit(code=_summarise(results))
@@ -192,48 +210,27 @@ def cmd_osm(
 
 @app.command("osm-build-cache")
 def cmd_osm_build_cache(
-    pbf: Path | None = typer.Option(None, "--pbf", help="Local PBF path"),
-    planet: bool = typer.Option(False, "--planet", help="Download the latest planet PBF"),
     config: Path | None = typer.Option(
-        None, "--config", "-c", help="Config to drive theme tag filters"
-    ),
-    snapshot: str | None = typer.Option(
-        None, "--snapshot", help="Snapshot label, defaults to today"
-    ),
-    themes: str | None = typer.Option(
-        None, "--themes", help="Comma-separated theme slugs to limit"
+        None, "--config", "-c", help="Config providing source.osm settings"
     ),
 ) -> None:
-    """Build the planet OSM PBF -> per-theme parquet cache at <cache_dir>/planet/<snapshot>/."""
-    from oex.osm.build_cache import build_cache
+    """Download the planet OSM PBF to ``<cache_dir>/_pbf/planet-latest.osm.pbf``.
+
+    Per-country extraction from that PBF happens lazily in ``oex-cli osm <ISO3>``
+    when ``source.osm.engine`` is ``planet`` (or ``geofabrik`` with
+    ``planet_fallback: true``).
+    """
     from oex.osm.fetch_planet import download_pbf
 
     cfg: RootConfig = load_config(config)
-
-    if planet and pbf is not None:
-        raise typer.BadParameter("Pass either --planet or --pbf, not both")
-    if not planet and pbf is None:
-        raise typer.BadParameter("One of --planet or --pbf is required")
-
-    if planet:
-        src = cfg.source["osm"]
-        result = download_pbf(src.pbf_url, src.cache_dir + "/_pbf", md5_url=src.md5_url)
-        pbf_path = result.path
-    else:
-        assert pbf is not None
-        pbf_path = pbf
-
-    theme_list = [t.strip() for t in themes.split(",")] if themes else None
-    cache_root = Path(cfg.source["osm"].cache_dir) / "planet"
-    manifest = build_cache(
-        cfg,
-        pbf_path,
-        cache_root=cache_root,
-        snapshot=snapshot,
-        themes_filter=theme_list,
+    src = cfg.source["osm"]
+    pbf_dir = Path(src.cache_dir) / "_pbf"
+    result = download_pbf(src.pbf_url, pbf_dir, md5_url=src.md5_url)
+    typer.echo(f"Planet PBF available at: {result.path}")
+    typer.echo(
+        "Set source.osm.pbf_path to that file to use the planet engine, "
+        "or run `oex-cli osm <ISO3>` if your config already points to it."
     )
-    typer.echo(f"Cache snapshot: {manifest.snapshot}")
-    typer.echo(f"Themes built: {[t.theme for t in manifest.themes]}")
 
 
 def main() -> None:

@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from oex.cli import _resolve_args
+from oex.cli import _build_overrides, _resolve_args
 
 CFG = Path("dummy.yaml")
 
@@ -31,3 +31,18 @@ def test_resolve_with_config_keeps_both_when_passed() -> None:
 def test_resolve_with_configs_dir_behaves_like_config() -> None:
     assert _resolve_args("NPL", None, Path("configs/"), None) == ("NPL", None)
     assert _resolve_args("buildings", None, Path("configs/"), None) == (None, "buildings")
+
+
+def test_overrides_download_if_missing_true_sets_auto_download() -> None:
+    overrides = _build_overrides("NPL", None, None, download_if_missing=True)
+    assert overrides["source.osm.auto_download_planet"] is True
+
+
+def test_overrides_download_if_missing_false_disables_auto_download() -> None:
+    overrides = _build_overrides("NPL", None, None, download_if_missing=False)
+    assert overrides["source.osm.auto_download_planet"] is False
+
+
+def test_overrides_download_if_missing_unset_does_not_appear() -> None:
+    overrides = _build_overrides("NPL", None, None)
+    assert "source.osm.auto_download_planet" not in overrides

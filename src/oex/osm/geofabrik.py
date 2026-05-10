@@ -48,6 +48,14 @@ class GeofabrikLookupError(LookupError):
     """Raised when the index does not contain a country-level extract."""
 
 
+class GeofabrikUnavailableError(GeofabrikLookupError):
+    """Geofabrik does not publish a country-level PBF for this ISO3.
+
+    Distinct subclass so callers can catch precisely (e.g. for planet_fallback)
+    without swallowing other Geofabrik errors like network failures.
+    """
+
+
 def _iso3_to_iso2(iso3: str) -> str:
     country = pycountry.countries.get(alpha_3=iso3.upper())
     if country is None:
@@ -87,7 +95,7 @@ def lookup_country(iso3: str, *, index_url: str = DEFAULT_INDEX_URL) -> Geofabri
             candidates.append(props)
 
     if not candidates:
-        raise GeofabrikLookupError(
+        raise GeofabrikUnavailableError(
             f"No Geofabrik country-level extract found for ISO3 {iso3!r} "
             f"(alpha2 {iso2!r}). Geofabrik may not publish this country directly."
         )

@@ -93,7 +93,6 @@ addopts = [
 testpaths = ["tests"]
 xfail_strict = true
 markers = [
-    "integration: integration tests that require network or large downloads",
     "slow: tests that take more than a few seconds",
 ]
 

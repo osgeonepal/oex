@@ -45,13 +45,13 @@ the given metre value, then reprojected back. 0 disables it. Use this for
 coastal countries or for cross-border features whose centroid sits a few
 hundred metres outside the legal boundary (jetties, bridges, airfields).
 
-A note on engines: the buffer affects the SQL clip applied at query time.
-For `source.osm.engine: geofabrik`, OSM data is bounded by the per-country
-PBF that Geofabrik publishes, so the buffer can only widen the clip *up to*
-what Geofabrik already includes (Geofabrik PBFs do contain a small overlap
-beyond the legal border, but it is not unlimited). Switch to
-`planet_parquet` if you need a buffer larger than Geofabrik's own slice.
-Overture is not affected; it reads from the global S3 bucket.
+A note on engines: the buffer drives the polygon used to extract the
+country PBF. For `source.osm.engine: geofabrik` the country PBF comes
+pre-cut from Geofabrik (a small overlap beyond the legal border is
+included, but it's bounded). Switch to `engine: planet` if you need a
+larger buffer than Geofabrik's slice; the buffered polygon is passed
+straight to `osmium extract`. Overture is not affected; it reads from
+the global S3 bucket.
 
 ## Output formats
 
@@ -176,19 +176,35 @@ Each category needs `name`, plus any of:
 ```yaml
 source:
   osm:
-    engine: geofabrik          # or planet_parquet
+    engine: geofabrik          # or planet
     cache_dir: data/osm
     snapshot: latest
     geofabrik_clip_to_boundary: true
+    pbf_path: null             # required for engine: planet or planet_fallback
+    planet_fallback: false     # try geofabrik, fall back to planet on 404
+    auto_download_planet: false  # when true, download the planet PBF if pbf_path is missing
 ```
 
-`geofabrik` (default): no pre-build. First run per country downloads the PBF
-and builds the cache. Subsequent runs reuse it. The cache lives at
+`geofabrik` (default): no pre-build. First run per country downloads the
+country PBF from Geofabrik and runs quackosm once per category. Cache layout:
 `<cache_dir>/geofabrik/<iso3>/<snapshot>/<category-slug>.parquet`.
 
-`planet_parquet`: build once via `oex-cli osm-build-cache --planet`,
-then any country export is a fast read against the Hilbert-sorted parquet
-at `<cache_dir>/planet/<snapshot>/<category-slug>.parquet`.
+`planet`: clips a country PBF out of a local planet PBF using
+`osmium extract --strategy=complete_ways`, then runs quackosm once with
+the union of all category tag filters and `keep_all_tags=True`. Per-category
+extraction at query time is a tag-predicate WHERE on the resulting
+`<cache_dir>/planet/<iso3>/<snapshot>/country.parquet`. Requires the
+`osmium-tool` binary on PATH (one-time `dnf install osmium-tool` /
+`apt install osmium-tool` / `brew install osmium-tool`).
+
+`planet_fallback: true`: keeps `engine: geofabrik` as primary and only
+switches to the planet path when Geofabrik does not publish the country
+(e.g. some small territories). Other Geofabrik failures (network errors,
+rate limits) are not swallowed.
+
+Download the planet PBF once with `oex-cli osm-build-cache`; the result
+lives at `<cache_dir>/_pbf/planet-latest.osm.pbf` and you point
+`pbf_path` at it.
 
 ## Pinning a release / snapshot
 
@@ -208,15 +224,15 @@ Resolution rules:
 - **Overture `release`**: any literal release like `2026-04-15.0` is used
   verbatim with no lookup. `latest` lists the public S3 bucket and picks the
   highest `YYYY-MM-DD.N`.
-- **OSM `snapshot` for `planet_parquet`**: must match an existing snapshot
-  directory under `<cache_dir>/planet/`. A missing snapshot is a loud error,
-  not a silent fallback. `latest` picks the newest dir.
+- **OSM `snapshot` for `planet`**: defaults to the planet PBF's mtime as
+  an ISO date. An explicit value pins the cache directory name; subsequent
+  runs reuse `<cache>/planet/<iso3>/<snapshot>/country.parquet` without
+  reclipping the planet.
 - **OSM `snapshot` for `geofabrik`**: this is a label for the per-country
   cache dir. Geofabrik only publishes `*-latest.osm.pbf` URLs (no historical
   archive), so a fresh build always pulls today's PBF regardless of the
-  label. To truly pin an OSM date, either use `planet_parquet` with a
-  pre-built snapshot, or build the geofabrik cache from your own historical
-  PBF: `oex-cli osm-build-cache --pbf <historical.osm.pbf>`.
+  label. To truly pin an OSM date, use `engine: planet` with a planet PBF
+  downloaded on the date you want.
 
 The resolved version is logged before any per-category work, e.g.:
 

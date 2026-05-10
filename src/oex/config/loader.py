@@ -76,7 +76,29 @@ def load_config(
     container: Any = OmegaConf.to_object(typed)
     if not isinstance(container, RootConfig):
         raise ConfigError("Merged config did not resolve to RootConfig")
+    _validate_osm_engine(container)
     return container
+
+
+def _validate_osm_engine(cfg: RootConfig) -> None:
+    osm = cfg.source.get("osm")
+    if osm is None:
+        return
+    valid_engines = {"geofabrik", "planet"}
+    if osm.engine not in valid_engines:
+        raise ConfigError(
+            f"source.osm.engine={osm.engine!r} is invalid; must be one of {sorted(valid_engines)}"
+        )
+    if osm.engine == "planet" and not osm.pbf_path:
+        raise ConfigError(
+            "source.osm.engine='planet' requires source.osm.pbf_path "
+            "(absolute path to a local planet PBF)"
+        )
+    if osm.planet_fallback and not osm.pbf_path:
+        raise ConfigError(
+            "source.osm.planet_fallback=true requires source.osm.pbf_path "
+            "(absolute path to a local planet PBF)"
+        )
 
 
 def apply_overrides(cfg: RootConfig, overrides: dict[str, Any]) -> RootConfig:
