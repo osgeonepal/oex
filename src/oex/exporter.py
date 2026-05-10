@@ -22,6 +22,7 @@ from oex.pcodes import (
     resolve_pcodes_config,
     tag_table,
 )
+from oex.preflight import check_writable_paths
 from oex.report import SourceMetadata, render_report
 from oex.sources.base import CategorySkippedError, SourceQuery, SourceRunner
 from oex.sql import build_select_clause, build_where_clause, materialise
@@ -97,6 +98,8 @@ class Exporter:
             raise ValueError("config.iso3 is required")
         if not self._cfg.categories:
             raise ValueError("config.categories is empty")
+
+        check_writable_paths(self._cfg)
 
         iso = self._cfg.iso3.upper()
         cat_names = [c.name for c in self._cfg.categories]
