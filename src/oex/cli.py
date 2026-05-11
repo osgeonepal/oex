@@ -73,10 +73,16 @@ def _build_overrides(
     hdx_purge: bool | None = None,
     download_if_missing: bool | None = None,
     resume: bool | None = None,
+    iso3: str | None = None,
+    dataset_name: str | None = None,
 ) -> dict[str, object]:
     overrides: dict[str, object] = {}
     if iso3_or_yaml and len(iso3_or_yaml) <= 3 and iso3_or_yaml.isalpha():
         overrides["iso3"] = iso3_or_yaml.upper()
+    if iso3:
+        overrides["iso3"] = iso3.upper()
+    if dataset_name is not None:
+        overrides["dataset_name"] = dataset_name
     if hdx_push is True:
         overrides["hdx.push"] = True
     if hdx_push is False:
@@ -146,13 +152,26 @@ def _resolve_args(
 @app.command("overture")
 def cmd_overture(
     iso3_or_yaml: str | None = typer.Argument(
-        None, help="ISO3 like NPL, or name of a YAML in ./configs/"
+        None, help="ISO3 like NPL, or name of a YAML in ./configs/ (prefer --iso3)"
     ),
     theme: str | None = typer.Argument(None, help="Optional theme override (e.g. buildings)"),
     configs_dir: Path | None = typer.Option(
         None, "--configs-dir", help="Run every YAML in this directory"
     ),
     config: Path | None = typer.Option(None, "--config", "-c", help="Explicit config YAML path"),
+    iso3: str | None = typer.Option(
+        None,
+        "--iso3",
+        help="ISO3 country code (e.g. NPL, COD). Overrides the positional argument and YAML.",
+    ),
+    dataset_name: str | None = typer.Option(
+        None,
+        "--dataset-name",
+        help=(
+            "Free-form area label used as the {country} substitution in hdx.title_template. "
+            "Set this to fix pycountry inversions (e.g. DRC) or for sub-national exports."
+        ),
+    ),
     output_dir: Path | None = typer.Option(None, "--output-dir", "-o"),
     hdx_push: bool | None = typer.Option(None, "--hdx-push/--no-hdx-push"),
     hdx_purge: bool | None = typer.Option(
@@ -163,8 +182,15 @@ def cmd_overture(
 ) -> None:
     """Export Overture data."""
     iso3_resolved, theme_resolved = _resolve_args(iso3_or_yaml, theme, configs_dir, config)
-    yamls = _resolve_config(iso3_resolved, configs_dir, config)
-    overrides = _build_overrides(iso3_resolved, hdx_push, output_dir, hdx_purge=hdx_purge)
+    yamls = _resolve_config(iso3 or iso3_resolved, configs_dir, config)
+    overrides = _build_overrides(
+        iso3_resolved,
+        hdx_push,
+        output_dir,
+        hdx_purge=hdx_purge,
+        iso3=iso3,
+        dataset_name=dataset_name,
+    )
     results = [_run_one(y, overrides, theme_resolved, OvertureRunner) for y in yamls]
     raise typer.Exit(code=_summarise(results))
 
@@ -172,11 +198,24 @@ def cmd_overture(
 @app.command("osm")
 def cmd_osm(
     iso3_or_yaml: str | None = typer.Argument(
-        None, help="ISO3 like NPL, or name of a YAML in ./configs/"
+        None, help="ISO3 like NPL, or name of a YAML in ./configs/ (prefer --iso3)"
     ),
     theme: str | None = typer.Argument(None, help="Optional theme override (e.g. buildings)"),
     configs_dir: Path | None = typer.Option(None, "--configs-dir"),
     config: Path | None = typer.Option(None, "--config", "-c"),
+    iso3: str | None = typer.Option(
+        None,
+        "--iso3",
+        help="ISO3 country code (e.g. NPL, COD). Overrides the positional argument and YAML.",
+    ),
+    dataset_name: str | None = typer.Option(
+        None,
+        "--dataset-name",
+        help=(
+            "Free-form area label used as the {country} substitution in hdx.title_template. "
+            "Set this to fix pycountry inversions (e.g. DRC) or for sub-national exports."
+        ),
+    ),
     output_dir: Path | None = typer.Option(None, "--output-dir", "-o"),
     hdx_push: bool | None = typer.Option(None, "--hdx-push/--no-hdx-push"),
     hdx_purge: bool | None = typer.Option(
@@ -208,7 +247,7 @@ def cmd_osm(
 ) -> None:
     """Export OSM data via the configured engine."""
     iso3_resolved, theme_resolved = _resolve_args(iso3_or_yaml, theme, configs_dir, config)
-    yamls = _resolve_config(iso3_resolved, configs_dir, config)
+    yamls = _resolve_config(iso3 or iso3_resolved, configs_dir, config)
     overrides = _build_overrides(
         iso3_resolved,
         hdx_push,
@@ -217,6 +256,8 @@ def cmd_osm(
         hdx_purge=hdx_purge,
         download_if_missing=download_if_missing,
         resume=resume,
+        iso3=iso3,
+        dataset_name=dataset_name,
     )
     results = [_run_one(y, overrides, theme_resolved, OsmRunner) for y in yamls]
     raise typer.Exit(code=_summarise(results))

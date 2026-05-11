@@ -27,8 +27,7 @@ _HDX_SITE_URLS = {
 
 _HDX_SHORT_SOURCE = {"osm": "OpenStreetMap", "overture": "Overture"}
 
-# Filler words kept lowercase in title-cased category names
-# e.g. "Points of Interest" not "Points Of Interest".
+# Kept lowercase mid-phrase so "Points of Interest" reads naturally.
 _TITLE_LOWER_WORDS = {"a", "an", "and", "at", "by", "for", "in", "of", "on", "or", "the", "to"}
 
 
@@ -40,21 +39,34 @@ def _title_case_category(name: str) -> str:
     )
 
 
-def _country_name(iso3: str) -> str:
+def _country_name(iso3: str, *, dataset_name: str | None = None) -> str:
+    # Precedence: configured dataset_name (overrides ISO inversions like DRC
+    # and supports sub-national exports), pycountry common_name, pycountry
+    # name, raw iso3.
+    if dataset_name:
+        return dataset_name
     import pycountry
 
     record = pycountry.countries.get(alpha_3=iso3.upper())
-    return record.name if record else iso3.upper()
+    if record is None:
+        return iso3.upper()
+    return getattr(record, "common_name", None) or record.name
+
+
+def _category_label(category: CategoryConfig) -> str:
+    return category.hdx.title or _title_case_category(category.name)
 
 
 def _resolve_title(cfg: RootConfig, category: CategoryConfig) -> str:
+    label = _category_label(category)
+    place = _country_name(cfg.iso3, dataset_name=cfg.dataset_name)
     if cfg.hdx.title_template:
         return cfg.hdx.title_template.format(
-            country=_country_name(cfg.iso3),
-            category=_title_case_category(category.name),
+            country=place,
+            category=label,
             iso3=cfg.iso3.upper(),
         )
-    return f"{category.name} of {cfg.dataset_name or cfg.iso3.upper()}"
+    return f"{label} of {place or cfg.iso3.upper()}"
 
 
 @dataclass
@@ -66,6 +78,9 @@ class PublishContext:
     combined_report_enabled: bool = False
     output_dir: Path | None = None
     s3: S3Config | None = None
+    # When both set, override snapshot_date for HDX dataset time period.
+    temporal_min: datetime | None = None
+    temporal_max: datetime | None = None
 
 
 class HdxPublisher:
@@ -183,7 +198,7 @@ class HdxPublisher:
     ):  # noqa: ANN202 - hdx-python-api Dataset, imported lazily
         from hdx.data.dataset import Dataset
 
-        title = category.hdx.title or _resolve_title(cfg, category)
+        title = _resolve_title(cfg, category)
         hdx_source = category.hdx.dataset_source or _HDX_SHORT_SOURCE.get(
             ctx.source_name, ctx.dataset_source
         )
@@ -209,7 +224,10 @@ class HdxPublisher:
             dataset_args["license_url"] = category.hdx.license_url
 
         dataset = Dataset(dataset_args)
-        dataset.set_time_period(ctx.snapshot_date)
+        if ctx.temporal_min is not None and ctx.temporal_max is not None:
+            dataset.set_time_period(ctx.temporal_min, ctx.temporal_max)
+        else:
+            dataset.set_time_period(ctx.snapshot_date)
         dataset.set_expected_update_frequency(cfg.frequency)
         dataset.add_other_location(cfg.iso3.upper())
         for tag in category.hdx.tags:

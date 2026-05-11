@@ -91,3 +91,17 @@ def test_shp_writer_handles_lowercase_and_uppercase_types(tmp_path: Path) -> Non
 def test_unknown_format_raises(conn_with_table: duckdb.DuckDBPyConnection, tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         write_format(conn_with_table, "features", "demo", "xyz", tmp_path)
+
+
+def test_fgb_writer_emits_indexed_file(
+    conn_with_table: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
+    out_dir = tmp_path / "out"
+    files = write_format(conn_with_table, "features", "demo", "fgb", out_dir)
+    assert len(files) == 1
+    assert files[0].name == "demo.fgb"
+    # FGB writes a magic "fgb3" header. A spatially-indexed file has the index
+    # written at the end; we just confirm the magic + non-empty payload.
+    head = files[0].read_bytes()[:4]
+    assert head[:3] == b"fgb"
+    assert files[0].stat().st_size > 64

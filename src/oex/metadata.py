@@ -25,29 +25,49 @@ class ColumnReport:
 
 
 @dataclass
+class TemporalReport:
+    column: str
+    min: str | None
+    max: str | None
+    non_null_count: int
+
+
+@dataclass
 class MetadataReport:
     feature_count: int
     geometry_types: dict[str, int]
     bbox: tuple[float, float, float, float] | None
     columns: list[ColumnReport]
     summary: str
+    temporal: TemporalReport | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
-def compute_metadata(conn: duckdb.DuckDBPyConnection, table_name: str) -> MetadataReport:
+def compute_metadata(
+    conn: duckdb.DuckDBPyConnection,
+    table_name: str,
+    *,
+    temporal_column: str | None = None,
+) -> MetadataReport:
     feature_count = _count_rows(conn, table_name)
     geometry_types = _geometry_breakdown(conn, table_name)
     bbox = _bbox(conn, table_name) if feature_count else None
     columns = _column_reports(conn, table_name, feature_count)
     summary = _summary(feature_count, geometry_types, columns)
+    temporal = (
+        _temporal_bounds(conn, table_name, temporal_column)
+        if temporal_column and feature_count
+        else None
+    )
     return MetadataReport(
         feature_count=feature_count,
         geometry_types=geometry_types,
         bbox=bbox,
         columns=columns,
         summary=summary,
+        temporal=temporal,
     )
 
 
@@ -148,6 +168,42 @@ def _summary(
     else:
         parts.append(f"all {len(columns)} attribute columns have <50% null share")
     return ". ".join(parts) + "."
+
+
+def _temporal_bounds(
+    conn: duckdb.DuckDBPyConnection,
+    table: str,
+    column: str,
+) -> TemporalReport | None:
+    schema = {row[0]: row[1] for row in conn.execute(f"DESCRIBE {table}").fetchall()}
+    if column not in schema:
+        logger.warning(
+            "temporal column %r not found in table %s; skipping temporal bounds",
+            column,
+            table,
+        )
+        return None
+    quoted = _quote(column)
+    row = conn.execute(
+        f"SELECT MIN({quoted}) AS lo, MAX({quoted}) AS hi, COUNT({quoted}) AS n FROM {table}"
+    ).fetchone()
+    if not row or row[2] == 0:
+        return TemporalReport(column=column, min=None, max=None, non_null_count=0)
+    lo, hi, n = row
+    return TemporalReport(
+        column=column,
+        min=_stringify_temporal(lo),
+        max=_stringify_temporal(hi),
+        non_null_count=int(n),
+    )
+
+
+def _stringify_temporal(value: Any) -> str | None:
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
 
 
 def _quote(identifier: str) -> str:

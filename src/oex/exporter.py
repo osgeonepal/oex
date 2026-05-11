@@ -360,7 +360,11 @@ class Exporter:
             metadata_dict = None
             if need_metadata:
                 logger.info("%s computing metadata...", cat_tag)
-                metadata_obj = compute_metadata(conn, table)
+                metadata_obj = compute_metadata(
+                    conn,
+                    table,
+                    temporal_column=category.temporal.column,
+                )
                 metadata_dict = metadata_obj.to_dict()
 
             metadata_json_path: Path | None = None
@@ -442,6 +446,7 @@ class Exporter:
             dataset_name: str | None = None
             if publisher is not None:
                 logger.info("%s uploading %d zip(s) to HDX...", cat_tag, len(zip_paths))
+                t_min, t_max = _temporal_bounds_for_hdx(metadata_obj)
                 ctx = PublishContext(
                     dataset_source=query.dataset_source,
                     snapshot_date=query.snapshot_date,
@@ -450,6 +455,8 @@ class Exporter:
                     combined_report_enabled=self._cfg.output.report.enabled,
                     output_dir=out_root,
                     s3=self._cfg.output.s3,
+                    temporal_min=t_min,
+                    temporal_max=t_max,
                 )
                 dataset_name = publisher.publish(self._cfg, category, zip_paths, ctx)
                 if self._state is not None:
@@ -497,6 +504,7 @@ class Exporter:
         zip_paths = [Path(p) for p in entry.zip_paths]
         metadata_json_path = Path(entry.metadata_json_path) if entry.metadata_json_path else None
         logger.info("%s uploading %d cached zip(s) to HDX...", cat_tag, len(zip_paths))
+        t_min, t_max = _temporal_bounds_from_metadata_file(metadata_json_path)
         ctx = PublishContext(
             dataset_source=query.dataset_source,
             snapshot_date=query.snapshot_date,
@@ -505,6 +513,8 @@ class Exporter:
             combined_report_enabled=self._cfg.output.report.enabled,
             output_dir=out_root,
             s3=self._cfg.output.s3,
+            temporal_min=t_min,
+            temporal_max=t_max,
         )
         dataset_name = publisher.publish(self._cfg, category, zip_paths, ctx)
         if self._state is not None:
@@ -554,6 +564,12 @@ class Exporter:
                     )
                     continue
                 if not files:
+                    continue
+                # HDX's filestore does not recognise FlatGeobuf, so we skip
+                # zipping and publishing it. The format stays usable for any
+                # downstream consumer that reads the raw file off disk before
+                # the stage dir is cleaned.
+                if fmt == "fgb":
                     continue
                 dt_name = f"{self._cfg.key}_{self._cfg.iso3.lower()}_{slug}"
                 zip_path = out_root / f"{dt_name}_{self._runner.name}_{fmt}.zip"
@@ -632,6 +648,43 @@ def _wrap_paragraph(text: str, *, indent: str, width: int) -> list[str]:
     import textwrap
 
     return textwrap.wrap(text, width=width, initial_indent=indent, subsequent_indent=indent)
+
+
+def _parse_temporal(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        logger.warning(
+            "temporal bound %r is not ISO-8601; HDX period falls back to snapshot", value
+        )
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+def _temporal_bounds_for_hdx(metadata_obj) -> tuple[datetime | None, datetime | None]:
+    if metadata_obj is None or metadata_obj.temporal is None:
+        return (None, None)
+    t = metadata_obj.temporal
+    return (_parse_temporal(t.min), _parse_temporal(t.max))
+
+
+def _temporal_bounds_from_metadata_file(
+    path: Path | None,
+) -> tuple[datetime | None, datetime | None]:
+    if path is None or not path.exists():
+        return (None, None)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return (None, None)
+    temporal = payload.get("metadata", {}).get("temporal")
+    if not temporal:
+        return (None, None)
+    return (_parse_temporal(temporal.get("min")), _parse_temporal(temporal.get("max")))
 
 
 def _format_notes(fmt: str) -> list[str]:

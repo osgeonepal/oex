@@ -16,8 +16,8 @@ class HdxConfig:
     user_agent: str = "oex"
     methodology: str = "Other"
     methodology_other: str = "Open Source Geographic information"
-    # Template for the HDX title. Supports {country}, {category}, {iso3}.
-    # Empty falls back to the per-category title or "<category> of <iso3>".
+    # Supports {country}, {category}, {iso3}. Empty falls back to
+    # "<category> of <iso3>".
     title_template: str = ""
     # Destructive: deletes every existing resource on the dataset before upload.
     purge_existing_resources: bool = False
@@ -163,6 +163,14 @@ class TransliterateRule:
 
 
 @dataclass
+class CategoryTemporal:
+    # Column alias in the materialised table that carries a per-feature
+    # timestamp. When set and present, min/max drive HDX dataset_date and the
+    # report's temporal block. Must be reachable via the source's select.
+    column: str | None = None
+
+
+@dataclass
 class CategoryConfig:
     name: str = ""
     formats: list[str] | None = None
@@ -170,6 +178,7 @@ class CategoryConfig:
     overture: CategoryOverture = field(default_factory=CategoryOverture)
     osm: CategoryOsm = field(default_factory=CategoryOsm)
     transliterate: list[TransliterateRule] = field(default_factory=list)
+    temporal: CategoryTemporal = field(default_factory=CategoryTemporal)
 
 
 @dataclass

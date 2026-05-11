@@ -45,16 +45,21 @@ class SourceMetadata:
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> "SourceMetadata":
+        from oex.metadata import TemporalReport
+
         meta = payload["metadata"]
         bbox_raw = meta.get("bbox")
         bbox = tuple(bbox_raw) if bbox_raw is not None else None
         columns = [ColumnReport(**c) for c in meta["columns"]]
+        temporal_raw = meta.get("temporal")
+        temporal = TemporalReport(**temporal_raw) if temporal_raw else None
         report = MetadataReport(
             feature_count=meta["feature_count"],
             geometry_types=dict(meta["geometry_types"]),
             bbox=bbox,  # type: ignore[arg-type]
             columns=columns,
             summary=meta["summary"],
+            temporal=temporal,
         )
         return cls(
             source_name=payload["source_name"],
@@ -146,6 +151,15 @@ td.coverage .bar { margin-top: 4px; min-width: 0; height: 4px; }
 .tab-footer { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--line);
               color: var(--muted); font-size: 12px; line-height: 1.55; }
 .tab-footer a { color: inherit; }
+.temporal { padding: 6px 10px; background: #fafafa;
+            border-left: 3px solid var(--bar); border-radius: 2px;
+            font-size: 12px; color: var(--muted); margin-top: 8px; }
+.temporal-label { font-weight: 600; color: var(--fg);
+                  text-transform: uppercase; letter-spacing: 0.04em; font-size: 11px; }
+.temporal-range { font-family: var(--mono); color: var(--fg); }
+.temporal-arrow { color: var(--muted); }
+.temporal-meta code { font-family: var(--mono); background: #f4f4f5;
+                      padding: 1px 4px; border-radius: 3px; color: var(--fg); }
 """
 
 
@@ -207,6 +221,7 @@ def _render_panel(name: str, source: SourceMetadata) -> str:
         _render_quality(metadata),
         _render_kpis(metadata),
         _render_bbox_line(metadata),
+        _render_temporal(metadata),
         _render_geometry_types(metadata),
         _render_source_mix(metadata),
         _render_pcode_coverage(metadata),
@@ -215,6 +230,26 @@ def _render_panel(name: str, source: SourceMetadata) -> str:
     ]
     inner = "\n".join(s for s in sections if s)
     return f'<section class="panel panel-{escape(name)}">{inner}</section>'
+
+
+def _render_temporal(metadata: MetadataReport) -> str:
+    t = metadata.temporal
+    if t is None or (t.min is None and t.max is None):
+        return ""
+    column = escape(t.column)
+    lo = escape(t.min or "n/a")
+    hi = escape(t.max or "n/a")
+    coverage_pct = (
+        (t.non_null_count / metadata.feature_count * 100.0) if metadata.feature_count else 0.0
+    )
+    return (
+        '<div class="temporal">'
+        '<span class="temporal-label">Temporal coverage</span> '
+        f'<span class="temporal-range">{lo} <span class="temporal-arrow">to</span> {hi}</span>'
+        f' <span class="temporal-meta">column <code>{column}</code>, '
+        f"{coverage_pct:.1f}% of {_fmt_int(metadata.feature_count)} features"
+        "</span></div>"
+    )
 
 
 def _render_quality(metadata: MetadataReport) -> str:

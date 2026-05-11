@@ -72,3 +72,48 @@ def test_metadata_empty_table() -> None:
     assert report.feature_count == 0
     assert report.bbox is None
     assert report.summary == "Empty dataset."
+
+
+def test_metadata_temporal_bounds_when_column_exists() -> None:
+    conn = duckdb.connect(":memory:")
+    conn.execute("INSTALL spatial; LOAD spatial")
+    conn.execute(
+        """
+        CREATE TABLE features AS SELECT * FROM (VALUES
+            (1, TIMESTAMP '2023-01-15 10:00:00', ST_Point(1, 1)),
+            (2, TIMESTAMP '2024-06-30 12:30:00', ST_Point(2, 2)),
+            (3, TIMESTAMP '2025-12-01 08:00:00', ST_Point(3, 3)),
+            (4, NULL,                            ST_Point(4, 4))
+        ) AS t(id, update_time, geom)
+        """
+    )
+    report = compute_metadata(conn, "features", temporal_column="update_time")
+    assert report.temporal is not None
+    assert report.temporal.column == "update_time"
+    assert report.temporal.min is not None and report.temporal.min.startswith("2023-01-15")
+    assert report.temporal.max is not None and report.temporal.max.startswith("2025-12-01")
+    assert report.temporal.non_null_count == 3
+
+
+def test_metadata_temporal_skipped_when_column_missing() -> None:
+    conn = duckdb.connect(":memory:")
+    conn.execute("INSTALL spatial; LOAD spatial")
+    conn.execute(
+        "CREATE TABLE features AS SELECT 1 AS id, ST_Point(1, 1) AS geom",
+    )
+    report = compute_metadata(conn, "features", temporal_column="does_not_exist")
+    assert report.temporal is None
+
+
+def test_metadata_temporal_skipped_when_column_not_requested() -> None:
+    conn = duckdb.connect(":memory:")
+    conn.execute("INSTALL spatial; LOAD spatial")
+    conn.execute(
+        """
+        CREATE TABLE features AS SELECT 1 AS id,
+            TIMESTAMP '2024-01-01 00:00:00' AS update_time,
+            ST_Point(1, 1) AS geom
+        """
+    )
+    report = compute_metadata(conn, "features")
+    assert report.temporal is None

@@ -2,7 +2,7 @@
 
 import json
 
-from oex.metadata import ColumnReport, MetadataReport
+from oex.metadata import ColumnReport, MetadataReport, TemporalReport
 from oex.report import SourceMetadata, render_report
 
 
@@ -13,6 +13,7 @@ def _meta(
     columns: list[ColumnReport] | None = None,
     bbox: tuple[float, float, float, float] | None = (0.0, 0.0, 1.0, 1.0),
     summary: str = "100 features.",
+    temporal: TemporalReport | None = None,
 ) -> MetadataReport:
     return MetadataReport(
         feature_count=feature_count,
@@ -20,6 +21,7 @@ def _meta(
         bbox=bbox,
         columns=columns or [],
         summary=summary,
+        temporal=temporal,
     )
 
 
@@ -352,6 +354,44 @@ def test_footer_omits_transliteration_note_when_absent() -> None:
     meta = _meta(columns=[ColumnReport("name", "VARCHAR", 0, 0.0, 5, [])])
     html = render_report({"overture": _source(metadata=meta)})
     assert "transliteration" not in html
+
+
+def test_temporal_section_renders_when_bounds_present() -> None:
+    temporal = TemporalReport(
+        column="update_time",
+        min="2023-01-15T10:00:00",
+        max="2025-12-01T08:00:00",
+        non_null_count=87,
+    )
+    meta = _meta(feature_count=100, temporal=temporal)
+    html = render_report({"overture": _source(metadata=meta)})
+    assert "Temporal coverage" in html
+    assert "2023-01-15T10:00:00" in html
+    assert "2025-12-01T08:00:00" in html
+    assert "<code>update_time</code>" in html
+    # Compact single-line form: percentage + total count, no two-line block.
+    assert "87.0% of 100 features" in html
+
+
+def test_temporal_section_omitted_when_bounds_absent() -> None:
+    html = render_report({"overture": _source()})
+    assert "Temporal coverage" not in html
+
+
+def test_temporal_payload_roundtrip() -> None:
+    temporal = TemporalReport(
+        column="update_time",
+        min="2024-01-01T00:00:00",
+        max="2024-12-31T23:59:59",
+        non_null_count=42,
+    )
+    meta = _meta(temporal=temporal)
+    src = _source(metadata=meta)
+    restored = SourceMetadata.from_payload(json.loads(json.dumps(src.to_payload())))
+    assert restored.metadata.temporal is not None
+    assert restored.metadata.temporal.column == "update_time"
+    assert restored.metadata.temporal.min == "2024-01-01T00:00:00"
+    assert restored.metadata.temporal.non_null_count == 42
 
 
 def test_attribute_table_uses_coverage_not_null_percent() -> None:

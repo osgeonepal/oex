@@ -46,3 +46,30 @@ def test_overrides_download_if_missing_false_disables_auto_download() -> None:
 def test_overrides_download_if_missing_unset_does_not_appear() -> None:
     overrides = _build_overrides("NPL", None, None)
     assert "source.osm.auto_download_planet" not in overrides
+
+
+def test_overrides_explicit_iso3_flag_overrides_positional() -> None:
+    overrides = _build_overrides("WRONG", None, None, iso3="COD")
+    assert overrides["iso3"] == "COD"
+
+
+def test_overrides_explicit_iso3_lowercase_is_normalised() -> None:
+    overrides = _build_overrides(None, None, None, iso3="npl")
+    assert overrides["iso3"] == "NPL"
+
+
+def test_overrides_dataset_name_flag_sets_field() -> None:
+    overrides = _build_overrides("COD", None, None, dataset_name="Democratic Republic of the Congo")
+    assert overrides["dataset_name"] == "Democratic Republic of the Congo"
+
+
+def test_overrides_dataset_name_unset_does_not_appear() -> None:
+    overrides = _build_overrides("NPL", None, None)
+    assert "dataset_name" not in overrides
+
+
+def test_overrides_dataset_name_empty_string_appears() -> None:
+    # Empty string is a meaningful "clear it" signal, distinct from omission.
+    overrides = _build_overrides("NPL", None, None, dataset_name="")
+    assert "dataset_name" in overrides
+    assert overrides["dataset_name"] == ""

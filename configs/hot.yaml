@@ -56,7 +56,7 @@ hdx:
   site: prod
   user_agent: hotosm-oex
   methodology_other: Volunteered geographic information
-  title_template: "{country} {category} (OpenStreetMap Export)"
+  title_template: "{country} : {category} (OpenStreetMap Export)"
   purge_existing_resources: true
 
 categories_file: configs/examples/hot-schema.yaml

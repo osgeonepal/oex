@@ -9,8 +9,6 @@ from oex.logging_setup import get_logger
 
 logger = get_logger(__name__)
 
-# Accept both DuckDB spatial 1.x ("POINT") and legacy ("ST_Point") forms so
-# upgrade or downgrade does not silently bucket every geom type into "other".
 _GEOM_TYPE_TO_LABEL = {
     "POINT": "points",
     "MULTIPOINT": "points",
@@ -31,7 +29,13 @@ _FORMAT_DRIVERS = {
     "gpkg": "GPKG",
     "kml": "KML",
     "shp": "ESRI Shapefile",
+    "fgb": "FlatGeobuf",
 }
+
+_LAYER_CREATION_OPTIONS = {
+    "fgb": "ENCODING=UTF-8,SPATIAL_INDEX=YES",
+}
+_DEFAULT_LAYER_CREATION_OPTIONS = "ENCODING=UTF-8"
 
 
 def write_format(
@@ -58,12 +62,13 @@ def _write_single(
     out_dir: Path,
 ) -> list[Path]:
     driver = _FORMAT_DRIVERS[fmt]
+    layer_options = _LAYER_CREATION_OPTIONS.get(fmt, _DEFAULT_LAYER_CREATION_OPTIONS)
     target = out_dir / f"{category_slug}.{fmt}"
     start = time.time()
     conn.execute(
         f"COPY {table_name} TO '{target}' "
         f"WITH (FORMAT GDAL, SRS 'EPSG:4326', DRIVER '{driver}', "
-        f"LAYER_CREATION_OPTIONS 'ENCODING=UTF-8')"
+        f"LAYER_CREATION_OPTIONS '{layer_options}')"
     )
     size_mb = target.stat().st_size / (1024 * 1024)
     logger.info("Wrote %s (%.0f MB) in %.2fs", target, size_mb, time.time() - start)
