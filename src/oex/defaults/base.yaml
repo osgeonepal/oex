@@ -40,7 +40,7 @@ duckdb:
   http_retry_wait_ms: 500
   http_retry_backoff: 2.0
   http_timeout_ms: 120000
-  temp_dir: /tmp/duckdb_temp
+  temp_dir: /var/tmp/duckdb_temp
   enable_object_cache: true
 
 logging:

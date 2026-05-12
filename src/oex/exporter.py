@@ -28,7 +28,7 @@ from oex.report import SourceMetadata, render_report
 from oex.sources.base import CategorySkippedError, SourceQuery, SourceRunner
 from oex.sql import build_select_clause, build_where_clause, materialise
 from oex.state import StateStore
-from oex.system import cpu_count, default_thread_count
+from oex.system import adaptive_parallel_resources, cpu_count
 from oex.translit import transliterate_table
 from oex.writers import write_format
 from oex.zip_bundle import make_zip
@@ -93,9 +93,10 @@ class Exporter:
         self._pcodes_cfg: PcodesSourceConfig = resolve_pcodes_config(cfg.source)
         self._pcode_cache: dict[int, PcodeCacheEntry] | None = None
         self._state: StateStore | None = None
-        # Spatial join peaks at ~14 GB per session; serialise across workers to
+        # Spatial join peaks per session; serialise across workers to
         # prevent concurrent peaks from exhausting machine RAM.
         self._pcode_tag_semaphore = threading.Semaphore(1)
+        self._adaptive_workers, self._adaptive_mem_gb = adaptive_parallel_resources()
 
     def run(self) -> ExportResult:
         if not self._cfg.iso3:
@@ -118,6 +119,19 @@ class Exporter:
             self._cfg.hdx.push,
         )
         logger.info("[%s/%s] categories: %s", iso, self._runner.name, ", ".join(cat_names))
+        _workers = self._cfg.parallel.threads or self._adaptive_workers
+        _mem = self._cfg.parallel.memory_gb or self._adaptive_mem_gb
+        logger.info(
+            "[%s/%s] resources: workers=%d (cfg=%s adaptive=%d) memory_gb=%d (cfg=%s adaptive=%d)",
+            iso,
+            self._runner.name,
+            _workers,
+            self._cfg.parallel.threads,
+            self._adaptive_workers,
+            _mem,
+            self._cfg.parallel.memory_gb,
+            self._adaptive_mem_gb,
+        )
 
         boundary = resolve_boundary(self._cfg.iso3, self._cfg.boundary)
         bbox = boundary.bbox
@@ -173,7 +187,7 @@ class Exporter:
 
         if self._cfg.parallel.enabled and len(self._cfg.categories) > 1:
             workers = min(
-                self._cfg.parallel.threads or default_thread_count(),
+                self._cfg.parallel.threads or self._adaptive_workers,
                 len(self._cfg.categories),
             )
             with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
@@ -292,15 +306,14 @@ class Exporter:
         boundary_obj = cast(Boundary, boundary)
 
         d = self._cfg.duckdb
-        # parallel.threads limits executor concurrency, not DuckDB's intra-query thread count.
-        _parallel_workers = max(1, self._cfg.parallel.threads or 1)
+        _parallel_workers = max(1, self._cfg.parallel.threads or self._adaptive_workers)
         _duckdb_threads = max(2, cpu_count() // _parallel_workers)
         table = f"{slug}_{int(time.time() * 1000)}"
         db_path = Path(d.temp_dir) / f"{table}.duckdb"
         conn = connect(
             path=db_path,
             threads=_duckdb_threads,
-            memory_gb=self._cfg.parallel.memory_gb,
+            memory_gb=self._cfg.parallel.memory_gb or self._adaptive_mem_gb,
             s3_region=getattr(
                 self._cfg.source.get("overture"),
                 "s3_region",
@@ -333,7 +346,7 @@ class Exporter:
                     duration_s=time.time() - cat_start,
                 )
 
-            if self._pcode_cache is not None:
+            if self._pcode_cache is not None and not category.skip_pcodes:
                 tag_start = time.time()
                 logger.info(
                     "%s tagging with pcodes (levels=%s)...",
@@ -350,6 +363,8 @@ class Exporter:
                         geom_column="geom",
                     )
                 logger.info("%s pcodes tagged in %.1fs", cat_tag, time.time() - tag_start)
+            elif self._pcode_cache is not None and category.skip_pcodes:
+                logger.info("%s pcodes skipped (skip_pcodes=true)", cat_tag)
 
             if category.transliterate:
                 translit_start = time.time()
@@ -412,6 +427,8 @@ class Exporter:
                     cat_tag,
                     out_root,
                 )
+
+            conn.execute("PRAGMA memory_limit='2GB'")
 
             logger.info("%s writing %d format(s): %s", cat_tag, len(formats), formats)
             zip_paths = self._materialise_outputs(

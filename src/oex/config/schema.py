@@ -174,6 +174,7 @@ class CategoryTemporal:
 class CategoryConfig:
     name: str = ""
     formats: list[str] | None = None
+    skip_pcodes: bool = False
     hdx: CategoryHdx = field(default_factory=CategoryHdx)
     overture: CategoryOverture = field(default_factory=CategoryOverture)
     osm: CategoryOsm = field(default_factory=CategoryOsm)

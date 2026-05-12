@@ -23,6 +23,7 @@
 
 categories:
   - name: buildings
+    skip_pcodes: false
     hdx:
       title: Buildings
       notes: |
@@ -643,7 +644,7 @@ categories:
         - Source: [OpenStreetMap](https://www.openstreetmap.org)
         - OSM tags: [Key:tourism](https://wiki.openstreetmap.org/wiki/Key:tourism), [Key:amenity](https://wiki.openstreetmap.org/wiki/Key:amenity), [Key:historic](https://wiki.openstreetmap.org/wiki/Key:historic), [Key:heritage](https://wiki.openstreetmap.org/wiki/Key:heritage)
         - Part of many  [exports grid on HDX](https://data.humdata.org/organization/hot) by the [HOT](https://www.hotosm.org/en/)
-      tags: [cultural, entertainment, geodata, heritage, historic-sites]
+      tags: [facilities-infrastructure, geodata, points of interest-poi]
       license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
       caveats: OpenStreetMap data is crowd sourced and cannot be considered to be exhaustive

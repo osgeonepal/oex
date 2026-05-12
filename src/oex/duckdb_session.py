@@ -23,7 +23,7 @@ def connect(
 ) -> duckdb.DuckDBPyConnection:
     resolved_threads = max(2, threads or default_thread_count())
     resolved_memory = max(1, memory_gb or default_memory_limit_gb())
-    resolved_temp = Path(temp_dir or "/tmp/duckdb_temp")
+    resolved_temp = Path(temp_dir or "/var/tmp/duckdb_temp")
     resolved_temp.mkdir(parents=True, exist_ok=True)
 
     db_path = Path(path)

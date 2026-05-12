@@ -20,8 +20,8 @@ subnational: false
 frequency: monthly
 
 parallel:
-  threads: 4
-  memory_gb: 12
+  threads: null
+  memory_gb: null
 
 boundary:
   geom: null

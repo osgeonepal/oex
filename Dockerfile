@@ -35,6 +35,10 @@ RUN apt-get update \
 
 FROM python:3.13-slim-bookworm AS runtime
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends osmium-tool \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN useradd --create-home --uid 1000 app
 
 WORKDIR /app
@@ -44,13 +48,14 @@ COPY --from=builder --chown=app:app /app/src /app/src
 COPY --from=just-fetch /usr/local/bin/just /usr/local/bin/just
 COPY --chown=app:app justfile /app/justfile
 COPY --chown=app:app configs /app/configs
+COPY --chown=app:app hot_countries.txt /app/hot_countries.txt
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     JUST_JUSTFILE=/app/justfile
 
-RUN mkdir -p /app/output /app/data && chown app:app /app/output /app/data
+RUN mkdir -p /app/output /app/data /tmp/duckdb_temp && chown app:app /app/output /app/data /tmp/duckdb_temp
 USER app
 
 # No ENTRYPOINT: caller picks `oex-cli`, `just`, or any other command.
