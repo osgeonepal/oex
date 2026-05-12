@@ -4,6 +4,7 @@ import concurrent.futures
 import json
 import re
 import shutil
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -27,7 +28,7 @@ from oex.report import SourceMetadata, render_report
 from oex.sources.base import CategorySkippedError, SourceQuery, SourceRunner
 from oex.sql import build_select_clause, build_where_clause, materialise
 from oex.state import StateStore
-from oex.system import default_thread_count
+from oex.system import cpu_count, default_thread_count
 from oex.translit import transliterate_table
 from oex.writers import write_format
 from oex.zip_bundle import make_zip
@@ -92,6 +93,9 @@ class Exporter:
         self._pcodes_cfg: PcodesSourceConfig = resolve_pcodes_config(cfg.source)
         self._pcode_cache: dict[int, PcodeCacheEntry] | None = None
         self._state: StateStore | None = None
+        # Spatial join peaks at ~14 GB per session; serialise across workers to
+        # prevent concurrent peaks from exhausting machine RAM.
+        self._pcode_tag_semaphore = threading.Semaphore(1)
 
     def run(self) -> ExportResult:
         if not self._cfg.iso3:
@@ -288,8 +292,14 @@ class Exporter:
         boundary_obj = cast(Boundary, boundary)
 
         d = self._cfg.duckdb
+        # parallel.threads limits executor concurrency, not DuckDB's intra-query thread count.
+        _parallel_workers = max(1, self._cfg.parallel.threads or 1)
+        _duckdb_threads = max(2, cpu_count() // _parallel_workers)
+        table = f"{slug}_{int(time.time() * 1000)}"
+        db_path = Path(d.temp_dir) / f"{table}.duckdb"
         conn = connect(
-            threads=self._cfg.parallel.threads,
+            path=db_path,
+            threads=_duckdb_threads,
             memory_gb=self._cfg.parallel.memory_gb,
             s3_region=getattr(
                 self._cfg.source.get("overture"),
@@ -303,7 +313,6 @@ class Exporter:
             http_timeout_ms=d.http_timeout_ms,
         )
         try:
-            table = f"{slug}_{int(time.time() * 1000)}"
             select_clause = build_select_clause(query.select_fields)
             where_clause = build_where_clause(boundary_obj, query.where_conditions, query.bbox_cols)
             logger.info("%s querying source...", cat_tag)
@@ -331,14 +340,15 @@ class Exporter:
                     cat_tag,
                     self._pcodes_cfg.levels,
                 )
-                tag_table(
-                    conn,
-                    table=table,
-                    iso3=self._cfg.iso3,
-                    cache_entries=self._pcode_cache,
-                    levels=self._pcodes_cfg.levels,
-                    geom_column="geom",
-                )
+                with self._pcode_tag_semaphore:
+                    tag_table(
+                        conn,
+                        table=table,
+                        iso3=self._cfg.iso3,
+                        cache_entries=self._pcode_cache,
+                        levels=self._pcodes_cfg.levels,
+                        geom_column="geom",
+                    )
                 logger.info("%s pcodes tagged in %.1fs", cat_tag, time.time() - tag_start)
 
             if category.transliterate:
@@ -488,6 +498,7 @@ class Exporter:
             )
         finally:
             conn.close()
+            db_path.unlink(missing_ok=True)
 
     def _upload_only(
         self,
