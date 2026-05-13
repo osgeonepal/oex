@@ -181,9 +181,10 @@ docker run --memory=20g -e OEX_MEMORY_GB=20 ...
 ```yaml
 source:
   pcodes:
-    enabled: true          # default false; true in the HOT schema
+    enabled: true                       # default false; true in the HOT schema
     levels: [1, 2, 3, 4]
     cache_dir: data/pcodes
+    boundary_resolution: geos           # or 'h3_neighbor'
 ```
 
 When enabled, every feature gets six extra columns:
@@ -202,6 +203,30 @@ null values at those levels.
 
 Pcode data comes from [fieldmaps.io](https://fieldmaps.io/) edge-matched
 humanitarian boundaries, downloaded once and cached locally.
+
+### Boundary resolution
+
+The H3 hash join covers 95-99% of features. For the remainder, whose H3 centroid
+cell isn't owned by any admin (they sit on the seam between two adjacent admin
+polygons), `boundary_resolution` picks the strategy:
+
+| Value         | What it does                                                                           | Trade-off                                                                                       |
+| ------------- | -------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `h3_neighbor` | Look up the 6 neighbour H3 cells; assign the admin that the most neighbours belong to. | Pure hash join, memory-bounded. Up to ~5 km of slack at admin borders.                          |
+| `geos`        | `ST_Contains(admin_geom, centroid)` against the admin polygon.                         | Correct to the metre. Spatial nested-loop join; can OOM on large countries (e.g. CHN at 20 GB). |
+
+Default is `geos`. The bundled defaults and the HOT schema set
+`boundary_resolution: h3_neighbor` on high-cardinality categories (buildings,
+roads, waterways, land use, rivers) so big countries don't OOM; smaller
+categories inherit `geos` for precise borders.
+
+```yaml
+categories:
+  - name: Buildings
+    boundary_resolution: h3_neighbor   # memory-safe for millions of features
+  - name: Schools
+    # inherits geos
+```
 
 ## Custom schemas
 

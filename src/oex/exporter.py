@@ -23,6 +23,7 @@ from oex.pcodes import (
     resolve_pcodes_config,
     tag_table,
 )
+from oex.pcodes.tagger import parse_boundary_resolution
 from oex.preflight import check_writable_paths
 from oex.report import SourceMetadata, render_report
 from oex.sources.base import CategorySkippedError, SourceQuery, SourceRunner
@@ -351,6 +352,9 @@ class Exporter:
                     cat_tag,
                     self._pcodes_cfg.levels,
                 )
+                boundary_resolution = parse_boundary_resolution(
+                    category.boundary_resolution or self._pcodes_cfg.boundary_resolution
+                )
                 with self._pcode_tag_semaphore:
                     tag_table(
                         conn,
@@ -359,6 +363,7 @@ class Exporter:
                         cache_entries=self._pcode_cache,
                         levels=self._pcodes_cfg.levels,
                         geom_column="geom",
+                        boundary_resolution=boundary_resolution,
                     )
                 logger.info("%s pcodes tagged in %.1fs", cat_tag, time.time() - tag_start)
             elif self._pcode_cache is not None and category.skip_pcodes:

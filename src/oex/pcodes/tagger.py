@@ -1,8 +1,11 @@
-"""Pcode tagging via H3 integer hash join at resolution 7, with a GEOS fallback only for
-the ~1-5% of features whose centroid H3 cell overlaps multiple admin polygons."""
+"""Pcode tagging via H3 integer hash join at resolution 7. Boundary residuals (~1-5% of
+features whose centroid H3 cell isn't owned by any admin) are resolved by either a 1-ring
+H3 neighbour hash lookup (default, memory-bounded) or a GEOS ST_Contains spatial join
+(precise but can OOM on large countries)."""
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import duckdb
 
@@ -10,6 +13,20 @@ from oex.logging_setup import get_logger
 from oex.pcodes.cache import PcodeCacheEntry
 
 logger = get_logger(__name__)
+
+BoundaryResolution = Literal["h3_neighbor", "geos"]
+
+_VALID_BOUNDARY_RESOLUTIONS: tuple[BoundaryResolution, ...] = ("h3_neighbor", "geos")
+
+
+def parse_boundary_resolution(value: str) -> BoundaryResolution:
+    """Validate and narrow a config string to BoundaryResolution. Fails loud on typos."""
+    for known in _VALID_BOUNDARY_RESOLUTIONS:
+        if value == known:
+            return known
+    raise ValueError(
+        f"boundary_resolution must be one of {list(_VALID_BOUNDARY_RESOLUTIONS)}, got {value!r}"
+    )
 
 
 @dataclass(frozen=True)
@@ -206,9 +223,12 @@ def _build_feature_cells(
     geom_column: str,
     target_table: str,
 ) -> int:
+    # centroid_pt is reused by the GEOS fallback, so it never has to scan the full
+    # feature table. Keeps memory bounded on countries with millions of features.
     conn.execute(f"""
         CREATE TABLE {target_table} AS
         SELECT rowid AS _rid,
+               ST_Centroid({geom_column}) AS centroid_pt,
                h3_latlng_to_cell(
                    ST_Y(ST_Centroid({geom_column})),
                    ST_X(ST_Centroid({geom_column})),
@@ -220,25 +240,79 @@ def _build_feature_cells(
     return int(row[0]) if row else 0
 
 
+def _build_geos_fallback(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    h3_slim: str,
+    feature_cell_table: str,
+    admin_table: str,
+    level: int,
+    fb_table: str,
+) -> None:
+    conn.execute(f"""
+        CREATE TABLE {fb_table} AS
+        SELECT c._rid,
+               a.pcode AS adm{level}_pcode,
+               a.name  AS adm{level}_name
+        FROM (SELECT _rid FROM {h3_slim} WHERE adm{level}_pcode IS NULL) AS h
+        JOIN {feature_cell_table} AS c ON h._rid = c._rid
+        LEFT JOIN {admin_table} AS a
+               ON ST_Contains(a.admin_geom, c.centroid_pt)
+    """)
+
+
+def _build_h3_neighbor_fallback(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    h3_slim: str,
+    feature_cell_table: str,
+    admin_h3_table: str,
+    level: int,
+    fb_table: str,
+) -> None:
+    # Tie-break by hit count so a residual whose 1-ring touches multiple admins
+    # picks the majority-overlap admin, not an arbitrary one.
+    conn.execute(f"""
+        CREATE TABLE {fb_table} AS
+        WITH residuals AS (
+            SELECT c._rid, c.cell
+            FROM (SELECT _rid FROM {h3_slim} WHERE adm{level}_pcode IS NULL) AS h
+            JOIN {feature_cell_table} AS c ON h._rid = c._rid
+        ),
+        neighbor_hits AS (
+            SELECT r._rid, a.pcode, a.name, COUNT(*) AS hits
+            FROM residuals AS r,
+                 UNNEST(h3_grid_disk(r.cell, 1)) AS t(ncell)
+            JOIN {admin_h3_table} AS a ON t.ncell = a.cell
+            GROUP BY r._rid, a.pcode, a.name
+        )
+        SELECT DISTINCT ON (_rid)
+            _rid,
+            pcode AS adm{level}_pcode,
+            name  AS adm{level}_name
+        FROM neighbor_hits
+        ORDER BY _rid, hits DESC
+    """)
+
+
 def _h3_join_one_level(
     conn: duckdb.DuckDBPyConnection,
     *,
-    feature_table: str,
     feature_cell_table: str,
     admin_h3_table: str,
     admin_table: str,
-    geom_column: str,
     level: int,
     target_table: str,
+    boundary_resolution: BoundaryResolution,
 ) -> tuple[int, int]:
-    """Returns (matched_count, total_count) after H3 join and GEOS boundary fallback."""
+    """Returns (matched_count, total_count) after H3 hash join + boundary fallback."""
     pcode_count_row = conn.execute(
         f"SELECT COUNT(*) FROM {admin_table} WHERE pcode IS NOT NULL"
     ).fetchone()
     pcode_count = int(pcode_count_row[0]) if pcode_count_row else 0
 
     if pcode_count == 0:
-        # No pcode values for this level/country; GEOS fallback would also return all-NULL.
+        # No pcode values for this level/country; fallback would also return all-NULL.
         conn.execute(f"""
             CREATE TABLE {target_table} AS
             SELECT _rid,
@@ -251,7 +325,7 @@ def _h3_join_one_level(
         logger.info("[pcodes] adm%d: no pcode data for %s, null columns added", level, admin_table)
         return 0, total
 
-    h3_slim = f"_pcodes_h3s{level}_{feature_table}"
+    h3_slim = f"_pcodes_h3s{level}_{feature_cell_table}"
     conn.execute(f"DROP TABLE IF EXISTS {h3_slim}")
     conn.execute(f"""
         CREATE TABLE {h3_slim} AS
@@ -268,28 +342,37 @@ def _h3_join_one_level(
     null_count = total - matched_h3
 
     logger.info(
-        "[pcodes] adm%d h3: %d matched, %d -> GEOS boundary fallback (%.1f%%)",
+        "[pcodes] adm%d h3: %d matched, %d -> %s boundary fallback (%.1f%%)",
         level,
         matched_h3,
         null_count,
+        boundary_resolution,
         100.0 * null_count / total if total else 0.0,
     )
 
     if null_count == 0:
         conn.execute(f"ALTER TABLE {h3_slim} RENAME TO {target_table}")
     else:
-        fb_table = f"_pcodes_fb{level}_{feature_table}"
+        fb_table = f"_pcodes_fb{level}_{feature_cell_table}"
         conn.execute(f"DROP TABLE IF EXISTS {fb_table}")
-        conn.execute(f"""
-            CREATE TABLE {fb_table} AS
-            SELECT h._rid,
-                   a.pcode AS adm{level}_pcode,
-                   a.name  AS adm{level}_name
-            FROM (SELECT _rid FROM {h3_slim} WHERE adm{level}_pcode IS NULL) AS h
-            JOIN {feature_table} AS bld ON h._rid = bld.rowid
-            LEFT JOIN {admin_table} AS a
-                   ON ST_Contains(a.admin_geom, ST_Centroid(bld.{geom_column}))
-        """)
+        if boundary_resolution == "geos":
+            _build_geos_fallback(
+                conn,
+                h3_slim=h3_slim,
+                feature_cell_table=feature_cell_table,
+                admin_table=admin_table,
+                level=level,
+                fb_table=fb_table,
+            )
+        else:
+            _build_h3_neighbor_fallback(
+                conn,
+                h3_slim=h3_slim,
+                feature_cell_table=feature_cell_table,
+                admin_h3_table=admin_h3_table,
+                level=level,
+                fb_table=fb_table,
+            )
         conn.execute(f"""
             CREATE TABLE {target_table} AS
             SELECT h._rid,
@@ -361,6 +444,7 @@ def tag_table(
     cache_entries: dict[int, PcodeCacheEntry],
     levels: list[int],
     geom_column: str = "geom",
+    boundary_resolution: BoundaryResolution = "h3_neighbor",
 ) -> PcodeTagReport:
     iso3_upper = iso3.upper()
     requested = sorted(set(levels))
@@ -422,13 +506,12 @@ def tag_table(
         if level in levels_with_data:
             matched, _ = _h3_join_one_level(
                 conn,
-                feature_table=table,
                 feature_cell_table=cell_table,
                 admin_h3_table=h3_tables[level],
                 admin_table=admin_tables[level],
-                geom_column=geom_column,
                 level=level,
                 target_table=slim_lv,
+                boundary_resolution=boundary_resolution,
             )
             conn.execute(f"DROP TABLE IF EXISTS {h3_tables[level]}")
             if matched > 0:

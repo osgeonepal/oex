@@ -81,10 +81,15 @@ source:
     manifest_url: https://data.fieldmaps.io/edge-matched.json
     parquet_url_template: https://data.fieldmaps.io/edge-matched/humanitarian/intl/adm{level}_polygons.parquet
     manifest_group: humanitarian
+    # geos: precise ST_Contains; correct to the metre but can OOM on big countries.
+    # h3_neighbor: 1-ring hash fallback, ~5 km error at admin borders, memory-bounded.
+    # High-cardinality categories below override to h3_neighbor; small ones inherit geos.
+    boundary_resolution: geos
 
 categories:
   - name: Buildings
     formats: null
+    boundary_resolution: h3_neighbor
     hdx:
       title: null
       notes: >-
@@ -137,6 +142,7 @@ categories:
       where: []
 
   - name: Roads
+    boundary_resolution: h3_neighbor
     hdx:
       notes: >-
         Road network sourced from Overture (OSM + TomTom) or OpenStreetMap.
@@ -249,6 +255,7 @@ categories:
       where: []
 
   - name: Rivers
+    boundary_resolution: h3_neighbor
     hdx:
       notes: Rivers, lakes and other water features.
       tags:
@@ -285,6 +292,7 @@ categories:
       where: []
 
   - name: Land Use
+    boundary_resolution: h3_neighbor
     hdx:
       notes: Land use polygons (farmland, forest, residential, etc).
       tags:

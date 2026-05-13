@@ -119,6 +119,11 @@ class PcodesSourceConfig:
         "https://data.fieldmaps.io/edge-matched/humanitarian/intl/adm{level}_polygons.parquet"
     )
     manifest_group: str = "humanitarian"
+    # 'geos' (default): precise ST_Contains; correct to the metre. 'h3_neighbor': 1-ring
+    # hash fallback, ~5 km error at admin borders, memory-bounded. Set h3_neighbor on
+    # high-cardinality categories (buildings, roads, waterways) to avoid OOM on big
+    # countries; small categories keep geos by inheritance.
+    boundary_resolution: str = "geos"
 
 
 @dataclass
@@ -175,6 +180,8 @@ class CategoryConfig:
     name: str = ""
     formats: list[str] | None = None
     skip_pcodes: bool = False
+    # Override source.pcodes.boundary_resolution per category. None inherits.
+    boundary_resolution: str | None = None
     hdx: CategoryHdx = field(default_factory=CategoryHdx)
     overture: CategoryOverture = field(default_factory=CategoryOverture)
     osm: CategoryOsm = field(default_factory=CategoryOsm)

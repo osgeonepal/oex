@@ -24,6 +24,7 @@
 categories:
   - name: buildings
     skip_pcodes: false
+    boundary_resolution: h3_neighbor
     hdx:
       title: Buildings
       notes: |
@@ -81,6 +82,7 @@ categories:
         prefer: name_en
 
   - name: roads
+    boundary_resolution: h3_neighbor
     hdx:
       title: Roads
       notes: |
@@ -138,6 +140,7 @@ categories:
 
   - name: waterways
     formats: [gpkg, shp, geojson, kml]
+    boundary_resolution: h3_neighbor
     hdx:
       title: Waterways
       notes: |
