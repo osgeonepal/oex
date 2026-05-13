@@ -40,13 +40,13 @@ contribute resources to the same HDX dataset.
 
 ## Mental model
 
-| Field           | Where it runs                     | Purpose                          |
-| --------------- | --------------------------------- | -------------------------------- |
-| `osm.filter`    | quackosm (PBF -> parquet)         | which OSM features enter cache   |
-| `osm.select`    | DuckDB SQL on cached parquet      | columns to keep                  |
-| `osm.where`     | DuckDB SQL on cached parquet      | extra row filter (rarely needed) |
-| `overture.select` | DuckDB SQL on Overture S3 read  | columns to keep                  |
-| `overture.where`  | DuckDB SQL on Overture S3 read  | row filter                       |
+| Field              | Where it runs                    | Purpose                          |
+| ------------------ | -------------------------------- | -------------------------------- |
+| `osm.filter`       | quackosm (PBF -> parquet)        | which OSM features enter cache   |
+| `osm.select`       | DuckDB SQL on cached parquet     | columns to keep                  |
+| `osm.where`        | DuckDB SQL on cached parquet     | extra row filter (rarely needed) |
+| `overture.select`  | DuckDB SQL on Overture S3 read   | columns to keep                  |
+| `overture.where`   | DuckDB SQL on Overture S3 read   | row filter                       |
 
 ## OSM source schema
 
@@ -109,11 +109,11 @@ schema.
 
 ## Bundled schemas
 
-| File                                  | What it produces                                |
-| ------------------------------------- | ----------------------------------------------- |
-| `configs/examples/hot-schema.yaml`            | 11 layers matching HOT's HDX exports     |
+| File                                            | What it produces                         |
+| ----------------------------------------------- | ---------------------------------------- |
+| `configs/examples/hot-schema.yaml`              | 12 layers matching HOT's HDX exports     |
 | `configs/examples/overture-package-schema.yaml` | 15 datasets, one per Overture theme/type |
-| `configs/examples/custom-schema.yaml`         | Minimal 2-category example               |
+| `configs/examples/custom-schema.yaml`           | Minimal 2-category example               |
 
 The bundled defaults at `src/oex/defaults/base.yaml` ship the eight-theme
 combo (Buildings, Roads, Hospitals, Schools, Rivers, Land Use,

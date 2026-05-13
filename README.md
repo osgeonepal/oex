@@ -50,7 +50,7 @@ for Overture Maps instead.
 ## Two ways to customise
 
 ```bash
-# Curated schema (HOT-style HDX layers, Overture data package, etc)
+# Curated schema (12-layer HOT-style HDX export, Overture data package, etc)
 oex-cli osm --config configs/examples/hot-schema.yaml --iso3 NPL
 
 # Your own categories
@@ -61,6 +61,23 @@ See **[Get started](https://osgeonepal.github.io/oex/get-started/)** for
 the install matrix and three flows in detail, **[Custom categories](https://osgeonepal.github.io/oex/custom-categories/)**
 for the schema, and **[HDX publication](https://osgeonepal.github.io/oex/hdx/)**
 for pushing to HDX.
+
+## Features
+
+- 8 default categories: Buildings, Roads, Hospitals, Schools, Rivers,
+  Land Use, Transportation Hubs, Settlements.
+- 12-layer HOT-style HDX schema mirroring `hotosm_<iso3>_*` exports.
+- 15-dataset Overture data package (one per theme/feature type).
+- Output formats: `gpkg`, `shp`, `geojson`, `kml`. Default is `[gpkg, shp]`.
+- Administrative pcode tagging: each feature gets `adm0`-`adm4` pcode and
+  name columns from fieldmaps.io humanitarian boundaries.
+- Name transliteration to Latin script (`name_latin`) via unidecode, with
+  `name_en` preferred when present.
+- ISO3 language columns (`name_hi`, `name_ar`, `name_ne`, ...) resolved via
+  pycountry + babel.
+- Per-category export report: feature count, bbox, geometry types, temporal
+  range, null %, distinct counts, and top values per column.
+- Brazil HOT 12-category run: ~22 M features in ~63 min, peak ~5.7 GB RAM.
 
 ## Develop from source
 
@@ -86,6 +103,8 @@ just osm nepal
 | OSM parser           | [QuackOSM](https://github.com/kraina-ai/quackosm)                                 |
 | Overture access      | DuckDB httpfs over [s3://overturemaps-us-west-2](https://docs.overturemaps.org/)  |
 | Boundaries (default) | [geoBoundaries CGAZ ADM0](https://www.geoboundaries.org/)                         |
+| Pcode boundaries     | [fieldmaps.io](https://fieldmaps.io/) humanitarian admin boundaries               |
+| Pcode index          | [H3](https://h3geo.org/) hexagonal cell index at resolution 7                     |
 
 ## License
 

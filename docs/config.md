@@ -14,7 +14,7 @@ default list rather than element-wise merging.
 
 - **`select`** lists the columns to keep in the output. Same on both sources.
   Pure SQL expressions, e.g. `names.primary AS name` (Overture) or
-  `tags['name'][1] AS name` (OSM).
+  `tags['name'] AS name` (OSM).
 - **`where`** is an optional SQL filter on the rows that come out of the
   source. Combined with the implicit country bbox and boundary clip.
 - **`filter`** (OSM only) is the OSM tag filter passed to quackosm at
@@ -108,8 +108,7 @@ The OSM cache produced by quackosm has three columns:
 | `tags`       | `MAP<VARCHAR, VARCHAR>`    | All retained OSM tags as key->value           |
 | `geometry`   | geometry                   | POINT, LINESTRING, POLYGON, MULTIPOLYGON, ... |
 
-DuckDB MAP access returns a list, so use `tags['name'][1]` to get the
-scalar value of the `name` key. Refer to the
+`tags` is `MAP<VARCHAR, VARCHAR>`. Access a key with `tags['name'] AS name`; returns NULL when the key is absent. Refer to the
 [OSM tag wiki](https://wiki.openstreetmap.org/wiki/Map_features) for what
 keys exist; common ones include `building`, `highway`, `amenity`,
 `waterway`, `landuse`, `place`, `aeroway`, `railway`, `name`, `name:en`,
@@ -145,7 +144,7 @@ exposes:
 | `divisions`      | `division`          | `id`, `names`, `subtype`, `country`, `region`, `population`, `wikidata`  |
 | `divisions`      | `division_area`     | `id`, `names`, `subtype`, `country`, `region`                            |
 | `divisions`      | `division_boundary` | `id`, `subtype`, `class`                                                 |
-| `places`         | `place`             | `id`, `names`, `categories`, `addresses`, `phones`, `websites`, `confidence` |
+| `places`         | `place`             | `id`, `names`, `categories`, `addresses`, `phones`, `websites`           |
 | `transportation` | `connector`         | `id`                                                                     |
 | `transportation` | `segment`           | `id`, `names`, `class`, `subclass`, `subtype`, `road_surface`            |
 
@@ -154,6 +153,55 @@ see the [Overture Maps schema reference](https://docs.overturemaps.org/schema/).
 Note that types are renamed across releases (e.g. `boundary` became
 `division_boundary` in 2026-04-15.0), so pin `source.overture.release` if
 your config relies on a specific schema.
+
+## Parallel and memory
+
+```yaml
+parallel:
+  enabled: true
+  threads: null      # null = adaptive: always 1 worker
+  memory_gb: null    # null = adaptive: 60% of total RAM as DuckDB memory limit
+```
+
+`threads: null` and `memory_gb: null` both use adaptive defaults. The adaptive
+logic always runs one DuckDB worker (DuckDB already parallelises every
+operation internally) and allocates 60% of total RAM to the DuckDB memory
+limit. This leaves headroom for GDAL writes and the GEOS boundary fallback
+during pcode tagging.
+
+Inside Docker, set `OEX_MEMORY_GB` to the container's `--memory` value so the
+adaptive calculation uses the container limit rather than host RAM:
+
+```bash
+docker run --memory=20g -e OEX_MEMORY_GB=20 ...
+```
+
+## Pcode tagging
+
+```yaml
+source:
+  pcodes:
+    enabled: true          # default false; true in the HOT schema
+    levels: [1, 2, 3, 4]
+    cache_dir: data/pcodes
+```
+
+When enabled, every feature gets six extra columns:
+
+| Column        | Example value     | What it is                          |
+| ------------- | ----------------- | ----------------------------------- |
+| `adm0_pcode`  | `NPL`             | ISO3 country code                   |
+| `adm0_name`   | `Nepal`           | Country name                        |
+| `adm1_pcode`  | `NP-BA`           | First subdivision pcode             |
+| `adm1_name`   | `Bagmati`         | First subdivision name              |
+| `adm2_pcode`  | `NP-BA-KA`        | Second subdivision pcode            |
+| `adm2_name`   | `Kathmandu`       | Second subdivision name             |
+
+`adm3` and `adm4` columns are added at the same levels; many countries have
+null values at those levels.
+
+Pcode data comes from [fieldmaps.io](https://fieldmaps.io/) edge-matched
+humanitarian boundaries, downloaded once and cached locally.
 
 ## Custom schemas
 
