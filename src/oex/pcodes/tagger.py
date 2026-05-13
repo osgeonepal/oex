@@ -1,11 +1,5 @@
-"""SPATIAL_JOIN's optimizer needs a single spatial predicate per ON clause;
-any second condition demotes the plan to BLOCKWISE_NL_JOIN at ~25-40x cost.
-Admin polygons are pre-simplified at ~10m tolerance because SPATIAL_JOIN's
-ray-cast cost scales linearly with vertex count.
-
-https://duckdb.org/2025/08/08/spatial-joins
-https://duckdb.org/2025/05/21/announcing-duckdb-130
-"""
+"""Pcode tagging via H3 integer hash join at resolution 7, with a GEOS fallback only for
+the ~1-5% of features whose centroid H3 cell overlaps multiple admin polygons."""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,11 +21,10 @@ class PcodeTagReport:
     adm0_name: str | None
 
 
-# Smaller than a typical building footprint. fieldmaps.io adm polygons carry
-# tens of thousands of vertices each; simplifying at this tolerance drops the
-# join cost by 25-40x with no observable change in tagging accuracy.
-# Verified in scripts/bench_tagger.py against BGD's 12M buildings.
 _ADMIN_SIMPLIFY_TOLERANCE_DEG = 0.0001
+
+# Resolution 7: ~5.16 km² average cell area. Boundary fallback ~1-5% for most countries.
+_H3_RESOLUTION = 7
 
 
 def _country_admin_table_name(table: str, level: int) -> str:
@@ -40,6 +33,22 @@ def _country_admin_table_name(table: str, level: int) -> str:
 
 def _tagged_table_name(table: str) -> str:
     return f"_pcodes_tagged_{table}"
+
+
+def _slim_pcode_table_name(table: str) -> str:
+    return f"_pcodes_slim_{table}"
+
+
+def _h3_admin_table_name(table: str, level: int) -> str:
+    return f"_pcodes_h3adm{level}_{table}"
+
+
+def _feature_cell_table_name(table: str) -> str:
+    return f"_pcodes_cells_{table}"
+
+
+def _slim_level_table_name(table: str, level: int) -> str:
+    return f"_pcodes_slimL{level}_{table}"
 
 
 def _load_admin_table(
@@ -169,34 +178,162 @@ def _handle_no_admin_data(
     )
 
 
-def _build_tagged_select(
+def _tessellate_admin_to_h3(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    admin_table: str,
+    target_table: str,
+) -> int:
+    # st_dump decomposes MULTIPOLYGON first; h3_polygon_wkt_to_cells returns 0 cells for MULTIPOLYGON WKT.
+    conn.execute(f"""
+        CREATE TABLE {target_table} AS
+        WITH parts AS (
+            SELECT pcode, name, (UNNEST(st_dump(admin_geom))).geom AS part
+            FROM {admin_table}
+        )
+        SELECT pcode, name,
+               UNNEST(h3_polygon_wkt_to_cells(ST_AsText(part), {_H3_RESOLUTION})) AS cell
+        FROM parts
+    """)
+    row = conn.execute(f"SELECT COUNT(*) FROM {target_table}").fetchone()
+    return int(row[0]) if row else 0
+
+
+def _build_feature_cells(
+    conn: duckdb.DuckDBPyConnection,
     *,
     feature_table: str,
     geom_column: str,
+    target_table: str,
+) -> int:
+    conn.execute(f"""
+        CREATE TABLE {target_table} AS
+        SELECT rowid AS _rid,
+               h3_latlng_to_cell(
+                   ST_Y(ST_Centroid({geom_column})),
+                   ST_X(ST_Centroid({geom_column})),
+                   {_H3_RESOLUTION}
+               ) AS cell
+        FROM {feature_table}
+    """)
+    row = conn.execute(f"SELECT COUNT(*) FROM {target_table}").fetchone()
+    return int(row[0]) if row else 0
+
+
+def _h3_join_one_level(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    feature_table: str,
+    feature_cell_table: str,
+    admin_h3_table: str,
+    admin_table: str,
+    geom_column: str,
+    level: int,
+    target_table: str,
+) -> tuple[int, int]:
+    """Returns (matched_count, total_count) after H3 join and GEOS boundary fallback."""
+    pcode_count_row = conn.execute(
+        f"SELECT COUNT(*) FROM {admin_table} WHERE pcode IS NOT NULL"
+    ).fetchone()
+    pcode_count = int(pcode_count_row[0]) if pcode_count_row else 0
+
+    if pcode_count == 0:
+        # No pcode values for this level/country; GEOS fallback would also return all-NULL.
+        conn.execute(f"""
+            CREATE TABLE {target_table} AS
+            SELECT _rid,
+                   NULL::VARCHAR AS adm{level}_pcode,
+                   NULL::VARCHAR AS adm{level}_name
+            FROM {feature_cell_table}
+        """)
+        total_row = conn.execute(f"SELECT COUNT(*) FROM {target_table}").fetchone()
+        total = int(total_row[0]) if total_row else 0
+        logger.info("[pcodes] adm%d: no pcode data for %s, null columns added", level, admin_table)
+        return 0, total
+
+    h3_slim = f"_pcodes_h3s{level}_{feature_table}"
+    conn.execute(f"DROP TABLE IF EXISTS {h3_slim}")
+    conn.execute(f"""
+        CREATE TABLE {h3_slim} AS
+        SELECT DISTINCT ON (b._rid)
+            b._rid,
+            a.pcode AS adm{level}_pcode,
+            a.name  AS adm{level}_name
+        FROM {feature_cell_table} AS b
+        LEFT JOIN {admin_h3_table} AS a ON b.cell = a.cell
+    """)
+
+    r = conn.execute(f"SELECT COUNT(*), COUNT(adm{level}_pcode) FROM {h3_slim}").fetchone()
+    total, matched_h3 = (int(r[0]), int(r[1])) if r else (0, 0)
+    null_count = total - matched_h3
+
+    logger.info(
+        "[pcodes] adm%d h3: %d matched, %d -> GEOS boundary fallback (%.1f%%)",
+        level,
+        matched_h3,
+        null_count,
+        100.0 * null_count / total if total else 0.0,
+    )
+
+    if null_count == 0:
+        conn.execute(f"ALTER TABLE {h3_slim} RENAME TO {target_table}")
+    else:
+        fb_table = f"_pcodes_fb{level}_{feature_table}"
+        conn.execute(f"DROP TABLE IF EXISTS {fb_table}")
+        conn.execute(f"""
+            CREATE TABLE {fb_table} AS
+            SELECT h._rid,
+                   a.pcode AS adm{level}_pcode,
+                   a.name  AS adm{level}_name
+            FROM (SELECT _rid FROM {h3_slim} WHERE adm{level}_pcode IS NULL) AS h
+            JOIN {feature_table} AS bld ON h._rid = bld.rowid
+            LEFT JOIN {admin_table} AS a
+                   ON ST_Contains(a.admin_geom, ST_Centroid(bld.{geom_column}))
+        """)
+        conn.execute(f"""
+            CREATE TABLE {target_table} AS
+            SELECT h._rid,
+                   COALESCE(h.adm{level}_pcode, f.adm{level}_pcode) AS adm{level}_pcode,
+                   COALESCE(h.adm{level}_name,  f.adm{level}_name)  AS adm{level}_name
+            FROM {h3_slim} AS h
+            LEFT JOIN {fb_table} AS f ON h._rid = f._rid
+        """)
+        conn.execute(f"DROP TABLE {h3_slim}")
+        conn.execute(f"DROP TABLE {fb_table}")
+
+    final_r = conn.execute(
+        f"SELECT COUNT(*), COUNT(adm{level}_pcode) FROM {target_table}"
+    ).fetchone()
+    total_final, matched_final = (int(final_r[0]), int(final_r[1])) if final_r else (0, 0)
+
+    logger.info(
+        "[pcodes] adm%d final: %d/%d matched (%.1f%% null after fallback)",
+        level,
+        matched_final,
+        total_final,
+        100.0 * (total_final - matched_final) / total_final if total_final else 0.0,
+    )
+    return matched_final, total_final
+
+
+def _build_full_tagged_select(
+    *,
+    feature_table: str,
+    slim_table: str,
+    geom_column: str,
     requested_levels: list[int],
-    levels_with_data: list[int],
-    admin_tables: dict[int, str],
 ) -> str:
-    select_cols: list[str] = [
-        f"f.* EXCLUDE ({geom_column})",
-        f"f.{geom_column} AS {geom_column}",
-        "?::VARCHAR AS adm0_pcode",
-        "?::VARCHAR AS adm0_name",
-    ]
-    join_clauses: list[str] = []
+    """Rejoin slim pcode results back to full feature table via rowid."""
+    pcode_cols = ["p.adm0_pcode", "p.adm0_name"]
     for level in requested_levels:
-        if level in levels_with_data:
-            alias = f"a{level}"
-            select_cols.append(f"{alias}.pcode AS adm{level}_pcode")
-            select_cols.append(f"{alias}.name AS adm{level}_name")
-            join_clauses.append(
-                f"LEFT JOIN {admin_tables[level]} AS {alias} "
-                f"ON ST_Contains({alias}.admin_geom, ST_Centroid(f.{geom_column}))"
-            )
-        else:
-            select_cols.append(f"NULL AS adm{level}_pcode")
-            select_cols.append(f"NULL AS adm{level}_name")
-    return f"SELECT {', '.join(select_cols)}\nFROM {feature_table} AS f\n" + "\n".join(join_clauses)
+        pcode_cols.append(f"p.adm{level}_pcode")
+        pcode_cols.append(f"p.adm{level}_name")
+    cols = ", ".join(pcode_cols)
+    return (
+        f"SELECT f.* EXCLUDE ({geom_column}), f.{geom_column}, {cols}\n"
+        f"FROM {feature_table} AS f\n"
+        f"LEFT JOIN {slim_table} AS p ON f.rowid = p._rid"
+    )
 
 
 def _replace_table_with_tagged(
@@ -205,14 +342,13 @@ def _replace_table_with_tagged(
     table: str,
     tagged_table: str,
 ) -> None:
-    # Both statements live in the same DuckDB transaction (autocommit off by
-    # default for explicit BEGIN); a failure between them rolls back.
+    # Atomic swap: if either statement fails the transaction rolls back.
     conn.execute("BEGIN TRANSACTION")
     try:
         conn.execute(f"DROP TABLE {table}")
         conn.execute(f"ALTER TABLE {tagged_table} RENAME TO {table}")
         conn.execute("COMMIT")
-    except Exception:
+    except duckdb.Error:
         conn.execute("ROLLBACK")
         raise
 
@@ -254,36 +390,119 @@ def tag_table(
     if adm0_pcode is None:
         adm0_pcode = iso3_upper
 
-    select_sql = _build_tagged_select(
+    h3_tables: dict[int, str] = {}
+    for level in levels_with_data:
+        target = _h3_admin_table_name(table, level)
+        conn.execute(f"DROP TABLE IF EXISTS {target}")
+        count = _tessellate_admin_to_h3(
+            conn,
+            admin_table=admin_tables[level],
+            target_table=target,
+        )
+        h3_tables[level] = target
+        logger.info("[pcodes] adm%d h3 lookup: %d cells for %s", level, count, iso3_upper)
+
+    cell_table = _feature_cell_table_name(table)
+    conn.execute(f"DROP TABLE IF EXISTS {cell_table}")
+    cell_count = _build_feature_cells(
+        conn,
         feature_table=table,
         geom_column=geom_column,
-        requested_levels=requested,
-        levels_with_data=levels_with_data,
-        admin_tables=admin_tables,
+        target_table=cell_table,
     )
+    logger.info("[pcodes] %d feature cells built for %s", cell_count, iso3_upper)
 
+    slim_level_tables: dict[int, str] = {}
+    levels_tagged: list[int] = []
+
+    for level in requested:
+        slim_lv = _slim_level_table_name(table, level)
+        conn.execute(f"DROP TABLE IF EXISTS {slim_lv}")
+
+        if level in levels_with_data:
+            matched, _ = _h3_join_one_level(
+                conn,
+                feature_table=table,
+                feature_cell_table=cell_table,
+                admin_h3_table=h3_tables[level],
+                admin_table=admin_tables[level],
+                geom_column=geom_column,
+                level=level,
+                target_table=slim_lv,
+            )
+            conn.execute(f"DROP TABLE IF EXISTS {h3_tables[level]}")
+            if matched > 0:
+                levels_tagged.append(level)
+        else:
+            conn.execute(f"""
+                CREATE TABLE {slim_lv} AS
+                SELECT _rid,
+                       NULL::VARCHAR AS adm{level}_pcode,
+                       NULL::VARCHAR AS adm{level}_name
+                FROM {cell_table}
+            """)
+
+        slim_level_tables[level] = slim_lv
+
+    conn.execute(f"DROP TABLE IF EXISTS {cell_table}")
+
+    slim_table = _slim_pcode_table_name(table)
     tagged_table = _tagged_table_name(table)
-    conn.execute(f"DROP TABLE IF EXISTS {tagged_table}")
+
+    first_level = requested[0]
+    join_clauses = "\n".join(
+        f"JOIN {slim_level_tables[level]} AS p{level} ON p{first_level}._rid = p{level}._rid"
+        for level in requested[1:]
+    )
+    level_cols = ", ".join(
+        col
+        for level in requested
+        for col in (f"p{level}.adm{level}_pcode", f"p{level}.adm{level}_name")
+    )
+    conn.execute(f"DROP TABLE IF EXISTS {slim_table}")
     conn.execute(
-        f"CREATE TABLE {tagged_table} AS\n{select_sql}",
+        f"""
+        CREATE TABLE {slim_table} AS
+        SELECT p{first_level}._rid,
+               ?::VARCHAR AS adm0_pcode,
+               ?::VARCHAR AS adm0_name,
+               {level_cols}
+        FROM {slim_level_tables[first_level]} AS p{first_level}
+        {join_clauses}
+        """,
         [adm0_pcode, adm0_name],
     )
+    for slim_lv in slim_level_tables.values():
+        conn.execute(f"DROP TABLE IF EXISTS {slim_lv}")
+
+    rejoin_sql = _build_full_tagged_select(
+        feature_table=table,
+        slim_table=slim_table,
+        geom_column=geom_column,
+        requested_levels=requested,
+    )
+    conn.execute(f"DROP TABLE IF EXISTS {tagged_table}")
+    conn.execute(f"CREATE TABLE {tagged_table} AS\n{rejoin_sql}")
+    conn.execute(f"DROP TABLE IF EXISTS {slim_table}")
+
     _replace_table_with_tagged(conn, table=table, tagged_table=tagged_table)
     _drop_tables(conn, list(admin_tables.values()))
 
+    all_levels_empty = [lv for lv in requested if lv not in levels_tagged]
+
     logger.info(
-        "[pcodes] tagged %s: ISO3=%s adm0=(%s, %s) levels_with_data=%s levels_empty=%s",
+        "[pcodes] tagged %s: ISO3=%s adm0=(%s, %s) levels_tagged=%s levels_empty=%s",
         table,
         iso3_upper,
         adm0_pcode,
         adm0_name,
-        levels_with_data,
-        levels_empty,
+        levels_tagged,
+        all_levels_empty,
     )
     return PcodeTagReport(
         iso3=iso3_upper,
-        levels_tagged=levels_with_data,
-        levels_empty=levels_empty,
+        levels_tagged=levels_tagged,
+        levels_empty=all_levels_empty,
         adm0_pcode=adm0_pcode,
         adm0_name=adm0_name,
     )

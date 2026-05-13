@@ -1,9 +1,19 @@
 """Defaults for thread count and DuckDB memory limit, derived from psutil."""
 
+import os
+
 import psutil
 
 
 def total_memory_gb() -> float:
+    """Return effective memory in GB.
+
+    OEX_MEMORY_GB env var overrides psutil (use this inside Docker where
+    --memory sets the container limit but psutil reads the host RAM).
+    """
+    env = os.environ.get("OEX_MEMORY_GB")
+    if env:
+        return float(env)
     return psutil.virtual_memory().total / (1024**3)
 
 
@@ -19,21 +29,21 @@ def default_memory_limit_gb() -> int:
     return max(1, int(total_memory_gb() * 0.7))
 
 
-def adaptive_parallel_resources(
-    target_mem_per_worker_gb: float = 12.0,
-    os_reserve_fraction: float = 0.20,
-) -> tuple[int, int]:
-    """Compute (parallel_workers, memory_gb_per_worker) scaled to currently available RAM.
+def adaptive_parallel_resources() -> tuple[int, int]:
+    """Compute (parallel_workers, memory_gb_per_worker) scaled to total system RAM.
 
-    Uses available memory (free + reclaimable buffers), not total, so it accounts for
-    other processes already running. Inside a Docker container with --memory set, the
-    kernel reports the container limit as both total and available (cgroup-aware since
-    Linux 5.0), so this scales correctly to the container allocation.
+    Always returns 1 worker. DuckDB's intra-query pipeline engine parallelises
+    every operation (joins, scans, aggregations) across all CPU cores within one
+    session. Concurrent sessions split the RAM budget with zero cross-session
+    coordination and OOM-kill each other on large countries (BRA, IND, CHN).
+
+    Memory: 60% of total RAM, DuckDB's recommended safe fraction for a single
+    session. Leaves headroom for GDAL write allocations, string heaps, and spatial
+    index structures that bypass the buffer manager.
+
+    Uses total memory (cgroup-aware on Linux >= 5.0, so a Docker container with
+    --memory set reports the container limit here).
     """
-    avail_gb = psutil.virtual_memory().available / (1024**3)
-    usable_gb = max(1.0, avail_gb * (1.0 - os_reserve_fraction))
-    workers_by_mem = max(1, int(usable_gb / target_mem_per_worker_gb))
-    workers_by_cpu = max(1, cpu_count() // 2)
-    parallel_workers = min(workers_by_mem, workers_by_cpu)
-    mem_per_worker_gb = max(1, int(usable_gb // parallel_workers))
-    return parallel_workers, mem_per_worker_gb
+    total_gb = total_memory_gb()
+    memory_gb = max(1, int(total_gb * 0.60))
+    return 1, memory_gb

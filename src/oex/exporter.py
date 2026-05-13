@@ -185,11 +185,9 @@ class Exporter:
         result = ExportResult(iso3=iso, source_name=self._runner.name)
         start = time.time()
 
-        if self._cfg.parallel.enabled and len(self._cfg.categories) > 1:
-            workers = min(
-                self._cfg.parallel.threads or self._adaptive_workers,
-                len(self._cfg.categories),
-            )
+        _resolved_workers = self._cfg.parallel.threads or self._adaptive_workers
+        if self._cfg.parallel.enabled and len(self._cfg.categories) > 1 and _resolved_workers > 1:
+            workers = min(_resolved_workers, len(self._cfg.categories))
             with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = {
                     pool.submit(
@@ -429,7 +427,6 @@ class Exporter:
                 )
 
             conn.execute("PRAGMA memory_limit='2GB'")
-
             logger.info("%s writing %d format(s): %s", cat_tag, len(formats), formats)
             zip_paths = self._materialise_outputs(
                 conn=conn,
