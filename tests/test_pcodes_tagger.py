@@ -60,6 +60,7 @@ def _write_admin_parquet(
 def conn() -> Iterator[duckdb.DuckDBPyConnection]:
     c = duckdb.connect(":memory:")
     c.execute("INSTALL spatial; LOAD spatial")
+    c.execute("INSTALL h3 FROM community; LOAD h3")
     try:
         yield c
     finally:
