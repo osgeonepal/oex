@@ -10,6 +10,7 @@ copyright = "Copyright &copy; 2026 Kshitij Raj Sharma"
 nav = [
     { "Home" = "index.md" },
     { "Get started" = "get-started.md" },
+    { "Architecture" = "architecture.md" },
     { "Custom categories" = "custom-categories.md" },
     { "Configuration" = "config.md" },
     { "HDX publication" = "hdx.md" },
