@@ -134,6 +134,29 @@ class Exporter:
             self._adaptive_mem_gb,
         )
 
+        out_root = Path(self._cfg.output.dir) / self._cfg.iso3.lower() / self._runner.name
+        out_root.mkdir(parents=True, exist_ok=True)
+        self._state = StateStore(
+            path=out_root / ".state.json",
+            iso3=self._cfg.iso3,
+            source=self._runner.name,
+        )
+
+        if self._cfg.output.resume:
+            peeked = self._runner.peek_snapshot_label(self._cfg)
+            if peeked and all(
+                self._state.is_uploaded(_slugify(c.name), snapshot_label=peeked)
+                for c in self._cfg.categories
+            ):
+                logger.info(
+                    "[%s/%s] resume: every category already uploaded for snapshot %s; "
+                    "skipping boundary fetch, pcode cache, and per-category work",
+                    iso,
+                    self._runner.name,
+                    peeked,
+                )
+                return ExportResult(iso3=iso, source_name=self._runner.name)
+
         boundary = resolve_boundary(self._cfg.iso3, self._cfg.boundary)
         bbox = boundary.bbox
         logger.info(
@@ -174,14 +197,6 @@ class Exporter:
 
                 logger.info("[%s/%s] s3: preflight check", iso, self._runner.name)
                 s3_preflight(self._cfg.output.s3)
-
-        out_root = Path(self._cfg.output.dir) / self._cfg.iso3.lower() / self._runner.name
-        out_root.mkdir(parents=True, exist_ok=True)
-        self._state = StateStore(
-            path=out_root / ".state.json",
-            iso3=self._cfg.iso3,
-            source=self._runner.name,
-        )
 
         result = ExportResult(iso3=iso, source_name=self._runner.name)
         start = time.time()

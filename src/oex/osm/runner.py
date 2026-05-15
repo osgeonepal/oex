@@ -99,6 +99,25 @@ class OsmRunner(SourceRunner):
         self._dataset_source: str = "OpenStreetMap"
         self._country_parquet: Path | None = None
 
+    def peek_snapshot_label(self, cfg: RootConfig) -> str | None:
+        src = cast(OsmSourceConfig, cfg.source["osm"])
+        if not src.enabled or not cfg.iso3:
+            return None
+        engine = (src.engine or "geofabrik").lower()
+        if engine == "geofabrik":
+            country_root = Path(src.cache_dir) / "geofabrik" / cfg.iso3.lower()
+            if not country_root.exists():
+                return None
+            return self._resolve_or_create_snapshot(country_root, src.snapshot)
+        if engine == "planet":
+            if not src.pbf_path:
+                return None
+            pbf = Path(src.pbf_path)
+            if not pbf.exists():
+                return None
+            return self._planet_snapshot_label(pbf, src.snapshot)
+        return None
+
     def prepare(self, cfg: RootConfig) -> None:
         src = cast(OsmSourceConfig, cfg.source["osm"])
         if not src.enabled:

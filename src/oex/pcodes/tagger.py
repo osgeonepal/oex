@@ -474,6 +474,21 @@ def tag_table(
     if adm0_pcode is None:
         adm0_pcode = iso3_upper
 
+    # Levels whose polygons all have NULL pcodes (e.g. IND adm4) can never
+    # produce a useful tag, so skip the H3 tessellation for them up front.
+    for level in list(levels_with_data):
+        row = conn.execute(
+            f"SELECT COUNT(*) FROM {admin_tables[level]} WHERE pcode IS NOT NULL"
+        ).fetchone()
+        if row is None or row[0] == 0:
+            logger.info(
+                "[pcodes] adm%d: no pcode values for ISO3=%s, skipping H3 tessellation",
+                level,
+                iso3_upper,
+            )
+            levels_with_data.remove(level)
+            levels_empty.append(level)
+
     h3_tables: dict[int, str] = {}
     for level in levels_with_data:
         target = _h3_admin_table_name(table, level)

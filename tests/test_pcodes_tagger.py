@@ -227,6 +227,58 @@ def test_tag_table_emits_nulls_for_missing_levels(
     assert nulls == (None, None, None, None)
 
 
+def test_tag_table_skips_levels_with_null_pcodes(
+    conn: duckdb.DuckDBPyConnection,
+    tmp_path: Path,
+) -> None:
+    """Polygons that exist for the ISO3 but have a NULL pcode column are filtered
+    out at load time, so the level is treated as empty (no tessellation, no join)."""
+    adm1_path = tmp_path / "adm1_polygons.parquet"
+    _write_admin_parquet(
+        conn,
+        target=adm1_path,
+        level=1,
+        rows=[
+            {
+                "iso_3": "NPL",
+                "adm1_src": "NP01",
+                "adm1_name": "Province",
+                "adm0_src": "NPL",
+                "adm0_name": "Nepal",
+                "wkt": "POLYGON((0 0, 10 0, 10 10, 0 10, 0 0))",
+            },
+        ],
+    )
+    adm2_path = tmp_path / "adm2_polygons.parquet"
+    _write_admin_parquet(
+        conn,
+        target=adm2_path,
+        level=2,
+        rows=[
+            {
+                "iso_3": "NPL",
+                "adm2_src": None,
+                "adm2_name": "Unmapped",
+                "adm0_src": "NPL",
+                "adm0_name": "Nepal",
+                "wkt": "POLYGON((0 0, 10 0, 10 10, 0 10, 0 0))",
+            },
+        ],
+    )
+    cache = {
+        1: PcodeCacheEntry(level=1, path=adm1_path, upstream_date="t", upstream_url=""),
+        2: PcodeCacheEntry(level=2, path=adm2_path, upstream_date="t", upstream_url=""),
+    }
+    _make_features_table(conn, "features")
+
+    report = tag_table(conn, table="features", iso3="NPL", cache_entries=cache, levels=[1, 2])
+    assert report.levels_tagged == [1]
+    assert report.levels_empty == [2]
+
+    row = conn.execute("SELECT adm1_pcode, adm2_pcode FROM features WHERE id = 1").fetchone()
+    assert row == ("NP01", None)
+
+
 def test_tag_table_handles_country_with_no_admin_data(
     conn: duckdb.DuckDBPyConnection,
     admin_cache: dict[int, PcodeCacheEntry],
