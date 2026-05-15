@@ -36,7 +36,7 @@ curl -LsSf https://raw.githubusercontent.com/osgeonepal/oex/main/scripts/install
 That writes `/usr/local/bin/oex-cli` wrapping the docker image so
 `oex-cli osm npl` runs the container.
 
-## One line, country in your hands
+## One liner country export
 
 ```bash
 oex-cli osm npl
