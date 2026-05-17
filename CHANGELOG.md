@@ -64,6 +64,37 @@ and is auto-managed by [commitizen](https://commitizen-tools.github.io/commitize
 
 - **config**: config fix
 
+## v0.3.0 (2026-05-17)
+
+### Feat
+
+- **h3**: add h3 index join instead of spatial to prevent memory issue and add performance ad
+- **temporal**: add temporal info inthe report
+- **language**: add local language support with babel
+- **s3**: add s3 upload feature
+- **transliterate**: add feature to transliterate the language
+- **pcodes**: add pcode integration in datasets
+
+### Fix
+
+- **skip-null-pcode-rows-scan**: pcodes
+- **fallback**: add fallabck to neighbour h3 grid rather than geos for large datasets
+- **ci**: fixes test cases added h3 context
+- **adaptive**: parallel resources to docker with osm cli
+- **pcode**: add semaphore on pcode spatial joins
+- **pcode**: fix the pcode join in big tables
+- **path**: add preflight to fix writeable path
+- **filesize**: fixes file size and add resume option
+- **country**: parquet
+- **loader**: planet
+- **schema**: hot
+- **s3**: uploader on schema
+- **source**: fix source string in overture
+- **overture**: fix on transliteratue
+- **sources**: add report formatting with two sources
+- **hdx**: fix hdx push bug
+- **bug**: fixes precommit lock file bug
+
 ## v0.2.1 (2026-05-07)
 
 ### Fix
