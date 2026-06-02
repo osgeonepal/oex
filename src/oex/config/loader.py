@@ -99,6 +99,10 @@ def _validate_osm_engine(cfg: RootConfig) -> None:
             "source.osm.planet_fallback=true requires source.osm.pbf_path "
             "(absolute path to a local planet PBF)"
         )
+    if not osm.planet_clip_to_boundary and osm.engine != "planet":
+        raise ConfigError(
+            "source.osm.planet_clip_to_boundary=false only applies to source.osm.engine='planet'"
+        )
 
 
 def apply_overrides(cfg: RootConfig, overrides: dict[str, Any]) -> RootConfig:

@@ -29,6 +29,14 @@ def test_resolve_from_user_geom_polygon() -> None:
     assert boundary.source == "user-provided"
 
 
+def test_resolve_world_shorthand_returns_full_globe() -> None:
+    cfg = BoundaryConfig(geom="world")
+    boundary = resolve_boundary("WLD", cfg)
+    assert boundary.iso3 == "WLD"
+    assert boundary.bbox == (-180.0, -90.0, 180.0, 90.0)
+    assert "whole planet" in boundary.source
+
+
 def test_resolve_caches_repeat_calls() -> None:
     fc = {
         "type": "FeatureCollection",

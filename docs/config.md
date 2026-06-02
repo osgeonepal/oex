@@ -253,6 +253,7 @@ source:
     cache_dir: data/osm
     snapshot: latest
     geofabrik_clip_to_boundary: true
+    planet_clip_to_boundary: true  # planet only; false = whole planet, no clip
     pbf_path: null             # required for engine: planet or planet_fallback
     planet_fallback: false     # try geofabrik, fall back to planet on 404
     auto_download_planet: false  # when true, download the planet PBF if pbf_path is missing
@@ -278,6 +279,26 @@ rate limits) are not swallowed.
 Download the planet PBF once with `oex-cli osm-build-cache`; the result
 lives at `<cache_dir>/_pbf/planet-latest.osm.pbf` and you point
 `pbf_path` at it.
+
+`planet_clip_to_boundary: false`: whole-planet mode. The osmium clip is
+skipped and quackosm processes the entire planet PBF in one pass, so
+`osmium-tool` is not required and the source PBF is never deleted. Pair it
+with `boundary.geom: world`, which resolves to a full-globe boundary
+(`-180/-90..180/90`) without a geoBoundaries lookup, making the query-time
+bbox filter a no-op. `iso3` is still required (it names the cache and output
+paths, e.g. `WLD`). This is heavy: quackosm reads the full planet, so expect
+a long run and ample disk.
+
+```yaml
+iso3: WLD
+boundary:
+  geom: world
+source:
+  osm:
+    engine: planet
+    planet_clip_to_boundary: false
+    pbf_path: /data/osm/_pbf/planet-latest.osm.pbf
+```
 
 ## Pinning a release / snapshot
 

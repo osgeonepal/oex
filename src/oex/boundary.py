@@ -17,6 +17,11 @@ logger = get_logger(__name__)
 
 _GEOBOUNDARIES_TPL = "https://www.geoboundaries.org/api/current/gbOpen/{iso3}/{level}/"
 
+WORLD_GEOJSON: dict[str, Any] = {
+    "type": "Polygon",
+    "coordinates": [[[-180, -90], [180, -90], [180, 90], [-180, 90], [-180, -90]]],
+}
+
 _to_3857 = Transformer.from_crs(4326, 3857, always_xy=True).transform
 _to_4326 = Transformer.from_crs(3857, 4326, always_xy=True).transform
 
@@ -89,6 +94,15 @@ def _fetch_geoboundaries(iso3: str, release: str, level: str) -> Boundary:
     )
 
 
+def _world_boundary(iso3: str) -> Boundary:
+    return Boundary(
+        iso3=iso3.upper(),
+        bbox=(-180.0, -90.0, 180.0, 90.0),
+        geojson=json.dumps(WORLD_GEOJSON),
+        source="whole planet (boundary.geom: world)",
+    )
+
+
 def _from_user_geom(iso3: str, geom_str: str) -> Boundary:
     fc = json.loads(geom_str)
     geometry = _featurecollection_to_geometry(fc) if fc.get("type") == "FeatureCollection" else fc
@@ -137,7 +151,10 @@ def resolve_boundary(iso3: str, cfg: BoundaryConfig) -> Boundary:
         return cached
 
     if cfg.geom:
-        boundary = _from_user_geom(iso3, cfg.geom)
+        if cfg.geom.strip().lower() == "world":
+            boundary = _world_boundary(iso3)
+        else:
+            boundary = _from_user_geom(iso3, cfg.geom)
     else:
         boundary = _fetch_geoboundaries(iso3, cfg.geoboundaries_release, cfg.geoboundaries_level)
 

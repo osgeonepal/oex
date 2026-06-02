@@ -137,6 +137,40 @@ def test_planet_prepare_calls_osmium_and_quackosm(tmp_path: Path) -> None:
     assert sorted(manifest["filter_keys"]) == ["building", "highway"]
 
 
+def test_planet_no_clip_skips_osmium_and_feeds_whole_planet(tmp_path: Path) -> None:
+    """planet_clip_to_boundary=false: no osmium clip, quackosm gets the planet PBF,
+    and the source planet file is never deleted."""
+    planet_pbf = tmp_path / "planet.osm.pbf"
+    planet_pbf.write_bytes(b"\x00")
+    cfg = _planet_cfg(tmp_path, planet_pbf=planet_pbf)
+    cfg.source["osm"].planet_clip_to_boundary = False
+
+    quackosm_args: dict = {}
+
+    def fake_quackosm(**kw):
+        quackosm_args.update(kw)
+        _seed_country_parquet(kw["result_file_path"])
+
+    with (
+        patch(
+            "oex.osm.runner.resolve_boundary",
+            side_effect=AssertionError("must not resolve a boundary when not clipping"),
+        ),
+        patch(
+            "oex.osm.runner.osmium_polygon_extract",
+            side_effect=AssertionError("must not clip when planet_clip_to_boundary=false"),
+        ),
+        patch("quackosm.functions.convert_pbf_to_parquet", side_effect=fake_quackosm),
+    ):
+        runner = OsmRunner()
+        runner.prepare(cfg)
+
+    assert quackosm_args["pbf_path"] == planet_pbf
+    assert quackosm_args["geometry_filter"] is None
+    assert runner._engine == "planet"
+    assert planet_pbf.exists(), "source planet PBF must survive a no-clip run"
+
+
 def test_planet_prepare_is_idempotent_when_parquet_exists(tmp_path: Path) -> None:
     planet_pbf = tmp_path / "planet.osm.pbf"
     planet_pbf.write_bytes(b"\x00")

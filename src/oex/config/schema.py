@@ -104,6 +104,7 @@ class OsmSourceConfig:
     md5_url: str = "https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf.md5"
     geofabrik_index_url: str = "https://download.geofabrik.de/index-v1.json"
     geofabrik_clip_to_boundary: bool = True
+    planet_clip_to_boundary: bool = True
     pbf_path: str | None = None
     planet_fallback: bool = False
     auto_download_planet: bool = False

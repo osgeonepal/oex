@@ -178,20 +178,30 @@ class OsmRunner(SourceRunner):
 
         country_pbf = snapshot_dir / "country.osm.pbf"
         country_parquet = snapshot_dir / "country.parquet"
+        clip = src.planet_clip_to_boundary
 
         if not country_parquet.exists():
-            if not country_pbf.exists():
-                boundary = resolve_boundary(cfg.iso3, cfg.boundary)
-                osmium_polygon_extract(planet_pbf, json.loads(boundary.geojson), country_pbf)
+            if clip:
+                if not country_pbf.exists():
+                    boundary = resolve_boundary(cfg.iso3, cfg.boundary)
+                    osmium_polygon_extract(planet_pbf, json.loads(boundary.geojson), country_pbf)
+                else:
+                    logger.info("Reusing existing country PBF %s", country_pbf)
+                source_pbf = country_pbf
             else:
-                logger.info("Reusing existing country PBF %s", country_pbf)
+                logger.info(
+                    "planet_clip_to_boundary=false; building parquet from the whole planet "
+                    "%s (no clip)",
+                    planet_pbf,
+                )
+                source_pbf = planet_pbf
             self._build_country_parquet(
-                cfg, country_pbf, country_parquet, snapshot_dir, engine="planet"
+                cfg, source_pbf, country_parquet, snapshot_dir, engine="planet"
             )
         else:
             logger.info("Reusing existing country parquet %s", country_parquet)
 
-        if not src.keep_pbf and country_pbf.exists():
+        if clip and not src.keep_pbf and country_pbf.exists():
             try:
                 country_pbf.unlink()
             except OSError as exc:
