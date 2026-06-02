@@ -64,6 +64,12 @@ and is auto-managed by [commitizen](https://commitizen-tools.github.io/commitize
 
 - **config**: config fix
 
+## v0.4.0 (2026-06-02)
+
+### Feat
+
+- **clip**: added clip to planet boundary
+
 ## v0.3.0 (2026-05-17)
 
 ### Feat
