@@ -28,7 +28,7 @@ def _fake_pbf(tmp_path: Path, name: str = "in.pbf") -> Path:
 def test_raises_when_osmium_not_on_path(tmp_path: Path) -> None:
     pbf = _fake_pbf(tmp_path)
     with patch("oex.osm.extract.shutil.which", return_value=None):
-        with pytest.raises(OsmiumNotInstalledError, match="dnf install"):
+        with pytest.raises(OsmiumNotInstalledError, match="osmium-tool binary not found"):
             osmium_polygon_extract(pbf, _NEPAL_POLYGON, tmp_path / "out.pbf")
 
 
