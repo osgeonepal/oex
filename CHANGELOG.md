@@ -64,6 +64,13 @@ and is auto-managed by [commitizen](https://commitizen-tools.github.io/commitize
 
 - **config**: config fix
 
+## v0.4.1 (2026-06-23)
+
+### Fix
+
+- **fix**: test cases for platform agnostic
+- **download**: remove export path from file if it is uploaded to hdx
+
 ## v0.4.0 (2026-06-02)
 
 ### Feat
