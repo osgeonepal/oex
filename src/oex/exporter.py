@@ -505,6 +505,11 @@ class Exporter:
                 dataset_name = publisher.publish(self._cfg, category, zip_paths, ctx)
                 if self._state is not None:
                     self._state.mark_uploaded(slug, hdx_dataset=dataset_name)
+                if self._cfg.output.remove_after_upload:
+                    _remove_uploaded_outputs(zip_paths, metadata_json_path)
+                    logger.info(
+                        "%s removed %d local output(s) after upload", cat_tag, len(zip_paths)
+                    )
 
             logger.info(
                 "%s done: %s features, %d zip(s), %.0f MB total in %.1fs",
@@ -564,6 +569,9 @@ class Exporter:
         dataset_name = publisher.publish(self._cfg, category, zip_paths, ctx)
         if self._state is not None:
             self._state.mark_uploaded(slug, hdx_dataset=dataset_name)
+        if self._cfg.output.remove_after_upload:
+            _remove_uploaded_outputs(zip_paths, metadata_json_path)
+            logger.info("%s removed %d local output(s) after upload", cat_tag, len(zip_paths))
         return CategoryResult(
             name=category.name,
             status="ok",
@@ -683,6 +691,14 @@ class Exporter:
             *(["Notes", *format_notes, ""] if format_notes else []),
             f"Feedback:         {_PROJECT_URL}/issues",
         ] + ([line for line in query.extra_readme_lines] if query.extra_readme_lines else [])
+
+
+def _remove_uploaded_outputs(zip_paths: list[Path], metadata_json_path: Path | None) -> None:
+    """Delete local artifacts once HDX confirms their upload."""
+    for path in zip_paths:
+        path.unlink(missing_ok=True)
+    if metadata_json_path is not None:
+        metadata_json_path.unlink(missing_ok=True)
 
 
 def _slugify(value: str) -> str:

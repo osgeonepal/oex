@@ -122,10 +122,10 @@ class StateStore:
         return all(Path(p).exists() for p in entry.zip_paths)
 
     def is_uploaded(self, slug: str, *, snapshot_label: str) -> bool:
-        if not self.is_built(slug, snapshot_label=snapshot_label):
-            return False
         entry = self.get(slug)
-        return entry is not None and entry.uploaded_utc is not None
+        if entry is None or entry.uploaded_utc is None:
+            return False
+        return entry.snapshot_label == snapshot_label
 
     def _save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)

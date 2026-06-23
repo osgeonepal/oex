@@ -77,6 +77,13 @@ def test_purge_existing_resources_defaults_false_and_overrides_through() -> None
     assert flipped.hdx.purge_existing_resources is True
 
 
+def test_remove_after_upload_defaults_true_and_overrides_through() -> None:
+    cfg = load_config()
+    assert cfg.output.remove_after_upload is True
+    flipped = apply_overrides(cfg, {"output.remove_after_upload": False})
+    assert flipped.output.remove_after_upload is False
+
+
 def test_select_categories_filters_by_name() -> None:
     cfg = load_config()
     cfg = apply_overrides(cfg, {"iso3": "NPL"})

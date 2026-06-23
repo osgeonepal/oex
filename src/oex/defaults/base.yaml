@@ -20,6 +20,7 @@ output:
   formats:
     - gpkg
     - shp
+  remove_after_upload: true
   report:
     enabled: false
   s3:

@@ -64,6 +64,7 @@ class OutputConfig:
     report: ReportConfig = field(default_factory=ReportConfig)
     s3: S3Config = field(default_factory=S3Config)
     resume: bool = True
+    remove_after_upload: bool = True
 
 
 @dataclass

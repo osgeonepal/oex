@@ -41,6 +41,19 @@ def test_mark_built_then_uploaded_roundtrip(tmp_path: Path) -> None:
     assert entry.hdx_dataset == "hotosm_npl_buildings"
 
 
+def test_is_uploaded_survives_missing_zips(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    zip1 = tmp_path / "buildings.zip"
+    zip1.write_bytes(b"x")
+    store.mark_built(
+        "buildings", snapshot_label="2026-05-09", zip_paths=[zip1], metadata_json_path=None
+    )
+    store.mark_uploaded("buildings", hdx_dataset="hotosm_npl_buildings")
+    zip1.unlink()
+    assert store.is_uploaded("buildings", snapshot_label="2026-05-09")
+    assert not store.is_uploaded("buildings", snapshot_label="2026-06-01")
+
+
 def test_snapshot_label_mismatch_invalidates_state(tmp_path: Path) -> None:
     store = _store(tmp_path)
     zip1 = tmp_path / "buildings.zip"
