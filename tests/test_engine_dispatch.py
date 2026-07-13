@@ -66,11 +66,12 @@ categories: []
 
 
 def test_geofabrik_reuses_existing_snapshot(tmp_path: Path) -> None:
-    """When country.parquet already exists, no download/quackosm rebuild runs."""
+    """When the parquet for this boundary + filters exists, nothing is rebuilt."""
+    from oex.osm.runner import _parquet_fingerprint
+
     cache_dir = tmp_path / "osm"
     snapshot_dir = cache_dir / "geofabrik" / "npl" / "2026-04-01"
     snapshot_dir.mkdir(parents=True)
-    (snapshot_dir / "country.parquet").write_bytes(b"placeholder")
 
     yaml = tmp_path / "c.yaml"
     yaml.write_text(
@@ -92,8 +93,11 @@ categories:
         encoding="utf-8",
     )
     cfg = load_config(yaml)
+    cached = snapshot_dir / f"country-{_parquet_fingerprint(cfg, clip=True)}.parquet"
+    cached.write_bytes(b"placeholder")
+
     runner = OsmRunner()
     runner.prepare(cfg)
     assert runner._snapshot_label == "2026-04-01"
     assert runner._snapshot_dir == snapshot_dir
-    assert runner._country_parquet == snapshot_dir / "country.parquet"
+    assert runner._country_parquet == cached

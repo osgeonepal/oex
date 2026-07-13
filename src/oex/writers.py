@@ -1,6 +1,7 @@
 """GIS format writers (gpkg, shp, geojson) over materialised DuckDB tables."""
 
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import duckdb
@@ -131,3 +132,87 @@ def _write_shapefiles(
         )
         written.append(target)
     return written
+
+
+def write_pmtiles(
+    conn: duckdb.DuckDBPyConnection,
+    table_name: str,
+    out_path: Path,
+    *,
+    min_zoom: int,
+    max_zoom: int,
+) -> Path:
+    """Write a single-layer PMTiles archive via GDAL. The layer name is the file stem."""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    start = time.time()
+    # The options must be a list. A single comma-joined string parses as one
+    # unknown option, which GDAL ignores, falling back to its default MAXZOOM of 5.
+    conn.execute(
+        f"COPY {table_name} TO '{out_path}' "
+        f"WITH (FORMAT GDAL, SRS 'EPSG:4326', DRIVER 'PMTiles', "
+        f"DATASET_CREATION_OPTIONS ('MINZOOM={int(min_zoom)}', 'MAXZOOM={int(max_zoom)}'))"
+    )
+    size_mb = out_path.stat().st_size / (1024 * 1024)
+    logger.info("Wrote %s (%.0f MB) in %.2fs", out_path, size_mb, time.time() - start)
+    return out_path
+
+
+def write_geoparquet(
+    conn: duckdb.DuckDBPyConnection,
+    table_name: str,
+    out_path: Path,
+) -> Path:
+    """Write the full table as GeoParquet. DuckDB emits GeoParquet metadata for the
+    GEOMETRY column, so the file round-trips as GEOMETRY and reads back for tiling."""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    start = time.time()
+    conn.execute(f"COPY {table_name} TO '{out_path}' (FORMAT PARQUET)")
+    size_mb = out_path.stat().st_size / (1024 * 1024)
+    logger.info("Wrote %s (%.0f MB) in %.2fs", out_path, size_mb, time.time() - start)
+    return out_path
+
+
+@dataclass(frozen=True)
+class TileLayer:
+    # `path` is a local path or an https/s3 URL DuckDB can read via httpfs.
+    path: str
+    category: str
+    source: str
+
+
+def build_combined_pmtiles(
+    conn: duckdb.DuckDBPyConnection,
+    layers: list[TileLayer],
+    out_path: Path,
+    *,
+    min_zoom: int,
+    max_zoom: int,
+) -> Path:
+    """Merge per-layer GeoParquets (in the given order) into one PMTiles layer.
+
+    `category` and `source` are injected per layer so the single tileset stays
+    styleable by both. Each layer's parquet only needs a `geom` column; `name`
+    is carried when present.
+    """
+    if not layers:
+        raise ValueError("build_combined_pmtiles needs at least one layer")
+    selects = []
+    for layer in layers:
+        cols = {
+            row[0]
+            for row in conn.execute(
+                f"DESCRIBE SELECT * FROM read_parquet('{layer.path}')"
+            ).fetchall()
+        }
+        name_expr = "name" if "name" in cols else "NULL"
+        selects.append(
+            f"SELECT '{layer.category}' AS category, '{layer.source}' AS source, "
+            f"{name_expr} AS name, geom FROM read_parquet('{layer.path}')"
+        )
+    conn.execute(f"CREATE TABLE __combined_tiles AS {' UNION ALL '.join(selects)}")
+    try:
+        return write_pmtiles(
+            conn, "__combined_tiles", out_path, min_zoom=min_zoom, max_zoom=max_zoom
+        )
+    finally:
+        conn.execute("DROP TABLE IF EXISTS __combined_tiles")

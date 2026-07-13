@@ -3,7 +3,28 @@
 from dataclasses import dataclass, field
 from typing import Any
 
+from oex.palette import DEFAULT_PALETTE
+
 OsmTagFilter = dict[str, Any]
+
+
+@dataclass
+class CombinedHdx:
+    """Metadata for the one dataset that `hdx.combine` publishes every category onto.
+
+    Mirrors a category's `hdx:` block, so dataset-level metadata is described the
+    same way per-layer metadata is. Every value is optional: an empty one falls
+    back to what oex derives from the categories and the source that built them.
+    """
+
+    # Dataset slug. Empty falls back to "{key}_{iso3}".
+    name: str = ""
+    # Supports {country} and {iso3}.
+    title: str = ""
+    notes: str = ""
+    caveats: str = ""
+    source: str = ""
+    tags: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -21,6 +42,10 @@ class HdxConfig:
     title_template: str = ""
     # Destructive: deletes every existing resource on the dataset before upload.
     purge_existing_resources: bool = False
+    # Publish every category as resources on ONE HDX dataset instead of one
+    # dataset per category.
+    combine: bool = False
+    combined: CombinedHdx = field(default_factory=CombinedHdx)
 
 
 @dataclass
@@ -32,7 +57,6 @@ class DuckdbConfig:
     http_retry_backoff: float = 2.0
     http_timeout_ms: int = 120_000
     temp_dir: str = "/tmp/duckdb_temp"
-    enable_object_cache: bool = True
 
 
 @dataclass
@@ -42,8 +66,34 @@ class LoggingConfig:
 
 
 @dataclass
+class MapAssetsConfig:
+    """Where the report map gets its basemap and its JavaScript.
+
+    The published page fetches these at view time, so they are configurable: pin a
+    different version, or serve them from your own host when a CDN is unreachable.
+    """
+
+    basemap_tiles: str = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+    basemap_attribution: str = "(c) OpenStreetMap contributors"
+    maplibre_css: str = "https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"
+    maplibre_js: str = "https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"
+    pmtiles_js: str = "https://unpkg.com/pmtiles@3.2.1/dist/pmtiles.js"
+
+
+@dataclass
 class ReportConfig:
     enabled: bool = False
+    # Layer colours, assigned in layer order and cycled when there are more layers.
+    palette: list[str] = field(default_factory=lambda: list(DEFAULT_PALETTE))
+    map_assets: MapAssetsConfig = field(default_factory=MapAssetsConfig)
+
+
+@dataclass
+class PmtilesConfig:
+    # Higher max_zoom means sharper detail when zoomed in, at the cost of archive size.
+    enabled: bool = False
+    min_zoom: int = 0
+    max_zoom: int = 12
 
 
 @dataclass
@@ -62,6 +112,7 @@ class OutputConfig:
     formats: list[str] = field(default_factory=lambda: ["gpkg", "shp"])
     metadata: bool = False
     report: ReportConfig = field(default_factory=ReportConfig)
+    pmtiles: PmtilesConfig = field(default_factory=PmtilesConfig)
     s3: S3Config = field(default_factory=S3Config)
     resume: bool = True
     remove_after_upload: bool = True

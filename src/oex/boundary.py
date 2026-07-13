@@ -1,5 +1,6 @@
 """Country boundary resolution: user-supplied geom or geoBoundaries ADM0."""
 
+import hashlib
 import json
 import threading
 from dataclasses import dataclass
@@ -35,7 +36,7 @@ class Boundary:
 
 
 _lock = threading.Lock()
-_cache: dict[tuple[str, str, str, str], Boundary] = {}
+_cache: dict[tuple[str, str, str, str, str], Boundary] = {}
 
 
 def _bbox_from_geometry(geometry: dict[str, Any]) -> tuple[float, float, float, float]:
@@ -139,11 +140,14 @@ def resolve_boundary(iso3: str, cfg: BoundaryConfig) -> Boundary:
             f"boundary.buffer_meters must be >= 0; got {cfg.buffer_meters}. "
             "Inward buffers are not supported (would shrink the export area)."
         )
+    # Without cfg.geom in the key, two configs with different user geometries for
+    # one country share an entry and the second exports the first one's area.
     key = (
         iso3.upper(),
         cfg.geoboundaries_release,
         cfg.geoboundaries_level,
         f"buf{cfg.buffer_meters:g}",
+        hashlib.sha256((cfg.geom or "").encode()).hexdigest(),
     )
     with _lock:
         cached = _cache.get(key)

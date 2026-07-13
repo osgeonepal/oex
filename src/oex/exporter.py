@@ -14,7 +14,13 @@ from pathlib import Path
 from oex.boundary import resolve_boundary
 from oex.config.schema import CategoryConfig, PcodesSourceConfig, RootConfig
 from oex.duckdb_session import connect
-from oex.hdx_publisher import HdxPublisher, PublishContext
+from oex.hdx_publisher import (
+    SOURCE_RANK,
+    CombinedCategory,
+    ExtraResource,
+    HdxPublisher,
+    PublishContext,
+)
 from oex.logging_setup import get_logger
 from oex.metadata import compute_metadata
 from oex.pcodes import (
@@ -26,17 +32,28 @@ from oex.pcodes import (
 from oex.pcodes.tagger import parse_boundary_resolution
 from oex.preflight import check_writable_paths
 from oex.report import SourceMetadata, render_report
+from oex.s3 import build_layer_key, list_layer_urls
+from oex.s3 import resolve as s3_resolve
+from oex.s3 import upload as s3_upload
 from oex.sources.base import CategorySkippedError, SourceQuery, SourceRunner
 from oex.sql import build_select_clause, build_where_clause, materialise
 from oex.state import StateStore
 from oex.system import adaptive_parallel_resources, cpu_count
 from oex.translit import transliterate_table
-from oex.writers import write_format
+from oex.writers import (
+    TileLayer,
+    build_combined_pmtiles,
+    write_format,
+    write_geoparquet,
+    write_pmtiles,
+)
 from oex.zip_bundle import make_zip
 
 logger = get_logger(__name__)
 
 _PROJECT_URL = "https://github.com/osgeonepal/oex"
+# State slug for the single combined dataset's upload marker.
+_COMBINED_SLUG = "__combined__"
 _FORMAT_LABELS = {
     "gpkg": "GeoPackage (gpkg)",
     "shp": "ESRI Shapefile (shp)",
@@ -61,6 +78,19 @@ class CategoryResult:
     zip_paths: list[Path] = field(default_factory=list)
     hdx_dataset: str | None = None
     error: str | None = None
+
+
+@dataclass
+class BuiltCategory:
+    """A processed category plus the artifacts phase-B combined publishing needs."""
+
+    result: CategoryResult
+    category: CategoryConfig
+    zip_paths: list[Path] = field(default_factory=list)
+    metadata_json_path: Path | None = None
+    metadata_obj: object | None = None
+    geoparquet_path: Path | None = None
+    query: SourceQuery | None = None
 
 
 @dataclass
@@ -142,14 +172,21 @@ class Exporter:
             source=self._runner.name,
         )
 
+        peeked: str | None = None
         if self._cfg.output.resume:
             peeked = self._runner.peek_snapshot_label(self._cfg)
-            if peeked and all(
-                self._state.is_uploaded(_slugify(c.name), snapshot_label=peeked)
-                for c in self._cfg.categories
-            ):
+            if self._cfg.hdx.combine:
+                already_done = bool(peeked) and self._state.is_uploaded(
+                    _COMBINED_SLUG, snapshot_label=peeked
+                )
+            else:
+                already_done = bool(peeked) and all(
+                    self._state.is_uploaded(_slugify(c.name), snapshot_label=peeked)
+                    for c in self._cfg.categories
+                )
+            if already_done:
                 logger.info(
-                    "[%s/%s] resume: every category already uploaded for snapshot %s; "
+                    "[%s/%s] resume: already uploaded for snapshot %s; "
                     "skipping boundary fetch, pcode cache, and per-category work",
                     iso,
                     self._runner.name,
@@ -201,6 +238,7 @@ class Exporter:
         result = ExportResult(iso3=iso, source_name=self._runner.name)
         start = time.time()
 
+        built_list: list[BuiltCategory] = []
         _resolved_workers = self._cfg.parallel.threads or self._adaptive_workers
         if self._cfg.parallel.enabled and len(self._cfg.categories) > 1 and _resolved_workers > 1:
             workers = min(_resolved_workers, len(self._cfg.categories))
@@ -212,12 +250,19 @@ class Exporter:
                     for category in self._cfg.categories
                 }
                 for fut in concurrent.futures.as_completed(futures):
-                    cat_result = fut.result()
-                    result.categories[cat_result.name] = cat_result
+                    built = fut.result()
+                    built_list.append(built)
+                    result.categories[built.result.name] = built.result
         else:
             for category in self._cfg.categories:
-                cat_result = self._process_category(category, boundary, out_root, publisher)
-                result.categories[cat_result.name] = cat_result
+                built = self._process_category(category, boundary, out_root, publisher)
+                built_list.append(built)
+                result.categories[built.result.name] = built.result
+
+        if self._cfg.hdx.combine and publisher is not None:
+            self._publish_combined(
+                built_list, out_root, publisher, peeked_label=peeked, boundary_bbox=bbox
+            )
 
         result.total_duration_s = time.time() - start
         logger.info(
@@ -238,33 +283,48 @@ class Exporter:
         boundary: object,
         out_root: Path,
         publisher: HdxPublisher | None,
-    ) -> CategoryResult:
+    ) -> BuiltCategory:
+        # Combined mode defers publishing to a single phase-B call, so no
+        # category publishes on its own and artifacts are kept until then.
+        combine = self._cfg.hdx.combine
         cat_start = time.time()
         slug = _slugify(category.name)
         cat_tag = f"[{category.name}/{self._runner.name}]"
         logger.info("%s starting", cat_tag)
+
+        def _early(result: CategoryResult) -> BuiltCategory:
+            return BuiltCategory(result=result, category=category)
+
         try:
             query = self._runner.query_for(self._cfg, category)
         except CategorySkippedError as skip:
             logger.info("%s skipped: %s", cat_tag, skip)
-            return CategoryResult(
-                name=category.name,
-                status="skipped",
-                duration_s=time.time() - cat_start,
-                error=str(skip),
+            return _early(
+                CategoryResult(
+                    name=category.name,
+                    status="skipped",
+                    duration_s=time.time() - cat_start,
+                    error=str(skip),
+                )
             )
 
         formats = category.formats or self._cfg.output.formats
         if not formats:
             logger.info("%s skipped: no output formats configured", cat_tag)
-            return CategoryResult(
-                name=category.name,
-                status="skipped",
-                duration_s=time.time() - cat_start,
-                error="no output formats configured",
+            return _early(
+                CategoryResult(
+                    name=category.name,
+                    status="skipped",
+                    duration_s=time.time() - cat_start,
+                    error="no output formats configured",
+                )
             )
+        # GeoParquet is a local/S3 deliverable and the combined-tile source; it is
+        # never zipped or attached to the HDX page, so keep it out of the HDX formats.
+        want_geoparquet = "geoparquet" in formats or (combine and self._cfg.output.pmtiles.enabled)
+        hdx_formats = [f for f in formats if f != "geoparquet"]
 
-        if self._cfg.output.resume and self._state is not None:
+        if self._cfg.output.resume and self._state is not None and not combine:
             entry = self._state.get(slug)
             snapshot_label = query.snapshot_label or "unknown"
             if entry and self._state.is_uploaded(slug, snapshot_label=snapshot_label):
@@ -273,13 +333,15 @@ class Exporter:
                     cat_tag,
                     entry.uploaded_utc,
                 )
-                return CategoryResult(
-                    name=category.name,
-                    status="ok",
-                    feature_count=0,
-                    duration_s=time.time() - cat_start,
-                    zip_paths=[Path(p) for p in entry.zip_paths],
-                    hdx_dataset=entry.hdx_dataset,
+                return _early(
+                    CategoryResult(
+                        name=category.name,
+                        status="ok",
+                        feature_count=0,
+                        duration_s=time.time() - cat_start,
+                        zip_paths=[Path(p) for p in entry.zip_paths],
+                        hdx_dataset=entry.hdx_dataset,
+                    )
                 )
             if (
                 entry
@@ -292,15 +354,17 @@ class Exporter:
                     entry.built_utc,
                 )
                 try:
-                    return self._upload_only(
-                        category=category,
-                        cat_start=cat_start,
-                        cat_tag=cat_tag,
-                        entry=entry,
-                        publisher=publisher,
-                        query=query,
-                        out_root=out_root,
-                        slug=slug,
+                    return _early(
+                        self._upload_only(
+                            category=category,
+                            cat_start=cat_start,
+                            cat_tag=cat_tag,
+                            entry=entry,
+                            publisher=publisher,
+                            query=query,
+                            out_root=out_root,
+                            slug=slug,
+                        )
                     )
                 except Exception:
                     logger.exception("%s resume upload failed; rebuilding", cat_tag)
@@ -338,6 +402,9 @@ class Exporter:
             http_retry_wait_ms=d.http_retry_wait_ms,
             http_retry_backoff=d.http_retry_backoff,
             http_timeout_ms=d.http_timeout_ms,
+            anonymous_s3_bucket=getattr(
+                self._cfg.source.get("overture"), "s3_bucket", "overturemaps-us-west-2"
+            ),
         )
         try:
             select_clause = build_select_clause(query.select_fields)
@@ -353,11 +420,13 @@ class Exporter:
             )
             if count == 0:
                 logger.info("%s empty: no features within boundary", cat_tag)
-                return CategoryResult(
-                    name=category.name,
-                    status="empty",
-                    feature_count=0,
-                    duration_s=time.time() - cat_start,
+                return _early(
+                    CategoryResult(
+                        name=category.name,
+                        status="empty",
+                        feature_count=0,
+                        duration_s=time.time() - cat_start,
+                    )
                 )
 
             if self._pcode_cache is not None and not category.skip_pcodes:
@@ -447,21 +516,21 @@ class Exporter:
                 )
 
             conn.execute("PRAGMA memory_limit='2GB'")
-            logger.info("%s writing %d format(s): %s", cat_tag, len(formats), formats)
+            logger.info("%s writing %d format(s): %s", cat_tag, len(hdx_formats), hdx_formats)
             zip_paths = self._materialise_outputs(
                 conn=conn,
                 table=table,
                 slug=slug,
                 category=category,
                 query=query,
-                formats=formats,
+                formats=hdx_formats,
                 out_root=out_root,
                 metadata_report=metadata_dict,
                 boundary=boundary_obj,
                 feature_count=count,
             )
 
-            if not zip_paths:
+            if not zip_paths and not want_geoparquet:
                 # Every requested format failed (corrupt OSM coords, OOM, etc).
                 # Don't try to publish nothing; mark the category as skipped so
                 # the country doesn't go red if other categories are healthy.
@@ -469,15 +538,38 @@ class Exporter:
                     "%s no formats succeeded; skipping HDX upload for this category",
                     cat_tag,
                 )
-                return CategoryResult(
-                    name=category.name,
-                    status="skipped",
-                    feature_count=count,
-                    duration_s=time.time() - cat_start,
-                    error="no formats succeeded",
+                return _early(
+                    CategoryResult(
+                        name=category.name,
+                        status="skipped",
+                        feature_count=count,
+                        duration_s=time.time() - cat_start,
+                        error="no formats succeeded",
+                    )
                 )
 
             total_mb = sum(p.stat().st_size for p in zip_paths) / (1024 * 1024)
+
+            geoparquet_path: Path | None = None
+            if want_geoparquet:
+                geoparquet_path = write_geoparquet(
+                    conn, table, out_root / "_layers" / f"{slug}.parquet"
+                )
+                self._stage_layer_parquet(geoparquet_path, slug, cat_tag)
+
+            pmtiles_extra: list[ExtraResource] = []
+            if self._cfg.output.pmtiles.enabled and not combine:
+                pm = self._cfg.output.pmtiles
+                dt_name = f"{self._cfg.key}_{self._cfg.iso3.lower()}_{slug}"
+                pmtiles_path = out_root / f"{dt_name}_{self._runner.name}.pmtiles"
+                write_pmtiles(conn, table, pmtiles_path, min_zoom=pm.min_zoom, max_zoom=pm.max_zoom)
+                pmtiles_extra.append(
+                    ExtraResource(
+                        path=pmtiles_path,
+                        fmt="pmtiles",
+                        description=f"{category.name} vector tiles (PMTiles)",
+                    )
+                )
 
             if self._state is not None:
                 self._state.mark_built(
@@ -488,7 +580,7 @@ class Exporter:
                 )
 
             dataset_name: str | None = None
-            if publisher is not None:
+            if publisher is not None and not combine:
                 logger.info("%s uploading %d zip(s) to HDX...", cat_tag, len(zip_paths))
                 t_min, t_max = _temporal_bounds_for_hdx(metadata_obj)
                 ctx = PublishContext(
@@ -501,12 +593,16 @@ class Exporter:
                     s3=self._cfg.output.s3,
                     temporal_min=t_min,
                     temporal_max=t_max,
+                    boundary_bbox=boundary_obj.bbox,
                 )
-                dataset_name = publisher.publish(self._cfg, category, zip_paths, ctx)
+                dataset_name = publisher.publish(
+                    self._cfg, category, zip_paths, ctx, extra_resources=pmtiles_extra
+                )
                 if self._state is not None:
                     self._state.mark_uploaded(slug, hdx_dataset=dataset_name)
                 if self._cfg.output.remove_after_upload:
-                    _remove_uploaded_outputs(zip_paths, metadata_json_path)
+                    extra_paths = [e.path for e in pmtiles_extra]
+                    _remove_uploaded_outputs(zip_paths, metadata_json_path, extra_paths)
                     logger.info(
                         "%s removed %d local output(s) after upload", cat_tag, len(zip_paths)
                     )
@@ -519,25 +615,206 @@ class Exporter:
                 total_mb,
                 time.time() - cat_start,
             )
-            return CategoryResult(
-                name=category.name,
-                status="ok",
-                feature_count=count,
-                duration_s=time.time() - cat_start,
+            return BuiltCategory(
+                result=CategoryResult(
+                    name=category.name,
+                    status="ok",
+                    feature_count=count,
+                    duration_s=time.time() - cat_start,
+                    zip_paths=zip_paths,
+                    hdx_dataset=dataset_name,
+                ),
+                category=category,
                 zip_paths=zip_paths,
-                hdx_dataset=dataset_name,
+                metadata_json_path=metadata_json_path,
+                metadata_obj=metadata_obj,
+                geoparquet_path=geoparquet_path,
+                query=query,
             )
         except Exception as exc:  # noqa: BLE001  per-category boundary; logged + reported
             logger.exception("%s failed", cat_tag)
-            return CategoryResult(
-                name=category.name,
-                status="failed",
-                duration_s=time.time() - cat_start,
-                error=str(exc),
+            return _early(
+                CategoryResult(
+                    name=category.name,
+                    status="failed",
+                    duration_s=time.time() - cat_start,
+                    error=str(exc),
+                )
             )
         finally:
             conn.close()
             db_path.unlink(missing_ok=True)
+
+    def _publish_combined(
+        self,
+        built_list: list[BuiltCategory],
+        out_root: Path,
+        publisher: HdxPublisher,
+        *,
+        peeked_label: str | None,
+        boundary_bbox: tuple[float, float, float, float],
+    ) -> None:
+        iso = self._cfg.iso3.upper()
+        built_ok = [b for b in built_list if b.result.status == "ok" and b.zip_paths]
+        if not built_ok:
+            logger.warning(
+                "[%s/%s] combine: no successful categories to publish", iso, self._runner.name
+            )
+            return
+
+        order = {c.name: i for i, c in enumerate(self._cfg.categories)}
+        built_ok.sort(key=lambda b: order.get(b.category.name, len(order)))
+
+        dt_name = self._cfg.hdx.combined.name or f"{self._cfg.key}_{self._cfg.iso3.lower()}"
+
+        pmtiles_path = self._build_combined_tiles(built_ok, out_root, dt_name)
+
+        entries = [
+            CombinedCategory(
+                category=b.category,
+                zip_paths=b.zip_paths,
+                metadata_json_path=b.metadata_json_path,
+            )
+            for b in built_ok
+        ]
+        t_min, t_max = _combined_temporal_bounds([b.metadata_obj for b in built_ok])
+        q0 = built_ok[0].query
+        assert q0 is not None
+        ctx = PublishContext(
+            dataset_source=q0.dataset_source,
+            snapshot_date=q0.snapshot_date,
+            source_name=self._runner.name,
+            output_dir=out_root,
+            s3=self._cfg.output.s3,
+            temporal_min=t_min,
+            temporal_max=t_max,
+            boundary_bbox=boundary_bbox,
+        )
+        logger.info(
+            "[%s/%s] combine: publishing %d categories as single dataset %s",
+            iso,
+            self._runner.name,
+            len(entries),
+            dt_name,
+        )
+        dataset_name = publisher.publish_combined(
+            self._cfg,
+            entries,
+            ctx,
+            pmtiles_path=pmtiles_path,
+            landing_enabled=self._cfg.output.report.enabled,
+        )
+
+        if self._state is not None:
+            snap = peeked_label or (q0.snapshot_label or "unknown")
+            self._state.mark_built(
+                _COMBINED_SLUG, snapshot_label=snap, zip_paths=[], metadata_json_path=None
+            )
+            self._state.mark_uploaded(_COMBINED_SLUG, hdx_dataset=dataset_name)
+
+        for b in built_ok:
+            b.result.hdx_dataset = dataset_name
+
+        if self._cfg.output.remove_after_upload:
+            # Keep the per-layer GeoParquets: they are a deliverable and the
+            # source of truth for future combined-tile rebuilds.
+            for b in built_ok:
+                _remove_uploaded_outputs(b.zip_paths, b.metadata_json_path, None)
+            if pmtiles_path is not None:
+                pmtiles_path.unlink(missing_ok=True)
+            logger.info(
+                "[%s/%s] combine: removed local outputs after upload", iso, self._runner.name
+            )
+
+    def _build_combined_tiles(
+        self, built_ok: list[BuiltCategory], out_root: Path, dt_name: str
+    ) -> Path | None:
+        """Merge this run's GeoParquets plus other sources' staged GeoParquets into one tileset."""
+        if not self._cfg.output.pmtiles.enabled:
+            return None
+        order = {_slugify(c.name): i for i, c in enumerate(self._cfg.categories)}
+        layers = [
+            TileLayer(
+                path=str(b.geoparquet_path),
+                category=_slugify(b.category.name),
+                source=self._runner.name,
+            )
+            for b in built_ok
+            if b.geoparquet_path is not None
+        ]
+        if self._cfg.output.s3.enabled:
+            for source, slug, url in list_layer_urls(
+                self._cfg.output.s3, self._cfg.iso3, exclude_source=self._runner.name
+            ):
+                # The staging area is never pruned, so it outlives categories this
+                # config dropped. Merging them bloats the tileset with unlabelled data.
+                if slug not in order:
+                    logger.info(
+                        "[%s/%s] combine: skipping staged layer %s/%s, not in this config",
+                        self._cfg.iso3.upper(),
+                        self._runner.name,
+                        source,
+                        slug,
+                    )
+                    continue
+                layers.append(TileLayer(path=url, category=slug, source=source))
+        if not layers:
+            return None
+        layers.sort(
+            key=lambda ly: (SOURCE_RANK.get(ly.source, 99), order.get(ly.category, len(order)))
+        )
+
+        pm = self._cfg.output.pmtiles
+        pmtiles_path = out_root / f"{dt_name}.pmtiles"
+        d = self._cfg.duckdb
+        tiles_db = Path(d.temp_dir) / f"{dt_name}_tiles_{int(time.time() * 1000)}.duckdb"
+        conn = connect(
+            path=tiles_db,
+            threads=max(2, cpu_count()),
+            memory_gb=self._cfg.parallel.memory_gb or self._adaptive_mem_gb,
+            s3_region=getattr(self._cfg.source.get("overture"), "s3_region", "us-west-2"),
+            temp_dir=d.temp_dir,
+            http_retries=d.http_retries,
+            http_retry_wait_ms=d.http_retry_wait_ms,
+            http_retry_backoff=d.http_retry_backoff,
+            http_timeout_ms=d.http_timeout_ms,
+            anonymous_s3_bucket=getattr(
+                self._cfg.source.get("overture"), "s3_bucket", "overturemaps-us-west-2"
+            ),
+        )
+        try:
+            build_combined_pmtiles(
+                conn, layers, pmtiles_path, min_zoom=pm.min_zoom, max_zoom=pm.max_zoom
+            )
+            sources = sorted({ly.source for ly in layers})
+            logger.info(
+                "[%s/%s] combine: built tileset from %d layers across %s -> %s",
+                self._cfg.iso3.upper(),
+                self._runner.name,
+                len(layers),
+                ", ".join(sources),
+                pmtiles_path,
+            )
+        finally:
+            conn.close()
+            tiles_db.unlink(missing_ok=True)
+        return pmtiles_path
+
+    def _stage_layer_parquet(self, path: Path, slug: str, cat_tag: str) -> None:
+        """Upload a per-layer GeoParquet to the stable S3 key so runs accumulate across sources."""
+        s3cfg = self._cfg.output.s3
+        if not s3cfg.enabled:
+            return
+        bucket, prefix, region, endpoint_url, acl = s3_resolve(s3cfg)
+        if not bucket:
+            raise ValueError(
+                "output.s3.enabled is true but no bucket given via output.s3.bucket or OEX_S3_BUCKET"
+            )
+        key = build_layer_key(prefix, self._cfg.iso3, self._runner.name, slug)
+        url = s3_upload(
+            path, bucket=bucket, key=key, region=region, endpoint_url=endpoint_url, acl=acl
+        )
+        logger.info("%s staged layer geoparquet -> %s", cat_tag, url)
 
     def _upload_only(
         self,
@@ -693,12 +970,18 @@ class Exporter:
         ] + ([line for line in query.extra_readme_lines] if query.extra_readme_lines else [])
 
 
-def _remove_uploaded_outputs(zip_paths: list[Path], metadata_json_path: Path | None) -> None:
+def _remove_uploaded_outputs(
+    zip_paths: list[Path],
+    metadata_json_path: Path | None,
+    extra_paths: list[Path] | None = None,
+) -> None:
     """Delete local artifacts once HDX confirms their upload."""
     for path in zip_paths:
         path.unlink(missing_ok=True)
     if metadata_json_path is not None:
         metadata_json_path.unlink(missing_ok=True)
+    for path in extra_paths or []:
+        path.unlink(missing_ok=True)
 
 
 def _slugify(value: str) -> str:
@@ -731,6 +1014,20 @@ def _temporal_bounds_for_hdx(metadata_obj) -> tuple[datetime | None, datetime | 
         return (None, None)
     t = metadata_obj.temporal
     return (_parse_temporal(t.min), _parse_temporal(t.max))
+
+
+def _combined_temporal_bounds(
+    metadata_objs: list[object],
+) -> tuple[datetime | None, datetime | None]:
+    mins: list[datetime] = []
+    maxs: list[datetime] = []
+    for obj in metadata_objs:
+        lo, hi = _temporal_bounds_for_hdx(obj)
+        if lo is not None:
+            mins.append(lo)
+        if hi is not None:
+            maxs.append(hi)
+    return (min(mins) if mins else None, max(maxs) if maxs else None)
 
 
 def _temporal_bounds_from_metadata_file(

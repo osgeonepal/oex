@@ -20,6 +20,7 @@ def connect(
     http_retry_wait_ms: int = 500,
     http_retry_backoff: float = 2.0,
     http_timeout_ms: int = 120_000,
+    anonymous_s3_bucket: str | None = None,
 ) -> duckdb.DuckDBPyConnection:
     resolved_threads = max(2, threads or default_thread_count())
     resolved_memory = max(1, memory_gb or default_memory_limit_gb())
@@ -50,6 +51,15 @@ def connect(
         "SET http_keep_alive=true",
     ):
         conn.execute(stmt)
+
+    # Overture's bucket serves anonymous requests only, so AWS creds in the
+    # environment would make DuckDB sign requests to it and get HTTP 400.
+    if anonymous_s3_bucket:
+        conn.execute(
+            "CREATE OR REPLACE SECRET overture_anon (TYPE s3, PROVIDER config, "
+            f"KEY_ID '', SECRET '', REGION '{s3_region}', "
+            f"SCOPE 's3://{anonymous_s3_bucket}')"
+        )
 
     logger.debug(
         "DuckDB session ready: path=%s threads=%d memory=%dGB temp=%s",

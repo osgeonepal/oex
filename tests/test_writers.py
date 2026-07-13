@@ -105,3 +105,69 @@ def test_fgb_writer_emits_indexed_file(
     head = files[0].read_bytes()[:4]
     assert head[:3] == b"fgb"
     assert files[0].stat().st_size > 64
+
+
+def test_write_pmtiles_produces_archive(
+    conn_with_table: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
+    from pmtiles.reader import MmapSource, Reader
+
+    from oex.writers import write_pmtiles
+
+    out = tmp_path / "roads.pmtiles"
+    result = write_pmtiles(conn_with_table, "features", out, min_zoom=0, max_zoom=8)
+    assert result == out
+    assert out.stat().st_size > 0
+    # PMTiles archives start with the ASCII magic "PMTiles".
+    assert out.read_bytes()[:7] == b"PMTiles"
+
+    # The requested zooms must reach GDAL. Malformed creation options are ignored
+    # silently and the archive is built with GDAL's default MAXZOOM of 5.
+    with out.open("rb") as handle:
+        header = Reader(MmapSource(handle)).header()
+    assert header["min_zoom"] == 0
+    assert header["max_zoom"] == 8
+
+
+def test_write_geoparquet_roundtrips_as_geometry(
+    conn_with_table: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
+    from oex.writers import write_geoparquet
+
+    out = tmp_path / "roads.parquet"
+    write_geoparquet(conn_with_table, "features", out)
+    assert out.stat().st_size > 0
+    gtype = conn_with_table.execute(
+        f"SELECT typeof(geom) FROM read_parquet('{out}') LIMIT 1"
+    ).fetchone()
+    assert gtype is not None and gtype[0].startswith("GEOMETRY")
+
+
+def test_build_combined_pmtiles_injects_category_source_and_handles_missing_name(
+    tmp_path: Path,
+) -> None:
+    import duckdb
+
+    from oex.writers import TileLayer, build_combined_pmtiles, write_geoparquet
+
+    conn = duckdb.connect(":memory:")
+    conn.execute("INSTALL spatial")
+    conn.execute("LOAD spatial")
+    # Heterogeneous per-layer schemas; layer b intentionally has no `name` column.
+    conn.execute(
+        "CREATE TABLE a AS SELECT 'ra' AS name, 'x' AS highway, ST_Point(83.5, 28.5) AS geom"
+    )
+    conn.execute("CREATE TABLE b AS SELECT 'building' AS klass, ST_Point(83.6, 28.6) AS geom")
+    pa = write_geoparquet(conn, "a", tmp_path / "roads.parquet")
+    pb = write_geoparquet(conn, "b", tmp_path / "buildings.parquet")
+
+    layers = [
+        TileLayer(path=str(pa), category="roads", source="osm"),
+        TileLayer(path=str(pb), category="buildings", source="overture"),
+    ]
+    out = tmp_path / "combined.pmtiles"
+    build_combined_pmtiles(conn, layers, out, min_zoom=0, max_zoom=8)
+    assert out.read_bytes()[:7] == b"PMTiles"
+    # The per-layer parquet itself carries no category column; it is injected at merge time.
+    cols_a = {r[0] for r in conn.execute(f"DESCRIBE SELECT * FROM read_parquet('{pa}')").fetchall()}
+    assert "category" not in cols_a and "geom" in cols_a

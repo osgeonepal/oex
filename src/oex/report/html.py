@@ -5,13 +5,15 @@ from dataclasses import dataclass
 from html import escape
 from typing import Any
 
+from oex.config.schema import MapAssetsConfig
 from oex.metadata import ColumnReport, MetadataReport
+from oex.palette import DEFAULT_PALETTE
+from oex.report.map_block import MAP_CSS, MapEntry, head_scripts, render_map
+from oex.report.quality import layer_quality
 
 _PCODE_PREFIX = "adm"
 _PCODE_SUFFIX = "_pcode"
 _SOURCE_COL = "source"
-_COVERAGE_HIGH = 50.0
-_COVERAGE_MID = 25.0
 _NAME_LANG_RE = re.compile(r"^name_([a-z]{2,3})$")
 _TRANSLIT_SUFFIX = "_latin"
 
@@ -163,7 +165,21 @@ td.coverage .bar { margin-top: 4px; min-width: 0; height: 4px; }
 """
 
 
-def render_report(sources: dict[str, SourceMetadata]) -> str:
+def render_report(
+    sources: dict[str, SourceMetadata],
+    tilesets: dict[str, tuple[str, str]] | None = None,
+    boundary_bbox: tuple[float, float, float, float] | None = None,
+    layer_label: str | None = None,
+    palette: list[str] | None = None,
+    map_assets: MapAssetsConfig | None = None,
+) -> str:
+    """Per-category data quality report.
+
+    `tilesets` maps a source name to its (pmtiles_url, layer_name). A per-category
+    dataset carries one tileset per source, so each becomes its own map entry.
+    `layer_label` names the category, so the legend reads "Buildings (Overture)"
+    rather than just "Overture".
+    """
     if not sources:
         raise ValueError("render_report needs at least one source")
 
@@ -199,23 +215,45 @@ def render_report(sources: dict[str, SourceMetadata]) -> str:
 
     body = radios + (nav if len(ordered) > 1 else "") + f'<div class="panels">{panels}</div>'
 
+    colors = palette or DEFAULT_PALETTE
+    entries = [
+        MapEntry(
+            key=name,
+            label=_map_entry_label(name, layer_label),
+            color=colors[i % len(colors)],
+            tileset_url=tilesets[name][0],
+            source_layer=tilesets[name][1],
+            feature_count=sources[name].metadata.feature_count,
+        )
+        for i, name in enumerate(ordered)
+        if tilesets and name in tilesets
+    ]
+    map_block = render_map(entries, boundary_bbox, map_assets)
+    scripts = head_scripts(map_assets) if entries else ""
+
     return (
         "<!DOCTYPE html>\n"
         '<html lang="en">\n'
         "<head>\n"
         '<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        # Without this the browser requests /favicon.ico from whatever host serves
+        # the page and logs a 404 when the bucket has none.
+        '<link rel="icon" href="data:,">\n'
         "<title>oex report</title>\n"
-        f"<style>{_CSS}{dynamic_css}</style>\n"
+        f"{scripts}"
+        f"<style>{_CSS}{MAP_CSS}{dynamic_css}</style>\n"
         "</head>\n"
         "<body>\n"
         f"{body}\n"
+        f"{map_block}"
         "</body>\n"
         "</html>\n"
     )
 
 
-def _render_panel(name: str, source: SourceMetadata) -> str:
+def panel_sections(source: SourceMetadata) -> str:
+    """Metadata sections for one source, without the tab wrapper (reused by the landing page)."""
     metadata = source.metadata
     sections = [
         _render_quality(metadata),
@@ -228,8 +266,11 @@ def _render_panel(name: str, source: SourceMetadata) -> str:
         _render_attribute_table(metadata),
         _render_footer(source),
     ]
-    inner = "\n".join(s for s in sections if s)
-    return f'<section class="panel panel-{escape(name)}">{inner}</section>'
+    return "\n".join(s for s in sections if s)
+
+
+def _render_panel(name: str, source: SourceMetadata) -> str:
+    return f'<section class="panel panel-{escape(name)}">{panel_sections(source)}</section>'
 
 
 def _render_temporal(metadata: MetadataReport) -> str:
@@ -255,46 +296,23 @@ def _render_temporal(metadata: MetadataReport) -> str:
 def _render_quality(metadata: MetadataReport) -> str:
     if not metadata.columns:
         return ""
-    high = mid = low = 0
-    for col in metadata.columns:
-        coverage = max(0.0, min(100.0, 100.0 - col.null_percent))
-        bucket = _coverage_bucket(coverage)
-        if bucket == "high":
-            high += 1
-        elif bucket == "mid":
-            mid += 1
-        else:
-            low += 1
-    total = len(metadata.columns)
-    if high == total:
-        caption = f"All {total} attribute columns are well-populated."
-    elif high == 0:
-        caption = f"None of the {total} attribute columns are well-populated."
-    else:
-        caption = f"{high} of {total} attribute columns are well-populated."
+    quality = layer_quality(metadata)
+    total = quality.total_columns
     return (
         '<div class="quality">'
-        f'<div class="quality-caption">{caption}</div>'
+        f'<div class="quality-caption">{quality.caption}</div>'
         '<div class="ratio-bar">'
-        f'<i class="qc-high" style="width:{high / total * 100:.2f}%"></i>'
-        f'<i class="qc-mid"  style="width:{mid / total * 100:.2f}%"></i>'
-        f'<i class="qc-low"  style="width:{low / total * 100:.2f}%"></i>'
+        f'<i class="qc-high" style="width:{quality.well / total * 100:.2f}%"></i>'
+        f'<i class="qc-mid"  style="width:{quality.partial / total * 100:.2f}%"></i>'
+        f'<i class="qc-low"  style="width:{quality.rare / total * 100:.2f}%"></i>'
         "</div>"
         '<div class="quality-legend">'
-        f'<span><span class="swatch qc-high"></span>{high} well-populated (50% or more)</span>'
-        f'<span><span class="swatch qc-mid"></span>{mid} partial (25 to 50%)</span>'
-        f'<span><span class="swatch qc-low"></span>{low} rare (under 25%)</span>'
+        f'<span><span class="swatch qc-high"></span>{quality.well} well-populated (50% or more)</span>'
+        f'<span><span class="swatch qc-mid"></span>{quality.partial} partial (25 to 50%)</span>'
+        f'<span><span class="swatch qc-low"></span>{quality.rare} rare (under 25%)</span>'
         "</div>"
         "</div>"
     )
-
-
-def _coverage_bucket(coverage: float) -> str:
-    if coverage >= _COVERAGE_HIGH:
-        return "high"
-    if coverage >= _COVERAGE_MID:
-        return "mid"
-    return "low"
 
 
 def _render_kpis(metadata: MetadataReport) -> str:
@@ -529,6 +547,11 @@ def _pretty_source_name(name: str) -> str:
     if name == "overture":
         return "Overture"
     return name.title()
+
+
+def _map_entry_label(source_name: str, layer_label: str | None) -> str:
+    source = _pretty_source_name(source_name)
+    return f"{layer_label} ({source})" if layer_label else source
 
 
 def _geometry_label(geom_types: dict[str, int]) -> str:

@@ -29,6 +29,40 @@ def build_key(prefix: str, iso3: str, category_slug: str, filename: str) -> str:
     return "/".join(parts)
 
 
+def build_layer_key(prefix: str, iso3: str, source: str, slug: str) -> str:
+    """Stable, globbable key for a per-layer GeoParquet so runs accumulate across sources."""
+    return build_key(prefix, iso3, f"_layers/{source}", f"{slug}.parquet")
+
+
+def list_layer_urls(
+    cfg: S3Config, iso3: str, *, exclude_source: str | None = None
+) -> list[tuple[str, str, str]]:
+    """List staged per-layer GeoParquets as (source, slug, url), optionally skipping one source."""
+    import boto3
+
+    bucket, prefix, region, endpoint_url, _ = resolve(cfg)
+    if not bucket:
+        return []
+    key_prefix = "/".join(p.strip("/") for p in (prefix, iso3.upper(), "_layers") if p) + "/"
+    client = boto3.client("s3", region_name=region or None, endpoint_url=endpoint_url)
+    found: list[tuple[str, str, str]] = []
+    for page in client.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=key_prefix):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            if not key.endswith(".parquet"):
+                continue
+            rest = key[len(key_prefix) :].split("/")
+            if len(rest) != 2:
+                continue
+            source, filename = rest
+            if exclude_source is not None and source == exclude_source:
+                continue
+            slug = filename[: -len(".parquet")]
+            url = public_url(bucket=bucket, key=key, region=region, endpoint_url=endpoint_url)
+            found.append((source, slug, url))
+    return found
+
+
 def public_url(*, bucket: str, key: str, region: str, endpoint_url: str | None) -> str:
     if endpoint_url:
         return f"{endpoint_url.rstrip('/')}/{bucket}/{key}"

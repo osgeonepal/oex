@@ -21,7 +21,7 @@ from oex.config.schema import (
     RootConfig,
 )
 from oex.osm.geofabrik import GeofabrikUnavailableError
-from oex.osm.runner import OsmRunner
+from oex.osm.runner import OsmRunner, _parquet_fingerprint
 
 NPL_GEOJSON = {
     "type": "Polygon",
@@ -178,7 +178,8 @@ def test_planet_prepare_is_idempotent_when_parquet_exists(tmp_path: Path) -> Non
 
     snapshot_label = datetime.fromtimestamp(planet_pbf.stat().st_mtime, tz=UTC).date().isoformat()
     snapshot_dir = Path(cfg.source["osm"].cache_dir) / "planet" / "npl" / snapshot_label
-    _seed_country_parquet(snapshot_dir / "country.parquet")
+    fingerprint = _parquet_fingerprint(cfg, clip=cfg.source["osm"].planet_clip_to_boundary)
+    _seed_country_parquet(snapshot_dir / f"country-{fingerprint}.parquet")
 
     with (
         patch(
@@ -205,7 +206,8 @@ def test_planet_query_for_applies_tag_predicate(tmp_path: Path) -> None:
 
     snapshot_label = datetime.fromtimestamp(planet_pbf.stat().st_mtime, tz=UTC).date().isoformat()
     snapshot_dir = Path(cfg.source["osm"].cache_dir) / "planet" / "npl" / snapshot_label
-    _seed_country_parquet(snapshot_dir / "country.parquet")
+    fingerprint = _parquet_fingerprint(cfg, clip=cfg.source["osm"].planet_clip_to_boundary)
+    _seed_country_parquet(snapshot_dir / f"country-{fingerprint}.parquet")
 
     runner = OsmRunner()
     with (
@@ -215,7 +217,7 @@ def test_planet_query_for_applies_tag_predicate(tmp_path: Path) -> None:
         runner.prepare(cfg)
 
     buildings_q = runner.query_for(cfg, cfg.categories[0])
-    assert "country.parquet" in buildings_q.source_expr
+    assert f"country-{fingerprint}.parquet" in buildings_q.source_expr
     assert any("tags['building'] IS NOT NULL" in w for w in buildings_q.where_conditions)
 
     conn = duckdb.connect()
@@ -334,7 +336,8 @@ def test_geofabrik_engine_runs_strategy_b_pipeline(tmp_path: Path) -> None:
     assert quackosm_args["tags_filter"] == {"building": True, "highway": True}
     assert runner._engine == "geofabrik"
     assert runner._country_parquet is not None
-    assert runner._country_parquet.name == "country.parquet"
+    assert runner._country_parquet.name.startswith("country-")
+    assert runner._country_parquet.name.endswith(".parquet")
 
 
 def test_planet_engine_does_not_auto_download_by_default(tmp_path: Path) -> None:

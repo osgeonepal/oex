@@ -23,6 +23,20 @@ output:
   remove_after_upload: true
   report:
     enabled: false
+    # Layer colours (20 distinct defaults, cycled beyond that). Override with a
+    # list of hex colours to control how each layer is drawn.
+    # The published page fetches these at view time. Repoint them to pin a
+    # version or to serve the assets from your own host.
+    map_assets:
+      basemap_tiles: "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+      basemap_attribution: "(c) OpenStreetMap contributors"
+      maplibre_css: "https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"
+      maplibre_js: "https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"
+      pmtiles_js: "https://unpkg.com/pmtiles@3.2.1/dist/pmtiles.js"
+  pmtiles:
+    enabled: false
+    min_zoom: 0
+    max_zoom: 12
   s3:
     enabled: false
     bucket: ""
@@ -42,7 +56,6 @@ duckdb:
   http_retry_backoff: 2.0
   http_timeout_ms: 120000
   temp_dir: /var/tmp/duckdb_temp
-  enable_object_cache: true
 
 logging:
   level: INFO
@@ -60,6 +73,17 @@ hdx:
   title_template: ""
   # Destructive: deletes every existing resource on the dataset before upload.
   purge_existing_resources: false
+  # Publish every category onto ONE HDX dataset instead of one per category.
+  combine: false
+  # Metadata for the single combined dataset. Same shape as a category's hdx
+  # block. Empty values fall back to what oex derives from the categories.
+  combined:
+    name: ""
+    title: ""
+    notes: ""
+    caveats: ""
+    source: ""
+    tags: []
 
 source:
   overture:

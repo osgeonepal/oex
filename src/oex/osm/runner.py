@@ -7,13 +7,19 @@ extraction is a tag-predicate ``WHERE`` at query time, no per-category PBF
 reparse.
 
 - ``geofabrik``: download per-country PBF from Geofabrik, then build the
-  country parquet. Cache: ``<cache>/geofabrik/<iso3>/<snapshot>/country.parquet``.
+  country parquet. Cache:
+  ``<cache>/geofabrik/<iso3>/<snapshot>/country-<fingerprint>.parquet``.
 
 - ``planet``: clip a country PBF out of a local planet PBF via osmium-tool,
   then build the country parquet. Cache:
-  ``<cache>/planet/<iso3>/<snapshot>/country.parquet``.
+  ``<cache>/planet/<iso3>/<snapshot>/country-<fingerprint>.parquet``.
+
+The fingerprint covers the boundary and the category tag filters, so changing
+either builds a fresh parquet instead of silently reusing one that was clipped
+to a different area or filtered to different tags.
 """
 
+import hashlib
 import json
 import time
 from datetime import UTC, datetime
@@ -44,6 +50,33 @@ logger = get_logger(__name__)
 _GEOFABRIK_DOWNLOAD_ATTEMPTS = 2
 _GEOFABRIK_RETRY_BACKOFF_SECONDS = 5
 _GeofabrikFallbackError = (GeofabrikUnavailableError, requests.RequestException)
+
+
+def _parquet_fingerprint(cfg: RootConfig, *, clip: bool) -> str:
+    """Identify the parquet by everything that shapes its contents.
+
+    The cached parquet is clipped to the boundary and holds only the union of the
+    categories' tag filters. Keying on (iso3, snapshot) alone would reuse it after
+    either changes, silently dropping features the new config asks for.
+
+    The boundary *config* is hashed rather than the resolved geometry, so deciding
+    whether a local parquet can be reused never has to hit the network.
+    """
+    boundary = cfg.boundary
+    clip_key: object = "noclip"
+    if clip:
+        clip_key = {
+            "geom": boundary.geom,
+            "release": boundary.geoboundaries_release,
+            "level": boundary.geoboundaries_level,
+            "buffer": boundary.buffer_meters,
+        }
+    payload = json.dumps(
+        {"clip": clip_key, "filter": union_tag_filter(cfg.categories)},
+        sort_keys=True,
+        default=str,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()[:12]
 
 
 def _inject_local_name(select_fields: list[str], iso3: str) -> list[str]:
@@ -176,9 +209,9 @@ class OsmRunner(SourceRunner):
         snapshot_dir = country_root / snapshot_label
         snapshot_dir.mkdir(parents=True, exist_ok=True)
 
-        country_pbf = snapshot_dir / "country.osm.pbf"
-        country_parquet = snapshot_dir / "country.parquet"
         clip = src.planet_clip_to_boundary
+        country_pbf = snapshot_dir / "country.osm.pbf"
+        country_parquet = snapshot_dir / f"country-{_parquet_fingerprint(cfg, clip=clip)}.parquet"
 
         if not country_parquet.exists():
             if clip:
@@ -293,7 +326,8 @@ class OsmRunner(SourceRunner):
         snapshot = self._resolve_or_create_snapshot(country_root, src.snapshot)
         snapshot_dir = country_root / snapshot
         snapshot_dir.mkdir(parents=True, exist_ok=True)
-        country_parquet = snapshot_dir / "country.parquet"
+        fingerprint = _parquet_fingerprint(cfg, clip=src.geofabrik_clip_to_boundary)
+        country_parquet = snapshot_dir / f"country-{fingerprint}.parquet"
 
         if not country_parquet.exists():
             extract = lookup_country(cfg.iso3, index_url=src.geofabrik_index_url)

@@ -96,3 +96,13 @@ def test_resolve_returns_empty_when_neither_set(monkeypatch: pytest.MonkeyPatch)
     assert prefix == ""
     assert region == ""
     assert endpoint is None
+
+
+def test_build_layer_key_is_stable_and_globbable() -> None:
+    from oex.s3 import build_layer_key
+
+    assert build_layer_key("", "NPL", "osm", "buildings") == "NPL/_layers/osm/buildings.parquet"
+    assert (
+        build_layer_key("hot", "vnm", "overture", "roads")
+        == "hot/VNM/_layers/overture/roads.parquet"
+    )

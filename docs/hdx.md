@@ -101,6 +101,87 @@ categories:
 
 See [Custom categories](custom-categories.md) for the per-category schema.
 
+## One dataset for all categories
+
+By default each category becomes its own HDX dataset (`{key}_{iso3}_{slug}`).
+`hdx.combine` publishes every category onto one dataset instead.
+
+```yaml
+hdx:
+  push: true
+  combine: true
+  combined:                        # same field names as a category's hdx: block
+    name: hot_eq_ven               # slug; empty falls back to {key}_{iso3}
+    title: "{country} - M 7.5 Earthquake - June 2026"   # {country}, {iso3}
+    notes: Data from the HOTOSM response to the June 2026 earthquake.
+    caveats: Overture footprints are partly AI-generated.
+    source: OpenStreetMap contributors; Overture Maps
+    tags: [earthquake-tsunami, natural disasters]
+```
+
+Every value under `combined` is optional and falls back to what oex derives from
+the categories. Crisis tags can only be applied by an HDX sysadmin: publishing
+with one rejects the whole dataset.
+
+Layers appear in `categories` order. Running both sources into the same dataset
+**accumulates**: the Overture run adds to what the OSM run published rather than
+replacing it. `hdx.purge_existing_resources` clears the dataset first instead.
+
+## Vector tiles (PMTiles)
+
+```yaml
+output:
+  report:
+    enabled: true                  # the map lives on the report page
+  pmtiles:
+    enabled: true
+    max_zoom: 14                   # sharper when zoomed in, larger archive
+  s3:
+    enabled: true                  # required for the map to render (see below)
+```
+
+Both report pages then carry a map below their table, with a checkbox per layer,
+feature counts in the legend, and a popup on click. Per-category datasets get one
+tileset per source; `hdx.combine` merges every layer into one tileset carrying
+`category` and `source`.
+
+Both pages measure quality the same way: how many of a layer's attribute columns
+carry data (green at 50% of rows or more, amber partial, red rare under 25%) plus
+the share of features named. The combined table shows one bar per layer; the
+per-category report breaks it down column by column.
+
+The combined tileset is built from per-layer GeoParquet, which is written locally
+and, with `output.s3.enabled`, staged to `{prefix}/{ISO3}/_layers/{source}/{slug}.parquet`.
+That staged copy is what lets a later run of the other source put both sources on
+one map. Add `geoparquet` to `output.formats` to keep it as a deliverable.
+
+Colours and map assets are configurable under `output.report`: `palette`, and
+`map_assets` (`basemap_tiles`, `maplibre_js`, `pmtiles_js`). The published page
+fetches those at view time, so repoint them to pin a version or to serve them from
+your own host.
+
+### The map needs S3 and a bucket CORS policy
+
+The table always renders. The map fetches tiles with cross-origin **range**
+requests, and HDX's file store redirects them to S3 with a CORS header scoped to
+the HDX origin, so an HDX-hosted tileset stays blank. Set `output.s3.enabled` so
+the resource URL points at your bucket, and give the bucket:
+
+```json
+[{"AllowedOrigins": ["*"], "AllowedMethods": ["GET", "HEAD"],
+  "AllowedHeaders": ["*"], "ExposeHeaders": ["range", "etag"]}]
+```
+
+The object ACL says who may read; CORS is separate and is set per bucket, not per
+object. Both are needed.
+
+Overture stays readable even when AWS credentials are present, so an S3-enabled
+Overture run uploads to your bucket and still reads Overture anonymously. PMTiles
+come from the GDAL build inside duckdb, so no extra tools are needed.
+
+CLI flags mirror the config: `--hdx-combine/--no-hdx-combine` and
+`--pmtiles/--no-pmtiles`.
+
 ## Local language columns
 
 For OSM exports, oex auto-injects `tags['name:<lang>'] AS name_<lang>` into

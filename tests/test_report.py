@@ -57,6 +57,59 @@ def test_render_report_is_self_contained_html() -> None:
     assert "cdn." not in html.lower(), "no external CDN refs"
 
 
+def test_render_report_without_tilesets_has_no_map() -> None:
+    html = render_report({"overture": _source()})
+    assert 'id="map"' not in html
+    assert "maplibre" not in html.lower()
+
+
+def test_render_report_renders_one_map_entry_per_source_tileset() -> None:
+    """A per-category dataset has one tileset per source, each its own map entry."""
+    html = render_report(
+        {"osm": _source("osm"), "overture": _source("overture")},
+        {
+            "osm": ("https://example.org/b_osm.pmtiles", "hotosm_npl_buildings_osm"),
+            "overture": ("https://example.org/b_ovt.pmtiles", "hotosm_npl_buildings_overture"),
+        },
+        (85.30, 27.68, 85.36, 27.73),
+    )
+    assert 'id="map"' in html
+    # Each source gets its own vector source and its own coloured layers.
+    assert "pmtiles://https://example.org/b_osm.pmtiles" in html
+    assert "pmtiles://https://example.org/b_ovt.pmtiles" in html
+    assert "'source-layer': 'hotosm_npl_buildings_osm'" in html
+    assert "id: 'osm-fill'" in html and "id: 'overture-fill'" in html
+    # Each entry owns its whole tileset, so no category|source filter is needed.
+    assert "['get', 'category']" not in html
+    # Legend toggles both, and the map frames the export boundary.
+    legend = html[html.index('<ul class="legend">') : html.index("</ul>")]
+    assert legend.count('type="checkbox" checked') == 2
+    assert "map.fitBounds([[85.3,27.68],[85.36,27.73]]" in html
+
+
+def test_map_legend_names_the_layer_and_the_source() -> None:
+    """The legend reads like the combined page: "Buildings (Overture)", not "Overture"."""
+    tilesets = {
+        "osm": ("https://example.org/b_osm.pmtiles", "hotosm_npl_buildings_osm"),
+        "overture": ("https://example.org/b_ovt.pmtiles", "hotosm_npl_buildings_overture"),
+    }
+    html = render_report(
+        {"osm": _source("osm"), "overture": _source("overture")},
+        tilesets,
+        None,
+        "Buildings",
+    )
+    legend = html[html.index('<ul class="legend">') : html.index("</ul>")]
+    assert "Buildings (OpenStreetMap)" in legend
+    assert "Buildings (Overture)" in legend
+
+    # With no layer name to show, the source alone still labels the entry.
+    bare = render_report({"osm": _source("osm")}, tilesets)
+    bare_legend = bare[bare.index('<ul class="legend">') : bare.index("</ul>")]
+    assert "OpenStreetMap" in bare_legend
+    assert "Buildings" not in bare_legend
+
+
 def test_render_report_single_source_omits_tabs_nav() -> None:
     html = render_report({"overture": _source()})
     assert '<div class="tabs">' not in html

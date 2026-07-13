@@ -75,6 +75,8 @@ def _build_overrides(
     resume: bool | None = None,
     iso3: str | None = None,
     dataset_name: str | None = None,
+    hdx_combine: bool | None = None,
+    pmtiles: bool | None = None,
 ) -> dict[str, object]:
     overrides: dict[str, object] = {}
     if iso3_or_yaml and len(iso3_or_yaml) <= 3 and iso3_or_yaml.isalpha():
@@ -91,6 +93,14 @@ def _build_overrides(
         overrides["hdx.purge_existing_resources"] = True
     if hdx_purge is False:
         overrides["hdx.purge_existing_resources"] = False
+    if hdx_combine is True:
+        overrides["hdx.combine"] = True
+    if hdx_combine is False:
+        overrides["hdx.combine"] = False
+    if pmtiles is True:
+        overrides["output.pmtiles.enabled"] = True
+    if pmtiles is False:
+        overrides["output.pmtiles.enabled"] = False
     if output_dir is not None:
         overrides["output.dir"] = str(output_dir)
     if osm_engine is not None:
@@ -179,6 +189,16 @@ def cmd_overture(
         "--hdx-purge/--no-hdx-purge",
         help="Destructive: delete every existing resource on the dataset before upload.",
     ),
+    hdx_combine: bool | None = typer.Option(
+        None,
+        "--hdx-combine/--no-hdx-combine",
+        help="Publish every category onto one HDX dataset instead of one per category.",
+    ),
+    pmtiles: bool | None = typer.Option(
+        None,
+        "--pmtiles/--no-pmtiles",
+        help="Generate PMTiles. With --hdx-combine, all layers merge into one tileset.",
+    ),
 ) -> None:
     """Export Overture data."""
     iso3_resolved, theme_resolved = _resolve_args(iso3_or_yaml, theme, configs_dir, config)
@@ -190,6 +210,8 @@ def cmd_overture(
         hdx_purge=hdx_purge,
         iso3=iso3,
         dataset_name=dataset_name,
+        hdx_combine=hdx_combine,
+        pmtiles=pmtiles,
     )
     results = [_run_one(y, overrides, theme_resolved, OvertureRunner) for y in yamls]
     raise typer.Exit(code=_summarise(results))
@@ -244,6 +266,16 @@ def cmd_osm(
             "state file. Default: enabled (configurable via output.resume)."
         ),
     ),
+    hdx_combine: bool | None = typer.Option(
+        None,
+        "--hdx-combine/--no-hdx-combine",
+        help="Publish every category onto one HDX dataset instead of one per category.",
+    ),
+    pmtiles: bool | None = typer.Option(
+        None,
+        "--pmtiles/--no-pmtiles",
+        help="Generate PMTiles. With --hdx-combine, all layers merge into one tileset.",
+    ),
 ) -> None:
     """Export OSM data via the configured engine."""
     iso3_resolved, theme_resolved = _resolve_args(iso3_or_yaml, theme, configs_dir, config)
@@ -258,6 +290,8 @@ def cmd_osm(
         resume=resume,
         iso3=iso3,
         dataset_name=dataset_name,
+        hdx_combine=hdx_combine,
+        pmtiles=pmtiles,
     )
     results = [_run_one(y, overrides, theme_resolved, OsmRunner) for y in yamls]
     raise typer.Exit(code=_summarise(results))

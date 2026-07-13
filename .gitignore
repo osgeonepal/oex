@@ -61,3 +61,8 @@ poetry.lock
 bench-india/
 
 .claude
+
+scripts/*.sh
+
+# Local export outputs
+luka_request/

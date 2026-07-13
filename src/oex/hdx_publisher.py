@@ -5,6 +5,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import requests
 
@@ -13,6 +14,9 @@ from oex.logging_setup import get_logger
 from oex.s3 import build_key
 from oex.s3 import resolve as s3_resolve
 from oex.s3 import upload as s3_upload
+
+if TYPE_CHECKING:
+    from oex.report import SourceMetadata
 
 logger = get_logger(__name__)
 
@@ -53,6 +57,23 @@ def _country_name(iso3: str, *, dataset_name: str | None = None) -> str:
     return getattr(record, "common_name", None) or record.name
 
 
+# Display order when several sources land on one dataset.
+SOURCE_RANK = {"osm": 0, "overture": 1}
+
+
+def _combined_title(cfg: RootConfig, place: str, hdx_source: str) -> str:
+    if cfg.hdx.combined.title:
+        return cfg.hdx.combined.title.format(country=place, iso3=cfg.iso3.upper())
+    return f"{place} {hdx_source} vector data"
+
+
+def _apply_custom_viz(dataset, url: str) -> None:  # noqa: ANN001 - hdx Dataset
+    # HDX shows the custom visualisation only when the resource preview is off.
+    # set_custom_viz alone leaves dataset_preview on 'first_resource'.
+    dataset.set_custom_viz(url)
+    dataset.preview_off()
+
+
 def _category_label(category: CategoryConfig) -> str:
     return category.hdx.title or _title_case_category(category.name)
 
@@ -81,6 +102,22 @@ class PublishContext:
     # When both set, override snapshot_date for HDX dataset time period.
     temporal_min: datetime | None = None
     temporal_max: datetime | None = None
+    # Export boundary as (min_lon, min_lat, max_lon, max_lat), used to frame the map.
+    boundary_bbox: tuple[float, float, float, float] | None = None
+
+
+@dataclass
+class ExtraResource:
+    path: Path
+    fmt: str
+    description: str
+
+
+@dataclass
+class CombinedCategory:
+    category: CategoryConfig
+    zip_paths: list[Path]
+    metadata_json_path: Path | None = None
 
 
 class HdxPublisher:
@@ -115,9 +152,8 @@ class HdxPublisher:
         category: CategoryConfig,
         zip_paths: list[Path],
         ctx: PublishContext,
+        extra_resources: list[ExtraResource] | None = None,
     ) -> str:
-        from hdx.data.dataset import Dataset
-
         category_slug = _slugify(category.name)
         dt_name = f"{cfg.key}_{cfg.iso3.lower()}_{category_slug}"
         dataset = self._build_dataset_object(cfg, category, dt_name, ctx)
@@ -127,6 +163,17 @@ class HdxPublisher:
         sorted_zips = sorted(zip_paths, key=lambda p: p.stat().st_size, reverse=True)
         for zip_path in sorted_zips:
             res = self._make_resource_for_zip(zip_path, category, ctx, cfg.iso3, category_slug)
+            dataset.add_update_resource(res)
+
+        for extra in extra_resources or []:
+            res = self._make_resource_for_path(
+                path=extra.path,
+                fmt=extra.fmt,
+                description=extra.description,
+                ctx=ctx,
+                iso3=cfg.iso3,
+                category_slug=category_slug,
+            )
             dataset.add_update_resource(res)
 
         if ctx.metadata_json_path is not None:
@@ -139,6 +186,27 @@ class HdxPublisher:
                 category_slug=category_slug,
             )
             dataset.add_update_resource(res)
+
+        # A category's dataset holds every source that publishes it, so an OSM run
+        # must not delete the Overture resources already there. Pruning is opt-in.
+        self._create_or_update(dataset, dt_name, remove_additional=cfg.hdx.purge_existing_resources)
+
+        if ctx.combined_report_enabled and ctx.output_dir is not None:
+            self._build_and_publish_combined_report(
+                dt_name=dt_name,
+                category=category,
+                cfg=cfg,
+                category_slug=category_slug,
+                output_dir=ctx.output_dir,
+                s3_cfg=ctx.s3,
+                boundary_bbox=ctx.boundary_bbox,
+            )
+        return dt_name
+
+    def _create_or_update(  # noqa: ANN001 - hdx Dataset
+        self, dataset, dt_name: str, *, remove_additional: bool
+    ) -> None:
+        from hdx.data.dataset import Dataset
 
         existing = Dataset.read_from_hdx(dt_name)
         if existing is not None:
@@ -158,7 +226,7 @@ class HdxPublisher:
             )
             _hdx_publish_with_retry(
                 lambda: dataset.update_in_hdx(
-                    remove_additional_resources=True,
+                    remove_additional_resources=remove_additional,
                     match_resources_by_metadata=True,
                     hxl_update=False,
                 ),
@@ -178,16 +246,273 @@ class HdxPublisher:
                 label=f"create {dt_name}",
             )
 
-        if ctx.combined_report_enabled and ctx.output_dir is not None:
-            self._build_and_publish_combined_report(
+    def publish_combined(
+        self,
+        cfg: RootConfig,
+        entries: list[CombinedCategory],
+        ctx: PublishContext,
+        *,
+        pmtiles_path: Path | None = None,
+        landing_enabled: bool = False,
+    ) -> str:
+        if not entries:
+            raise ValueError("publish_combined called with no categories")
+        dt_name = cfg.hdx.combined.name or f"{cfg.key}_{cfg.iso3.lower()}"
+        dataset = self._build_combined_dataset_object(cfg, entries, dt_name, ctx)
+
+        pmtiles_layer: str | None = None
+        if pmtiles_path is not None:
+            pmtiles_layer = pmtiles_path.stem
+            res = self._make_resource_for_path(
+                path=pmtiles_path,
+                fmt="pmtiles",
+                description=f"Combined vector tiles ({len(entries)} layers, coloured by category)",
+                ctx=ctx,
+                iso3=cfg.iso3,
+                category_slug="combined",
+            )
+            dataset.add_update_resource(res)
+
+        for entry in entries:
+            slug = _slugify(entry.category.name)
+            sorted_zips = sorted(entry.zip_paths, key=lambda p: p.stat().st_size, reverse=True)
+            for zip_path in sorted_zips:
+                res = self._make_resource_for_zip(zip_path, entry.category, ctx, cfg.iso3, slug)
+                dataset.add_update_resource(res)
+            if entry.metadata_json_path is not None:
+                res = self._make_resource_for_path(
+                    path=entry.metadata_json_path,
+                    fmt="json",
+                    description=f"{entry.category.name} ({ctx.source_name}) feature-level metadata",
+                    ctx=ctx,
+                    iso3=cfg.iso3,
+                    category_slug=slug,
+                )
+                dataset.add_update_resource(res)
+
+        # A combined dataset accumulates across sources: an Overture run must not
+        # delete the resources an earlier OSM run put here. Pruning is opt-in.
+        self._create_or_update(dataset, dt_name, remove_additional=cfg.hdx.purge_existing_resources)
+
+        if landing_enabled and ctx.output_dir is not None:
+            self._build_and_publish_landing(
                 dt_name=dt_name,
-                category=category,
                 cfg=cfg,
-                category_slug=category_slug,
-                output_dir=ctx.output_dir,
-                s3_cfg=ctx.s3,
+                entries=entries,
+                pmtiles_layer=pmtiles_layer,
+                ctx=ctx,
             )
         return dt_name
+
+    def _build_combined_dataset_object(
+        self,
+        cfg: RootConfig,
+        entries: list[CombinedCategory],
+        dt_name: str,
+        ctx: PublishContext,
+    ):  # noqa: ANN202 - hdx-python-api Dataset
+        from hdx.data.dataset import Dataset
+
+        place = _country_name(cfg.iso3, dataset_name=cfg.dataset_name)
+        hdx_source = _HDX_SHORT_SOURCE.get(ctx.source_name, ctx.dataset_source)
+        title = _combined_title(cfg, place, hdx_source)
+
+        labels = [_category_label(e.category) for e in entries]
+        notes = cfg.hdx.combined.notes or (
+            f"Combined {hdx_source} vector export for {place}. "
+            f"Layers: {', '.join(labels)}. Each layer is provided as GIS downloads; "
+            "the interactive overview maps all layers together."
+        )
+        dataset_args: dict[str, object] = {
+            "title": title,
+            "name": dt_name,
+            "notes": notes,
+            "caveats": cfg.hdx.combined.caveats or entries[0].category.hdx.caveats,
+            "private": False,
+            "dataset_source": cfg.hdx.combined.source or hdx_source,
+            "methodology": cfg.hdx.methodology,
+            "methodology_other": cfg.hdx.methodology_other,
+            "owner_org": self._owner_org,
+            "maintainer": self._maintainer,
+            "subnational": cfg.subnational,
+        }
+        licenses = {e.category.hdx.license for e in entries}
+        if len(licenses) == 1 and next(iter(licenses)) == "hdx-odc-odbl":
+            dataset_args["license_id"] = "hdx-odc-odbl"
+        elif len(licenses) == 1:
+            dataset_args["license_id"] = "hdx-other"
+            dataset_args["license_other"] = next(iter(licenses))
+        else:
+            dataset_args["license_id"] = "hdx-other"
+            dataset_args["license_other"] = (
+                "Layers carry individual licences; see each layer's metadata."
+            )
+
+        dataset = Dataset(dataset_args)
+        if ctx.temporal_min is not None and ctx.temporal_max is not None:
+            dataset.set_time_period(ctx.temporal_min, ctx.temporal_max)
+        else:
+            dataset.set_time_period(ctx.snapshot_date)
+        dataset.set_expected_update_frequency(cfg.frequency)
+        dataset.add_other_location(cfg.iso3.upper())
+        seen_tags: set[str] = set()
+        category_tags = (tag for entry in entries for tag in entry.category.hdx.tags)
+        for tag in (*cfg.hdx.combined.tags, *category_tags):
+            if tag not in seen_tags:
+                dataset.add_tag(tag)
+                seen_tags.add(tag)
+        return dataset
+
+    def _read_dataset(self, dt_name: str, purpose: str):  # noqa: ANN202 - hdx Dataset
+        from hdx.data.dataset import Dataset
+
+        dataset = Dataset.read_from_hdx(dt_name)
+        if dataset is None:
+            raise RuntimeError(f"HDX dataset {dt_name} not visible before {purpose} build")
+        return dataset
+
+    def _publish_html_viz(
+        self,
+        *,
+        dataset,  # noqa: ANN001 - hdx Dataset
+        dt_name: str,
+        html_path: Path,
+        description: str,
+        iso3: str,
+        category_slug: str,
+        s3_cfg: S3Config | None,
+    ) -> None:
+        """Attach an HTML page to the dataset and make it the custom visualisation."""
+        viz_ctx = PublishContext(
+            dataset_source="",
+            snapshot_date=datetime.now(),
+            source_name=category_slug,
+            s3=s3_cfg,
+        )
+        resource = self._make_resource_for_path(
+            path=html_path,
+            fmt="html",
+            description=description,
+            ctx=viz_ctx,
+            iso3=iso3,
+            category_slug=category_slug,
+        )
+        dataset.add_update_resource(resource)
+        url = resource["url"] if "url" in resource.data else None
+        if url:
+            logger.info("Setting customviz: %s", url)
+            _apply_custom_viz(dataset, url)
+        _hdx_publish_with_retry(
+            lambda: dataset.update_in_hdx(
+                remove_additional_resources=False,
+                match_resources_by_metadata=True,
+                hxl_update=False,
+            ),
+            label=f"{category_slug} update {dt_name}",
+        )
+        # An uploaded resource only gets its URL from HDX after the update above.
+        if url is None:
+            self._set_customviz_after_upload(dt_name, html_path.name)
+
+    def _build_and_publish_landing(
+        self,
+        *,
+        dt_name: str,
+        cfg: RootConfig,
+        entries: list[CombinedCategory],
+        pmtiles_layer: str | None,
+        ctx: PublishContext,
+    ) -> None:
+        from oex.report.landing import CategoryPanel, render_landing, source_label
+
+        dataset = self._read_dataset(dt_name, "landing")
+        resources = dataset.get_resources() or []
+        pmtiles_url = (
+            _resource_url(resources, f"{pmtiles_layer}.pmtiles") if pmtiles_layer else None
+        )
+
+        prefix = f"{cfg.key}_{cfg.iso3.lower()}_"
+        by_slug: dict[str, list[SourceMetadata]] = {}
+        for name, source_metadata in _load_source_metadata(resources, dt_name):
+            # Every category on the dataset, not just this run's: a later run of the
+            # other source must describe the layers the tileset already carries.
+            slug = _slug_from_metadata_name(name, prefix, cfg.categories)
+            if slug is not None:
+                by_slug.setdefault(slug, []).append(source_metadata)
+
+        panels: list[CategoryPanel] = []
+        for category in cfg.categories:
+            slug = _slugify(category.name)
+            sources = by_slug.get(slug)
+            if not sources:
+                continue
+            sources.sort(key=lambda s: SOURCE_RANK.get(s.source_name, 99))
+            panels.append(
+                CategoryPanel(slug=slug, label=_category_label(category), sources=sources)
+            )
+        if not panels:
+            raise RuntimeError(
+                f"HDX dataset {dt_name}: landing requested but no metadata.json resources found"
+            )
+
+        place = _country_name(cfg.iso3, dataset_name=cfg.dataset_name)
+        hdx_source = _HDX_SHORT_SOURCE.get(ctx.source_name, ctx.dataset_source)
+        layer_count = sum(len(p.sources) for p in panels)
+        present = sorted(
+            {s.source_name for p in panels for s in p.sources},
+            key=lambda n: SOURCE_RANK.get(n, 99),
+        )
+        sources_label = " and ".join(source_label(n) for n in present)
+        html = render_landing(
+            title=_combined_title(cfg, place, hdx_source),
+            subtitle=f"{layer_count} layers from {sources_label} for {place}",
+            panels=panels,
+            pmtiles_url=pmtiles_url,
+            pmtiles_layer=pmtiles_layer,
+            boundary_bbox=ctx.boundary_bbox,
+            palette=cfg.output.report.palette,
+            map_assets=cfg.output.report.map_assets,
+        )
+        assert ctx.output_dir is not None
+        landing_path = ctx.output_dir / f"{dt_name}_overview.html"
+        landing_path.write_text(html, encoding="utf-8")
+        logger.info("Built combined landing (%d layers) -> %s", layer_count, landing_path)
+
+        self._publish_html_viz(
+            dataset=dataset,
+            dt_name=dt_name,
+            html_path=landing_path,
+            description=f"{place} interactive overview",
+            iso3=cfg.iso3,
+            category_slug="overview",
+            s3_cfg=ctx.s3,
+        )
+
+    def _set_customviz_after_upload(self, dt_name: str, resource_name: str) -> None:
+        from hdx.data.dataset import Dataset
+
+        dataset = Dataset.read_from_hdx(dt_name)
+        if dataset is None:
+            return
+        resource = next(
+            (r for r in (dataset.get_resources() or []) if r["name"] == resource_name), None
+        )
+        url = resource.get("url") if resource else None
+        if not url:
+            logger.warning(
+                "customviz: overview resource %s has no URL yet on %s", resource_name, dt_name
+            )
+            return
+        logger.info("Setting customviz (post-upload): %s", url)
+        _apply_custom_viz(dataset, url)
+        _hdx_publish_with_retry(
+            lambda: dataset.update_in_hdx(
+                remove_additional_resources=False,
+                match_resources_by_metadata=True,
+                hxl_update=False,
+            ),
+            label=f"customviz {dt_name}",
+        )
 
     def _build_dataset_object(
         self,
@@ -318,30 +643,15 @@ class HdxPublisher:
         category_slug: str,
         output_dir: Path,
         s3_cfg: S3Config | None,
+        boundary_bbox: tuple[float, float, float, float] | None = None,
     ) -> None:
         # HDX serves uploaded HTML with text/html + SAMEORIGIN, so the resource URL self-iframes.
-        from hdx.data.dataset import Dataset
+        from oex.report import render_report
 
-        from oex.report import SourceMetadata, render_report
+        dataset = self._read_dataset(dt_name, "report")
+        resources = dataset.get_resources() or []
 
-        fresh = Dataset.read_from_hdx(dt_name)
-        if fresh is None:
-            raise RuntimeError(f"HDX dataset {dt_name} not visible before report build")
-        resources = fresh.get_resources() or []
-
-        sources: dict[str, SourceMetadata] = {}
-        for r in resources:
-            name = r["name"]
-            if not name.endswith("_metadata.json"):
-                continue
-            url = r["url"]
-            try:
-                payload = _download_json(url)
-                sm = SourceMetadata.from_payload(payload)
-            except Exception as exc:
-                raise RuntimeError(f"HDX dataset {dt_name}: could not parse {name}: {exc}") from exc
-            sources[sm.source_name] = sm
-
+        sources = {sm.source_name: sm for _, sm in _load_source_metadata(resources, dt_name)}
         if not sources:
             raise RuntimeError(
                 f"HDX dataset {dt_name}: combined report requested but no "
@@ -349,7 +659,17 @@ class HdxPublisher:
             )
 
         report_path = output_dir / f"{cfg.key}_{cfg.iso3.lower()}_{category_slug}_report.html"
-        report_path.write_text(render_report(sources), encoding="utf-8")
+        report_path.write_text(
+            render_report(
+                sources,
+                _category_tilesets(resources),
+                boundary_bbox,
+                _category_label(category),
+                cfg.output.report.palette,
+                cfg.output.report.map_assets,
+            ),
+            encoding="utf-8",
+        )
         logger.info(
             "Built combined report (%d source%s) -> %s",
             len(sources),
@@ -357,32 +677,14 @@ class HdxPublisher:
             report_path,
         )
 
-        report_ctx = PublishContext(
-            dataset_source="",
-            snapshot_date=datetime.now(),
-            source_name="report",
-            s3=s3_cfg,
-        )
-        report_resource = self._make_resource_for_path(
-            path=report_path,
-            fmt="html",
+        self._publish_html_viz(
+            dataset=dataset,
+            dt_name=dt_name,
+            html_path=report_path,
             description=f"{category.name} (interactive report)",
-            ctx=report_ctx,
             iso3=cfg.iso3,
             category_slug=category_slug,
-        )
-        fresh.add_update_resource(report_resource)
-        report_url = report_resource["url"] if "url" in report_resource.data else None
-        if report_url:
-            logger.info("Setting customviz: %s", report_url)
-            fresh.set_custom_viz(report_url)
-        _hdx_publish_with_retry(
-            lambda: fresh.update_in_hdx(
-                remove_additional_resources=False,
-                match_resources_by_metadata=True,
-                hxl_update=False,
-            ),
-            label=f"report update {dt_name}",
+            s3_cfg=s3_cfg,
         )
 
 
@@ -448,6 +750,65 @@ def _slugify(value: str) -> str:
     import re
 
     return re.sub(r"[^a-zA-Z0-9]+", "_", value).lower().strip("_")
+
+
+def _resource_url(resources: list, name: str) -> str | None:  # noqa: ANN001 - hdx Resource
+    resource = next((r for r in resources if r["name"] == name), None)
+    return resource.get("url") if resource else None
+
+
+def _category_tilesets(resources: list) -> dict[str, tuple[str, str]]:  # noqa: ANN001 - hdx Resource
+    """Map each source to its tileset on a per-category dataset.
+
+    One tileset per source, named `{key}_{iso3}_{slug}_{source}.pmtiles`, whose
+    single layer is the file stem.
+    """
+    tilesets: dict[str, tuple[str, str]] = {}
+    for resource in resources:
+        name = resource["name"]
+        if not name.endswith(".pmtiles"):
+            continue
+        stem = name[: -len(".pmtiles")]
+        url = resource.get("url")
+        if url:
+            tilesets[stem.rsplit("_", 1)[-1]] = (url, stem)
+    return tilesets
+
+
+def _load_source_metadata(  # noqa: ANN001 - hdx Resource
+    resources: list, dt_name: str
+) -> "list[tuple[str, SourceMetadata]]":
+    """Read every `*_metadata.json` resource on a dataset, newest layer set included.
+
+    Both report pages describe whatever layers the dataset carries, so both read
+    the metadata resources rather than only the ones this run published.
+    """
+    from oex.report import SourceMetadata
+
+    loaded: list[tuple[str, SourceMetadata]] = []
+    for resource in resources:
+        name = resource["name"]
+        if not name.endswith("_metadata.json"):
+            continue
+        try:
+            payload = _download_json(resource["url"])
+            loaded.append((name, SourceMetadata.from_payload(payload)))
+        except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
+            raise RuntimeError(f"HDX dataset {dt_name}: could not parse {name}: {exc}") from exc
+    return loaded
+
+
+def _slug_from_metadata_name(
+    name: str, prefix: str, categories: list[CategoryConfig]
+) -> str | None:
+    """Match a `{key}_{iso3}_{slug}_{source}_metadata.json` resource to a category slug."""
+    if not name.startswith(prefix):
+        return None
+    for category in categories:
+        slug = _slugify(category.name)
+        if name.startswith(f"{prefix}{slug}_"):
+            return slug
+    return None
 
 
 def _preflight_check(api_key: str, owner_org: str, maintainer: str, site: str) -> None:
