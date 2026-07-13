@@ -64,6 +64,12 @@ and is auto-managed by [commitizen](https://commitizen-tools.github.io/commitize
 
 - **config**: config fix
 
+## v0.4.2 (2026-07-13)
+
+### Fix
+
+- **combined**: dataset for hdx , adds the mapview fixes onclick and legend
+
 ## v0.4.1 (2026-06-23)
 
 ### Fix
