@@ -64,6 +64,12 @@ and is auto-managed by [commitizen](https://commitizen-tools.github.io/commitize
 
 - **config**: config fix
 
+## v0.4.3 (2026-07-21)
+
+### Fix
+
+- **hdx**: fix hdx push off and preflight checks
+
 ## v0.4.2 (2026-07-13)
 
 ### Fix
