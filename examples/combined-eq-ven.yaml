@@ -1,0 +1,137 @@
+iso3: VEN
+key: demo_eq
+dataset_name: Venezuela
+
+boundary:
+  geom: '{"type":"Polygon","coordinates":[[[-67.02,10.46],[-66.86,10.46],[-66.86,10.62],[-67.02,10.62],[-67.02,10.46]]]}'
+
+output:
+  dir: output
+  formats: [gpkg, shp]
+  report:
+    enabled: true
+  pmtiles:
+    enabled: true
+    max_zoom: 14
+  s3:
+    enabled: true
+    bucket: ${oc.env:OEX_S3_BUCKET,""}
+    prefix: oex-demo
+    region: us-east-1
+    acl: public-read
+
+hdx:
+  push: true
+  site: demo
+  api_key: ${oc.env:HDX_API_KEY,null}
+  owner_org: ${oc.env:HDX_OWNER_ORG,null}
+  maintainer: ${oc.env:HDX_MAINTAINER,null}
+  combine: true
+  combined:
+    name: demo_eq_ven
+    title: "{country} - M 7.5 Earthquake - June 2026 - OSM & Overture Data"
+    notes: >-
+      OpenStreetMap and Overture vector data for the HOTOSM response to the
+      magnitude 7.5 earthquake that struck Venezuela in June 2026.
+    caveats: >-
+      Overture building footprints are partly AI-generated; verify before
+      operational use.
+    source: OpenStreetMap contributors; Overture Maps
+    tags: [earthquake-tsunami, natural disasters]
+
+source:
+  overture:
+    enabled: true
+  osm:
+    enabled: true
+    engine: geofabrik
+  pcodes:
+    enabled: false
+
+categories:
+  - name: Buildings
+    boundary_resolution: h3_neighbor
+    hdx:
+      notes: Building footprints from OpenStreetMap and Overture.
+      tags: [geodata, buildings]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Community verified only.
+    osm:
+      enabled: true
+      filter: {building: true}
+      select:
+        - feature_id AS id
+        - tags['name'] AS name
+        - tags['building'] AS building
+        - tags['building:levels'] AS levels
+    overture:
+      enabled: true
+      theme: buildings
+      feature_type: building
+      select:
+        - id
+        - names.primary AS name
+        - class
+        - subtype
+        - sources[1].dataset AS source
+
+  - name: Roads
+    boundary_resolution: h3_neighbor
+    hdx:
+      notes: Road network from OpenStreetMap.
+      tags: [geodata, roads, transportation]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Community verified only.
+    osm:
+      enabled: true
+      filter: {highway: true}
+      select:
+        - feature_id AS id
+        - tags['name'] AS name
+        - tags['highway'] AS highway
+        - tags['surface'] AS surface
+    overture:
+      enabled: false
+
+  - name: Health Facilities
+    hdx:
+      notes: Health facilities from OpenStreetMap.
+      tags: [health facilities]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Community verified only.
+    osm:
+      enabled: true
+      filter:
+        amenity: [hospital, clinic, doctors, pharmacy]
+        healthcare: true
+      select:
+        - feature_id AS id
+        - tags['name'] AS name
+        - tags['amenity'] AS amenity
+        - tags['healthcare'] AS healthcare
+    overture:
+      enabled: false
+
+  - name: Emergency Facilities
+    hdx:
+      notes: Emergency facilities (fire, police) from Overture.
+      tags: [facilities-infrastructure]
+      license: CDLA Permissive 2.0
+      license_url: https://cdla.dev/permissive-2-0/
+      caveats: POI data may contain errors.
+    osm:
+      enabled: false
+    overture:
+      enabled: true
+      theme: places
+      feature_type: place
+      select:
+        - id
+        - names.primary AS name
+        - categories.primary AS category
+        - sources[1].dataset AS source
+      where:
+        - "categories.primary IN ('fire_department', 'police_department', 'emergency_service')"

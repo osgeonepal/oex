@@ -1,0 +1,237 @@
+iso3: VEN
+key: hot_eq
+dataset_name: Venezuela
+subnational: true
+frequency: yearly
+
+boundary:
+  geom: '{"type":"Polygon","coordinates":[[[-69.76,8.70],[-65.78,8.70],[-65.78,11.51],[-69.76,11.51],[-69.76,8.70]]]}'
+
+output:
+  dir: output
+  formats: [gpkg, shp]
+  report:
+    enabled: true
+  pmtiles:
+    enabled: true
+    max_zoom: 14
+  s3:
+    enabled: true
+    bucket: ${oc.env:OEX_S3_BUCKET,""}
+    prefix: hot_eq_ven
+    region: us-east-1
+    acl: public-read
+
+hdx:
+  push: true
+  site: prod
+  api_key: ${oc.env:HDX_API_KEY,null}
+  owner_org: ${oc.env:HDX_OWNER_ORG,null}
+  maintainer: ${oc.env:HDX_MAINTAINER,null}
+  combine: true
+  combined:
+    name: hot_eq_ven
+    title: "{country} - M 7.5 Earthquake - June 2026 - OSM & Overture Data"
+    source: OpenStreetMap contributors; Overture Maps
+    caveats: >-
+      Overture building footprints are partly AI-generated; verify before
+      operational use and check Overture's usage guidelines.
+    tags:
+      - earthquake-tsunami
+      - education
+      - education facilities-schools
+      - facilities-infrastructure
+      - geodata
+      - health facilities
+      - natural disasters
+      - roads
+      - transportation
+    notes: |
+      This dataset contains OpenStreetMap data exported from the HOTOSM disaster mapping response to the magnitude 7.5 Earthquake that struck Venezuela in June 2026, Glide: EQ-2026-000093-VEN.
+
+      On Wednesday, June 24, 2026, Venezuela was struck by two of the most powerful earthquakes the country has seen in over a century. The back-to-back tremors caused widespread destruction, particularly in the capital and along the northern coast. Both earthquakes caused widespread damage across the country, particularly in La Guaira and the capital, Caracas.
+
+      This dataset bundles nine layers from two sources:
+
+      * OpenStreetMap layers: buildings, roads, points of interest, health facilities, education facilities, airports, sea ports.
+      * Overture Maps layers: buildings (machine-derived footprints that fill gaps where OSM is sparse) and emergency facilities (hospitals, pharmacies, fire, police, ambulance/EMS).
+
+      It covers the area affected by the M7.5 earthquake in Venezuela, including the epicentral region and the urban areas of Caracas and La Guaira (bounding box: 69.76°W to 65.78°W, 8.70°N to 11.51°N).
+
+source:
+  overture:
+    enabled: true
+  osm:
+    enabled: true
+    engine: geofabrik
+  pcodes:
+    enabled: false
+
+categories:
+  - name: Buildings
+    boundary_resolution: h3_neighbor
+    hdx:
+      notes: Building footprints from OpenStreetMap and Overture.
+      tags: [geodata, buildings, facilities-infrastructure]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Building data is verified at the community level only.
+    osm:
+      enabled: true
+      filter: {building: true}
+      select:
+        - feature_id AS id
+        - tags['name'] AS name
+        - tags['building'] AS building
+        - tags['building:levels'] AS levels
+        - tags['height'] AS height
+    overture:
+      enabled: true
+      theme: buildings
+      feature_type: building
+      select:
+        - id
+        - names.primary AS name
+        - class
+        - subtype
+        - height
+        - num_floors
+        - sources[1].dataset AS source
+
+  - name: Roads
+    boundary_resolution: h3_neighbor
+    hdx:
+      notes: Road network from OpenStreetMap.
+      tags: [geodata, roads, transportation]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Road data is community verified.
+    osm:
+      enabled: true
+      filter: {highway: true}
+      select:
+        - feature_id AS id
+        - tags['name'] AS name
+        - tags['highway'] AS highway
+        - tags['surface'] AS surface
+    overture:
+      enabled: false
+
+  - name: Points of Interest
+    hdx:
+      notes: Points of interest from OpenStreetMap.
+      tags: [geodata, facilities-infrastructure]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: POI data may contain errors.
+    osm:
+      enabled: true
+      filter: {amenity: true, shop: true, tourism: true}
+      select:
+        - feature_id AS id
+        - tags['name'] AS name
+        - tags['amenity'] AS amenity
+        - tags['shop'] AS shop
+        - tags['tourism'] AS tourism
+    overture:
+      enabled: false
+
+  - name: Health Facilities
+    hdx:
+      notes: Health facilities from OpenStreetMap.
+      tags: [health facilities]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Health facility data is community verified.
+    osm:
+      enabled: true
+      filter:
+        amenity: [hospital, clinic, doctors, pharmacy]
+        healthcare: true
+      select:
+        - feature_id AS id
+        - tags['name'] AS name
+        - tags['amenity'] AS amenity
+        - tags['healthcare'] AS healthcare
+    overture:
+      enabled: false
+
+  - name: Education Facilities
+    hdx:
+      notes: Education facilities from OpenStreetMap.
+      tags: [education, education facilities-schools]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Education facility data is community verified.
+    osm:
+      enabled: true
+      filter:
+        amenity: [school, college, university, kindergarten]
+      select:
+        - feature_id AS id
+        - tags['name'] AS name
+        - tags['amenity'] AS amenity
+    overture:
+      enabled: false
+
+  - name: Airports
+    hdx:
+      notes: Airports and airstrips from OpenStreetMap.
+      tags: [transportation, facilities-infrastructure]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Aviation data is community verified.
+    osm:
+      enabled: true
+      filter:
+        aeroway: [aerodrome, terminal, helipad, runway]
+      select:
+        - feature_id AS id
+        - tags['name'] AS name
+        - tags['aeroway'] AS aeroway
+    overture:
+      enabled: false
+
+  - name: Sea Ports
+    hdx:
+      notes: Sea ports and ferry terminals from OpenStreetMap.
+      tags: [transportation, facilities-infrastructure]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Port data is community verified.
+    osm:
+      enabled: true
+      filter:
+        amenity: [ferry_terminal]
+        harbour: true
+        landuse: [port]
+      select:
+        - feature_id AS id
+        - tags['name'] AS name
+        - tags['amenity'] AS amenity
+        - tags['harbour'] AS harbour
+    overture:
+      enabled: false
+
+  - name: Emergency Facilities
+    hdx:
+      notes: >-
+        Emergency facilities (hospitals, pharmacies, fire, police, ambulance)
+        from Overture.
+      tags: [facilities-infrastructure, health facilities]
+      license: CDLA Permissive 2.0
+      license_url: https://cdla.dev/permissive-2-0/
+      caveats: POI data may contain errors.
+    osm:
+      enabled: false
+    overture:
+      enabled: true
+      theme: places
+      feature_type: place
+      select:
+        - id
+        - names.primary AS name
+        - categories.primary AS category
+        - sources[1].dataset AS source
+      where:
+        - "categories.primary IN ('hospital', 'pharmacy', 'fire_department', 'police_department', 'emergency_service')"

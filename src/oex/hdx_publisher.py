@@ -29,7 +29,7 @@ _HDX_SITE_URLS = {
     "stage": "https://stage.data-humdata-org.ahconu.org",
 }
 
-_HDX_SHORT_SOURCE = {"osm": "OpenStreetMap", "overture": "Overture"}
+HDX_SHORT_SOURCE = {"osm": "OpenStreetMap", "overture": "Overture"}
 
 # Kept lowercase mid-phrase so "Points of Interest" reads naturally.
 _TITLE_LOWER_WORDS = {"a", "an", "and", "at", "by", "for", "in", "of", "on", "or", "the", "to"}
@@ -43,7 +43,7 @@ def _title_case_category(name: str) -> str:
     )
 
 
-def _country_name(iso3: str, *, dataset_name: str | None = None) -> str:
+def country_name(iso3: str, *, dataset_name: str | None = None) -> str:
     # Precedence: configured dataset_name (overrides ISO inversions like DRC
     # and supports sub-national exports), pycountry common_name, pycountry
     # name, raw iso3.
@@ -61,7 +61,7 @@ def _country_name(iso3: str, *, dataset_name: str | None = None) -> str:
 SOURCE_RANK = {"osm": 0, "overture": 1}
 
 
-def _combined_title(cfg: RootConfig, place: str, hdx_source: str) -> str:
+def combined_title(cfg: RootConfig, place: str, hdx_source: str) -> str:
     if cfg.hdx.combined.title:
         return cfg.hdx.combined.title.format(country=place, iso3=cfg.iso3.upper())
     return f"{place} {hdx_source} vector data"
@@ -74,13 +74,13 @@ def _apply_custom_viz(dataset, url: str) -> None:  # noqa: ANN001 - hdx Dataset
     dataset.preview_off()
 
 
-def _category_label(category: CategoryConfig) -> str:
+def category_label(category: CategoryConfig) -> str:
     return category.hdx.title or _title_case_category(category.name)
 
 
 def _resolve_title(cfg: RootConfig, category: CategoryConfig) -> str:
-    label = _category_label(category)
-    place = _country_name(cfg.iso3, dataset_name=cfg.dataset_name)
+    label = category_label(category)
+    place = country_name(cfg.iso3, dataset_name=cfg.dataset_name)
     if cfg.hdx.title_template:
         return cfg.hdx.title_template.format(
             country=place,
@@ -313,11 +313,11 @@ class HdxPublisher:
     ):  # noqa: ANN202 - hdx-python-api Dataset
         from hdx.data.dataset import Dataset
 
-        place = _country_name(cfg.iso3, dataset_name=cfg.dataset_name)
-        hdx_source = _HDX_SHORT_SOURCE.get(ctx.source_name, ctx.dataset_source)
-        title = _combined_title(cfg, place, hdx_source)
+        place = country_name(cfg.iso3, dataset_name=cfg.dataset_name)
+        hdx_source = HDX_SHORT_SOURCE.get(ctx.source_name, ctx.dataset_source)
+        title = combined_title(cfg, place, hdx_source)
 
-        labels = [_category_label(e.category) for e in entries]
+        labels = [category_label(e.category) for e in entries]
         notes = cfg.hdx.combined.notes or (
             f"Combined {hdx_source} vector export for {place}. "
             f"Layers: {', '.join(labels)}. Each layer is provided as GIS downloads; "
@@ -447,16 +447,14 @@ class HdxPublisher:
             if not sources:
                 continue
             sources.sort(key=lambda s: SOURCE_RANK.get(s.source_name, 99))
-            panels.append(
-                CategoryPanel(slug=slug, label=_category_label(category), sources=sources)
-            )
+            panels.append(CategoryPanel(slug=slug, label=category_label(category), sources=sources))
         if not panels:
             raise RuntimeError(
                 f"HDX dataset {dt_name}: landing requested but no metadata.json resources found"
             )
 
-        place = _country_name(cfg.iso3, dataset_name=cfg.dataset_name)
-        hdx_source = _HDX_SHORT_SOURCE.get(ctx.source_name, ctx.dataset_source)
+        place = country_name(cfg.iso3, dataset_name=cfg.dataset_name)
+        hdx_source = HDX_SHORT_SOURCE.get(ctx.source_name, ctx.dataset_source)
         layer_count = sum(len(p.sources) for p in panels)
         present = sorted(
             {s.source_name for p in panels for s in p.sources},
@@ -464,7 +462,7 @@ class HdxPublisher:
         )
         sources_label = " and ".join(source_label(n) for n in present)
         html = render_landing(
-            title=_combined_title(cfg, place, hdx_source),
+            title=combined_title(cfg, place, hdx_source),
             subtitle=f"{layer_count} layers from {sources_label} for {place}",
             panels=panels,
             pmtiles_url=pmtiles_url,
@@ -524,7 +522,7 @@ class HdxPublisher:
         from hdx.data.dataset import Dataset
 
         title = _resolve_title(cfg, category)
-        hdx_source = category.hdx.dataset_source or _HDX_SHORT_SOURCE.get(
+        hdx_source = category.hdx.dataset_source or HDX_SHORT_SOURCE.get(
             ctx.source_name, ctx.dataset_source
         )
         dataset_args: dict[str, object] = {
@@ -664,7 +662,7 @@ class HdxPublisher:
                 sources,
                 _category_tilesets(resources),
                 boundary_bbox,
-                _category_label(category),
+                category_label(category),
                 cfg.output.report.palette,
                 cfg.output.report.map_assets,
             ),

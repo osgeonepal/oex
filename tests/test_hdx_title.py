@@ -1,7 +1,7 @@
 """Title-resolution helpers for HDX dataset publication."""
 
 from oex.config.schema import CategoryConfig, CategoryHdx, HdxConfig, RootConfig
-from oex.hdx_publisher import _country_name, _resolve_title, _title_case_category
+from oex.hdx_publisher import _resolve_title, _title_case_category, country_name
 
 
 def test_title_case_capitalises_simple_categories() -> None:
@@ -20,19 +20,19 @@ def test_title_case_keeps_filler_words_lowercase() -> None:
 
 
 def test_country_name_resolves_known_iso3() -> None:
-    assert _country_name("NPL") == "Nepal"
-    assert _country_name("npl") == "Nepal"
+    assert country_name("NPL") == "Nepal"
+    assert country_name("npl") == "Nepal"
 
 
 def test_country_name_prefers_common_name_over_iso_inversion() -> None:
     # ISO name is "Viet Nam"; common usage is "Vietnam".
-    assert _country_name("VNM") == "Vietnam"
+    assert country_name("VNM") == "Vietnam"
     # ISO name is "Iran, Islamic Republic of"; common is "Iran".
-    assert _country_name("IRN") == "Iran"
+    assert country_name("IRN") == "Iran"
     # ISO name is "Korea, Republic of"; common is "South Korea".
-    assert _country_name("KOR") == "South Korea"
+    assert country_name("KOR") == "South Korea"
     # ISO name is "Tanzania, United Republic of"; common is "Tanzania".
-    assert _country_name("TZA") == "Tanzania"
+    assert country_name("TZA") == "Tanzania"
 
 
 def test_country_name_uses_dataset_name_when_provided() -> None:
@@ -40,14 +40,14 @@ def test_country_name_uses_dataset_name_when_provided() -> None:
     # This is the configurable knob users set in YAML or via CLI to handle
     # countries pycountry mangles (DRC, etc.) and sub-national exports.
     assert (
-        _country_name("COD", dataset_name="Democratic Republic of the Congo")
+        country_name("COD", dataset_name="Democratic Republic of the Congo")
         == "Democratic Republic of the Congo"
     )
-    assert _country_name("NPL", dataset_name="Pokhara Valley") == "Pokhara Valley"
+    assert country_name("NPL", dataset_name="Pokhara Valley") == "Pokhara Valley"
 
 
 def test_country_name_falls_back_to_iso3_for_unknown() -> None:
-    assert _country_name("ZZZ") == "ZZZ"
+    assert country_name("ZZZ") == "ZZZ"
 
 
 def _cfg(*, iso3: str, template: str = "", dataset_name: str | None = None) -> RootConfig:

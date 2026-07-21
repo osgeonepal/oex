@@ -77,6 +77,7 @@ def _build_overrides(
     dataset_name: str | None = None,
     hdx_combine: bool | None = None,
     pmtiles: bool | None = None,
+    s3: bool | None = None,
 ) -> dict[str, object]:
     overrides: dict[str, object] = {}
     if iso3_or_yaml and len(iso3_or_yaml) <= 3 and iso3_or_yaml.isalpha():
@@ -101,6 +102,10 @@ def _build_overrides(
         overrides["output.pmtiles.enabled"] = True
     if pmtiles is False:
         overrides["output.pmtiles.enabled"] = False
+    if s3 is True:
+        overrides["output.s3.enabled"] = True
+    if s3 is False:
+        overrides["output.s3.enabled"] = False
     if output_dir is not None:
         overrides["output.dir"] = str(output_dir)
     if osm_engine is not None:
@@ -199,6 +204,11 @@ def cmd_overture(
         "--pmtiles/--no-pmtiles",
         help="Generate PMTiles. With --hdx-combine, all layers merge into one tileset.",
     ),
+    s3: bool | None = typer.Option(
+        None,
+        "--s3/--no-s3",
+        help="Upload artifacts to S3. Overrides output.s3.enabled.",
+    ),
 ) -> None:
     """Export Overture data."""
     iso3_resolved, theme_resolved = _resolve_args(iso3_or_yaml, theme, configs_dir, config)
@@ -212,6 +222,7 @@ def cmd_overture(
         dataset_name=dataset_name,
         hdx_combine=hdx_combine,
         pmtiles=pmtiles,
+        s3=s3,
     )
     results = [_run_one(y, overrides, theme_resolved, OvertureRunner) for y in yamls]
     raise typer.Exit(code=_summarise(results))
@@ -276,6 +287,11 @@ def cmd_osm(
         "--pmtiles/--no-pmtiles",
         help="Generate PMTiles. With --hdx-combine, all layers merge into one tileset.",
     ),
+    s3: bool | None = typer.Option(
+        None,
+        "--s3/--no-s3",
+        help="Upload artifacts to S3. Overrides output.s3.enabled.",
+    ),
 ) -> None:
     """Export OSM data via the configured engine."""
     iso3_resolved, theme_resolved = _resolve_args(iso3_or_yaml, theme, configs_dir, config)
@@ -292,6 +308,7 @@ def cmd_osm(
         dataset_name=dataset_name,
         hdx_combine=hdx_combine,
         pmtiles=pmtiles,
+        s3=s3,
     )
     results = [_run_one(y, overrides, theme_resolved, OsmRunner) for y in yamls]
     raise typer.Exit(code=_summarise(results))

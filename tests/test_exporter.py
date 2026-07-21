@@ -99,13 +99,13 @@ def test_publish_combined_builds_tileset_orders_and_cleans_up(tmp_path: Path) ->
             query=query,
         )
 
-    # Feed reversed to prove _publish_combined re-sorts to config order.
+    # Feed reversed to prove the combine phase re-sorts to config order.
     built_list = [_built("roads"), _built("buildings")]
 
     publisher = MagicMock()
     publisher.publish_combined.return_value = "hotosm_npl"
 
-    exporter._publish_combined(
+    exporter._finish_combined(
         built_list,
         out_root,
         publisher,

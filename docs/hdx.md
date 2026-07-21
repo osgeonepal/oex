@@ -28,6 +28,14 @@ export HDX_MAINTAINER=...
 oex-cli osm npl --hdx-push
 ```
 
+Give env interpolations a default so the config loads when the variable is
+absent, which is what lets one file run both with and without pushing:
+
+```yaml
+hdx:
+  api_key: ${oc.env:HDX_API_KEY,null}
+```
+
 ## What happens
 
 For each category that succeeds:
@@ -179,8 +187,8 @@ Overture stays readable even when AWS credentials are present, so an S3-enabled
 Overture run uploads to your bucket and still reads Overture anonymously. PMTiles
 come from the GDAL build inside duckdb, so no extra tools are needed.
 
-CLI flags mirror the config: `--hdx-combine/--no-hdx-combine` and
-`--pmtiles/--no-pmtiles`.
+CLI flags mirror the config: `--hdx-combine/--no-hdx-combine`,
+`--pmtiles/--no-pmtiles`, and `--s3/--no-s3`.
 
 ## Local language columns
 
@@ -200,6 +208,35 @@ plus pycountry. Examples:
 
 Per-category YAML can still pin or override a language by including
 `tags['name:<lang>'] AS name_<lang>` explicitly in `osm.select`.
+
+## Running without HDX
+
+Every artifact is written to `output/<iso3>/<source>/` whether or not you push.
+With `hdx.push: false` you still get the format zips, the per-layer GeoParquet,
+each layer's `metadata.json` and report page, the tilesets, and, under
+`hdx.combine`, the merged tileset plus the `_overview.html` landing page.
+
+```bash
+oex-cli osm VEN --config examples/hot-eq-ven.yaml --no-hdx-push --no-s3
+```
+
+The pages reference their tileset by filename, so serve the output directory to
+view them. The server has to answer range requests with `206 Partial Content`,
+which is how PMTiles reads a slice of the archive instead of all of it. Python's
+`http.server` answers `200` with the whole file and the map stays blank:
+
+```bash
+cd output/ven/osm
+uvx --from rangehttpserver python -m RangeHTTPServer 8000
+```
+
+Opening the HTML straight off disk leaves the map blank too, because browsers
+refuse the cross-origin requests PMTiles makes on `file://`. The table renders
+either way.
+
+The local overview describes the layers that run produced. The published one
+describes every layer on the HDX dataset, including those an earlier run of the
+other source put there, which is knowledge only HDX holds.
 
 ## Production sanity
 

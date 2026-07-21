@@ -15,11 +15,15 @@ from oex.boundary import resolve_boundary
 from oex.config.schema import CategoryConfig, PcodesSourceConfig, RootConfig
 from oex.duckdb_session import connect
 from oex.hdx_publisher import (
+    HDX_SHORT_SOURCE,
     SOURCE_RANK,
     CombinedCategory,
     ExtraResource,
     HdxPublisher,
     PublishContext,
+    category_label,
+    combined_title,
+    country_name,
 )
 from oex.logging_setup import get_logger
 from oex.metadata import compute_metadata
@@ -89,6 +93,7 @@ class BuiltCategory:
     zip_paths: list[Path] = field(default_factory=list)
     metadata_json_path: Path | None = None
     metadata_obj: object | None = None
+    source_metadata: SourceMetadata | None = None
     geoparquet_path: Path | None = None
     query: SourceQuery | None = None
 
@@ -229,11 +234,13 @@ class Exporter:
         publisher: HdxPublisher | None = None
         if self._cfg.hdx.push:
             publisher = HdxPublisher(self._cfg.hdx)
-            if self._cfg.output.s3.enabled:
-                from oex.s3 import preflight as s3_preflight
 
-                logger.info("[%s/%s] s3: preflight check", iso, self._runner.name)
-                s3_preflight(self._cfg.output.s3)
+        # Layer staging uploads on output.s3.enabled alone, independently of hdx.push.
+        if self._cfg.output.s3.enabled:
+            from oex.s3 import preflight as s3_preflight
+
+            logger.info("[%s/%s] s3: preflight check", iso, self._runner.name)
+            s3_preflight(self._cfg.output.s3)
 
         result = ExportResult(iso3=iso, source_name=self._runner.name)
         start = time.time()
@@ -259,8 +266,8 @@ class Exporter:
                 built_list.append(built)
                 result.categories[built.result.name] = built.result
 
-        if self._cfg.hdx.combine and publisher is not None:
-            self._publish_combined(
+        if self._cfg.hdx.combine:
+            self._finish_combined(
                 built_list, out_root, publisher, peeked_label=peeked, boundary_bbox=bbox
             )
 
@@ -479,9 +486,10 @@ class Exporter:
                 )
                 metadata_dict = metadata_obj.to_dict()
 
+            dt_name = f"{self._cfg.key}_{self._cfg.iso3.lower()}_{slug}"
             metadata_json_path: Path | None = None
+            source_metadata: SourceMetadata | None = None
             if self._cfg.output.report.enabled and metadata_obj is not None:
-                dt_name = f"{self._cfg.key}_{self._cfg.iso3.lower()}_{slug}"
                 source_metadata = SourceMetadata(
                     source_name=self._runner.name,
                     snapshot_label=query.snapshot_label,
@@ -502,17 +510,6 @@ class Exporter:
                 metadata_json_path.write_text(
                     json.dumps(source_metadata.to_payload(), indent=2),
                     encoding="utf-8",
-                )
-
-                local_report_path = out_root / f"{dt_name}_{self._runner.name}_report.html"
-                local_report_path.write_text(
-                    render_report({self._runner.name: source_metadata}),
-                    encoding="utf-8",
-                )
-                logger.info(
-                    "%s wrote metadata.json + local report -> %s",
-                    cat_tag,
-                    out_root,
                 )
 
             conn.execute("PRAGMA memory_limit='2GB'")
@@ -558,9 +555,9 @@ class Exporter:
                 self._stage_layer_parquet(geoparquet_path, slug, cat_tag)
 
             pmtiles_extra: list[ExtraResource] = []
+            pmtiles_path: Path | None = None
             if self._cfg.output.pmtiles.enabled and not combine:
                 pm = self._cfg.output.pmtiles
-                dt_name = f"{self._cfg.key}_{self._cfg.iso3.lower()}_{slug}"
                 pmtiles_path = out_root / f"{dt_name}_{self._runner.name}.pmtiles"
                 write_pmtiles(conn, table, pmtiles_path, min_zoom=pm.min_zoom, max_zoom=pm.max_zoom)
                 pmtiles_extra.append(
@@ -569,6 +566,16 @@ class Exporter:
                         fmt="pmtiles",
                         description=f"{category.name} vector tiles (PMTiles)",
                     )
+                )
+
+            if source_metadata is not None:
+                self._write_local_report(
+                    category=category,
+                    source_metadata=source_metadata,
+                    report_path=out_root / f"{dt_name}_{self._runner.name}_report.html",
+                    pmtiles_path=pmtiles_path,
+                    boundary_bbox=boundary_obj.bbox,
+                    cat_tag=cat_tag,
                 )
 
             if self._state is not None:
@@ -628,6 +635,7 @@ class Exporter:
                 zip_paths=zip_paths,
                 metadata_json_path=metadata_json_path,
                 metadata_obj=metadata_obj,
+                source_metadata=source_metadata,
                 geoparquet_path=geoparquet_path,
                 query=query,
             )
@@ -645,30 +653,143 @@ class Exporter:
             conn.close()
             db_path.unlink(missing_ok=True)
 
-    def _publish_combined(
+    def _write_local_report(
+        self,
+        *,
+        category: CategoryConfig,
+        source_metadata: SourceMetadata,
+        report_path: Path,
+        pmtiles_path: Path | None,
+        boundary_bbox: tuple[float, float, float, float],
+        cat_tag: str,
+    ) -> None:
+        """Write this source's report next to its outputs, mapping the local tileset."""
+        # A relative URL keeps the page working under any host serving the output directory.
+        tilesets = (
+            {self._runner.name: (pmtiles_path.name, pmtiles_path.stem)}
+            if pmtiles_path is not None
+            else None
+        )
+        report_path.write_text(
+            render_report(
+                {self._runner.name: source_metadata},
+                tilesets,
+                boundary_bbox,
+                category_label(category),
+                self._cfg.output.report.palette,
+                self._cfg.output.report.map_assets,
+            ),
+            encoding="utf-8",
+        )
+        logger.info("%s wrote local report -> %s", cat_tag, report_path)
+
+    def _finish_combined(
         self,
         built_list: list[BuiltCategory],
         out_root: Path,
-        publisher: HdxPublisher,
+        publisher: HdxPublisher | None,
         *,
         peeked_label: str | None,
         boundary_bbox: tuple[float, float, float, float],
     ) -> None:
+        """Build the combined artifacts, then publish them when HDX push is on."""
         iso = self._cfg.iso3.upper()
         built_ok = [b for b in built_list if b.result.status == "ok" and b.zip_paths]
         if not built_ok:
-            logger.warning(
-                "[%s/%s] combine: no successful categories to publish", iso, self._runner.name
-            )
+            logger.warning("[%s/%s] combine: no successful categories", iso, self._runner.name)
             return
 
         order = {c.name: i for i, c in enumerate(self._cfg.categories)}
         built_ok.sort(key=lambda b: order.get(b.category.name, len(order)))
 
         dt_name = self._cfg.hdx.combined.name or f"{self._cfg.key}_{self._cfg.iso3.lower()}"
-
         pmtiles_path = self._build_combined_tiles(built_ok, out_root, dt_name)
 
+        if publisher is None:
+            self._write_local_landing(
+                built_ok,
+                out_root,
+                dt_name=dt_name,
+                pmtiles_path=pmtiles_path,
+                boundary_bbox=boundary_bbox,
+            )
+            return
+
+        self._publish_combined(
+            built_ok,
+            out_root,
+            publisher,
+            dt_name=dt_name,
+            pmtiles_path=pmtiles_path,
+            peeked_label=peeked_label,
+            boundary_bbox=boundary_bbox,
+        )
+
+    def _write_local_landing(
+        self,
+        built_ok: list[BuiltCategory],
+        out_root: Path,
+        *,
+        dt_name: str,
+        pmtiles_path: Path | None,
+        boundary_bbox: tuple[float, float, float, float],
+    ) -> None:
+        """Render the combined overview from this run's own layers, with no HDX round-trip.
+
+        The published page also covers layers an earlier run of the other source
+        left on the dataset; only HDX knows about those.
+        """
+        if not self._cfg.output.report.enabled:
+            return
+        from oex.report.landing import CategoryPanel, render_landing, source_label
+
+        panels = [
+            CategoryPanel(
+                slug=_slugify(b.category.name),
+                label=category_label(b.category),
+                sources=[b.source_metadata],
+            )
+            for b in built_ok
+            if b.source_metadata is not None
+        ]
+        if not panels:
+            return
+
+        place = country_name(self._cfg.iso3, dataset_name=self._cfg.dataset_name)
+        q0 = built_ok[0].query
+        hdx_source = HDX_SHORT_SOURCE.get(self._runner.name) or (q0.dataset_source if q0 else "")
+        html = render_landing(
+            title=combined_title(self._cfg, place, hdx_source),
+            subtitle=f"{len(panels)} layers from {source_label(self._runner.name)} for {place}",
+            panels=panels,
+            pmtiles_url=pmtiles_path.name if pmtiles_path else None,
+            pmtiles_layer=pmtiles_path.stem if pmtiles_path else None,
+            boundary_bbox=boundary_bbox,
+            palette=self._cfg.output.report.palette,
+            map_assets=self._cfg.output.report.map_assets,
+        )
+        landing_path = out_root / f"{dt_name}_overview.html"
+        landing_path.write_text(html, encoding="utf-8")
+        logger.info(
+            "[%s/%s] combine: wrote local overview (%d layers) -> %s",
+            self._cfg.iso3.upper(),
+            self._runner.name,
+            len(panels),
+            landing_path,
+        )
+
+    def _publish_combined(
+        self,
+        built_ok: list[BuiltCategory],
+        out_root: Path,
+        publisher: HdxPublisher,
+        *,
+        dt_name: str,
+        pmtiles_path: Path | None,
+        peeked_label: str | None,
+        boundary_bbox: tuple[float, float, float, float],
+    ) -> None:
+        iso = self._cfg.iso3.upper()
         entries = [
             CombinedCategory(
                 category=b.category,
