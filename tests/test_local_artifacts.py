@@ -107,6 +107,26 @@ def test_combined_run_without_push_writes_tileset_and_overview(tmp_path: Path) -
     assert all(b.zip_paths[0].exists() for b in built_list)
 
 
+def test_combined_metadata_is_one_file_covering_every_layer(tmp_path: Path) -> None:
+    import json
+
+    cfg = _combined_cfg(tmp_path)
+    runner = MagicMock()
+    runner.name = "overture"
+    exporter = Exporter(cfg, runner)
+    out_root = tmp_path / "npl" / "overture"
+    (out_root / "_layers").mkdir(parents=True)
+    built = [_built(cfg, out_root, "buildings"), _built(cfg, out_root, "roads")]
+
+    path = exporter._write_combined_metadata(built, out_root, "hotosm_npl")
+
+    assert path is not None and path.name == "hotosm_npl_metadata.json"
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    assert doc["dataset"] == "hotosm_npl"
+    assert [layer["category"] for layer in doc["layers"]] == ["buildings", "roads"]
+    assert doc["layers"][0]["metadata"]["feature_count"] == 500
+
+
 def test_combined_run_without_push_skips_overview_when_report_disabled(tmp_path: Path) -> None:
     cfg = _combined_cfg(tmp_path)
     cfg.output.report.enabled = False

@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 import duckdb
 import pytest
+from upath import UPath
 
 from oex.config.schema import (
     BoundaryConfig,
@@ -21,7 +22,21 @@ from oex.config.schema import (
     RootConfig,
 )
 from oex.osm.geofabrik import GeofabrikUnavailableError
-from oex.osm.runner import OsmRunner, _parquet_fingerprint
+from oex.osm.runner import OsmRunner, _ensure_local_pbf, _parquet_fingerprint
+
+
+def test_ensure_local_pbf_keeps_a_local_path(tmp_path: Path) -> None:
+    local = tmp_path / "planet.osm.pbf"
+    local.write_bytes(b"pbf")
+    assert _ensure_local_pbf(str(local), tmp_path / "cache") == local
+
+
+def test_ensure_local_pbf_downloads_a_remote_path(tmp_path: Path) -> None:
+    UPath("memory://pbfs/monaco.osm.pbf").write_bytes(b"PBFDATA")
+    out = _ensure_local_pbf("memory://pbfs/monaco.osm.pbf", tmp_path / "cache")
+    assert out == tmp_path / "cache" / "_pbf" / "monaco.osm.pbf"
+    assert out.read_bytes() == b"PBFDATA"
+
 
 NPL_GEOJSON = {
     "type": "Polygon",

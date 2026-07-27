@@ -1,0 +1,131 @@
+# Pass a downloaded PBF via the planet engine, clip to the project polygon,
+# export the TM categories, HDX off. Enable S3 and point the prefix at the TM
+# base path to publish there. Deploy-specific values come from env so Windmill
+# can set them per run.
+
+iso3: ${oc.env:OEX_ISO3,NPL}
+key: ${oc.env:OEX_DATASET_KEY,hotosm_project}
+dataset_name: ${oc.env:OEX_DATASET_NAME,Tasking Manager Project}
+subnational: true
+frequency: yearly
+
+boundary:
+  # Project boundary GeoJSON geometry to clip to.
+  geom: ${oc.env:OEX_BOUNDARY_GEOJSON,null}
+
+output:
+  dir: output
+  formats: [geojson, shp, kml]
+  report:
+    enabled: false
+  pmtiles:
+    enabled: false
+  s3:
+    enabled: ${oc.env:OEX_S3_ENABLED,false}
+    bucket: ${oc.env:OEX_S3_BUCKET,""}
+    # Base path under the bucket, e.g. "TM" or "sandbox/TM".
+    prefix: ${oc.env:OEX_S3_PREFIX,TM}
+    region: ${oc.env:OEX_S3_REGION,us-east-1}
+    acl: public-read
+    # Flat TM layout: {prefix}/{folder}/{key}_{folder}_{category}_{format}.zip
+    # folder empty falls back to iso3.
+    folder: ${oc.env:OEX_S3_FOLDER,""}
+    nest_by_category: false
+    name_include_source: false
+
+hdx:
+  push: false
+
+source:
+  overture:
+    enabled: false
+  osm:
+    enabled: true
+    engine: ${oc.env:OEX_OSM_ENGINE,planet}
+    pbf_path: ${oc.env:OEX_OSM_PBF_PATH,null}
+  pcodes:
+    enabled: false
+
+categories:
+  - name: Buildings
+    osm:
+      enabled: true
+      filter: {building: true}
+      select:
+        - feature_id AS id
+        - tags['name'] AS name
+        - tags['building'] AS building
+        - tags['building:levels'] AS building_levels
+        - tags['building:materials'] AS building_materials
+        - tags['addr:full'] AS addr_full
+        - tags['addr:housenumber'] AS addr_housenumber
+        - tags['addr:street'] AS addr_street
+        - tags['addr:city'] AS addr_city
+        - tags['office'] AS office
+        - tags['source'] AS source
+
+  - name: Roads
+    osm:
+      enabled: true
+      filter: {highway: true}
+      select:
+        - feature_id AS id
+        - tags['name'] AS name
+        - tags['highway'] AS highway
+        - tags['surface'] AS surface
+        - tags['smoothness'] AS smoothness
+        - tags['width'] AS width
+        - tags['lanes'] AS lanes
+        - tags['oneway'] AS oneway
+        - tags['bridge'] AS bridge
+        - tags['layer'] AS layer
+        - tags['source'] AS source
+
+  - name: Waterways
+    osm:
+      enabled: true
+      filter:
+        waterway: true
+        water: true
+        natural: [water, wetland, bay]
+      select:
+        - feature_id AS id
+        - tags['name'] AS name
+        - tags['waterway'] AS waterway
+        - tags['covered'] AS covered
+        - tags['width'] AS width
+        - tags['depth'] AS depth
+        - tags['layer'] AS layer
+        - tags['blockage'] AS blockage
+        - tags['tunnel'] AS tunnel
+        - tags['natural'] AS natural
+        - tags['water'] AS water
+        - tags['source'] AS source
+
+  - name: Landuse
+    osm:
+      enabled: true
+      filter: {landuse: true}
+      select:
+        - feature_id AS id
+        - tags['name'] AS name
+        - tags['amenity'] AS amenity
+        - tags['landuse'] AS landuse
+        - tags['leisure'] AS leisure
+
+  - name: Seamarks
+    osm:
+      enabled: true
+      filter: {'seamark:type': true}
+      select:
+        - feature_id AS id
+        - tags['name'] AS name
+        - tags['seamark:type'] AS seamark_type
+        - tags['seamark:name'] AS seamark_name
+        - tags['seamark:light:character'] AS seamark_light_character
+        - tags['seamark:light:colour'] AS seamark_light_colour
+        - tags['seamark:light:period'] AS seamark_light_period
+        - tags['seamark:light:range'] AS seamark_light_range
+        - tags['seamark:buoy_lateral:colour'] AS seamark_buoy_lateral_colour
+        - tags['seamark:beacon_lateral:colour'] AS seamark_beacon_lateral_colour
+        - tags['source'] AS source

@@ -104,6 +104,12 @@ class S3Config:
     region: str = ""
     acl: str = "public-read"
     endpoint_url: str | None = None
+    # Mid-path folder and filename id segment. Empty falls back to iso3.
+    folder: str = ""
+    # Keep the {category}/ subfolder in the key. False writes a flat layout.
+    nest_by_category: bool = True
+    # Keep the source token (osm/overture) in the artifact filename.
+    name_include_source: bool = True
 
 
 @dataclass
@@ -201,6 +207,7 @@ class CategoryOverture:
     feature_type: str = ""
     select: list[str] = field(default_factory=list)
     where: list[str] = field(default_factory=list)
+    tiles: bool = True
 
 
 @dataclass
@@ -211,6 +218,7 @@ class CategoryOsm:
     select: list[str] = field(default_factory=list)
     where: list[str] = field(default_factory=list)
     filter: OsmTagFilter = field(default_factory=dict)
+    tiles: bool = True
 
 
 @dataclass

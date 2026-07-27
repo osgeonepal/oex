@@ -5,11 +5,33 @@ from pathlib import Path
 import pytest
 
 from oex.config.schema import S3Config
-from oex.s3 import build_key, content_type_for, public_url, resolve
+from oex.s3 import artifact_key, build_key, content_type_for, public_url, resolve
 
 
 def test_build_key_uses_iso3_then_category_then_filename() -> None:
     assert build_key("", "NPL", "buildings", "x.zip") == "NPL/buildings/x.zip"
+
+
+def test_artifact_key_defaults_match_build_key() -> None:
+    assert artifact_key("TM", "npl", "buildings", "x.zip") == build_key(
+        "TM", "npl", "buildings", "x.zip"
+    )
+
+
+def test_artifact_key_folder_overrides_the_iso3_segment() -> None:
+    assert (
+        artifact_key("TM", "NPL", "buildings", "x.zip", folder="11731")
+        == "TM/11731/buildings/x.zip"
+    )
+
+
+def test_artifact_key_flat_layout_drops_the_category_folder() -> None:
+    key = artifact_key("TM", "NPL", "buildings", "f.zip", folder="11731", nest_by_category=False)
+    assert key == "TM/11731/f.zip"
+
+
+def test_artifact_key_empty_folder_falls_back_to_iso3() -> None:
+    assert artifact_key("TM", "cod", "roads", "y.zip", nest_by_category=False) == "TM/COD/y.zip"
 
 
 def test_build_key_uppercases_iso3() -> None:

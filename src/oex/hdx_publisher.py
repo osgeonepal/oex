@@ -11,7 +11,7 @@ import requests
 
 from oex.config.schema import CategoryConfig, HdxConfig, RootConfig, S3Config
 from oex.logging_setup import get_logger
-from oex.s3 import build_key
+from oex.s3 import artifact_key
 from oex.s3 import resolve as s3_resolve
 from oex.s3 import upload as s3_upload
 
@@ -180,7 +180,7 @@ class HdxPublisher:
             res = self._make_resource_for_path(
                 path=ctx.metadata_json_path,
                 fmt="json",
-                description=f"{category.name} ({ctx.source_name}) feature-level metadata",
+                description=f"{category.name} ({ctx.source_name}) layer metadata",
                 ctx=ctx,
                 iso3=cfg.iso3,
                 category_slug=category_slug,
@@ -253,6 +253,7 @@ class HdxPublisher:
         ctx: PublishContext,
         *,
         pmtiles_path: Path | None = None,
+        metadata_path: Path | None = None,
         landing_enabled: bool = False,
     ) -> str:
         if not entries:
@@ -279,16 +280,18 @@ class HdxPublisher:
             for zip_path in sorted_zips:
                 res = self._make_resource_for_zip(zip_path, entry.category, ctx, cfg.iso3, slug)
                 dataset.add_update_resource(res)
-            if entry.metadata_json_path is not None:
-                res = self._make_resource_for_path(
-                    path=entry.metadata_json_path,
-                    fmt="json",
-                    description=f"{entry.category.name} ({ctx.source_name}) feature-level metadata",
-                    ctx=ctx,
-                    iso3=cfg.iso3,
-                    category_slug=slug,
-                )
-                dataset.add_update_resource(res)
+
+        # One dataset-level metadata resource covering every layer.
+        if metadata_path is not None:
+            res = self._make_resource_for_path(
+                path=metadata_path,
+                fmt="json",
+                description=f"Layer metadata for all {len(entries)} layers",
+                ctx=ctx,
+                iso3=cfg.iso3,
+                category_slug="combined",
+            )
+            dataset.add_update_resource(res)
 
         # A combined dataset accumulates across sources: an Overture run must not
         # delete the resources an earlier OSM run put here. Pruning is opt-in.
@@ -608,7 +611,14 @@ class HdxPublisher:
                     "output.s3.enabled is true but no bucket given via "
                     "output.s3.bucket or OEX_S3_BUCKET"
                 )
-            key = build_key(prefix, iso3, category_slug, path.name)
+            key = artifact_key(
+                prefix,
+                iso3,
+                category_slug,
+                path.name,
+                folder=ctx.s3.folder,
+                nest_by_category=ctx.s3.nest_by_category,
+            )
             url = s3_upload(
                 path,
                 bucket=bucket,

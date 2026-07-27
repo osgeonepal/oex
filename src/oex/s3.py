@@ -29,6 +29,25 @@ def build_key(prefix: str, iso3: str, category_slug: str, filename: str) -> str:
     return "/".join(parts)
 
 
+def artifact_key(
+    prefix: str,
+    iso3: str,
+    category_slug: str,
+    filename: str,
+    *,
+    folder: str = "",
+    nest_by_category: bool = True,
+) -> str:
+    """S3 key for a category artifact. ``folder`` overrides the iso3 segment
+    (empty falls back to iso3); a false ``nest_by_category`` flattens the path."""
+    segments = [prefix, folder or iso3.upper()]
+    if nest_by_category:
+        segments.append(category_slug)
+    parts = [s.strip("/") for s in segments if s]
+    parts.append(filename)
+    return "/".join(parts)
+
+
 def build_layer_key(prefix: str, iso3: str, source: str, slug: str) -> str:
     """Stable, globbable key for a per-layer GeoParquet so runs accumulate across sources."""
     return build_key(prefix, iso3, f"_layers/{source}", f"{slug}.parquet")

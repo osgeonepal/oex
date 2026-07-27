@@ -36,7 +36,7 @@ from oex.pcodes import (
 from oex.pcodes.tagger import parse_boundary_resolution
 from oex.preflight import check_writable_paths
 from oex.report import SourceMetadata, render_report
-from oex.s3 import build_layer_key, list_layer_urls
+from oex.s3 import artifact_key, build_layer_key, list_layer_urls
 from oex.s3 import resolve as s3_resolve
 from oex.s3 import upload as s3_upload
 from oex.sources.base import CategorySkippedError, SourceQuery, SourceRunner
@@ -613,6 +613,8 @@ class Exporter:
                     logger.info(
                         "%s removed %d local output(s) after upload", cat_tag, len(zip_paths)
                     )
+            elif publisher is None and not combine and self._cfg.output.s3.enabled:
+                self._upload_category_to_s3(zip_paths, slug, cat_tag)
 
             logger.info(
                 "%s done: %s features, %d zip(s), %.0f MB total in %.1fs",
@@ -798,6 +800,7 @@ class Exporter:
             )
             for b in built_ok
         ]
+        metadata_path = self._write_combined_metadata(built_ok, out_root, dt_name)
         t_min, t_max = _combined_temporal_bounds([b.metadata_obj for b in built_ok])
         q0 = built_ok[0].query
         assert q0 is not None
@@ -823,6 +826,7 @@ class Exporter:
             entries,
             ctx,
             pmtiles_path=pmtiles_path,
+            metadata_path=metadata_path,
             landing_enabled=self._cfg.output.report.enabled,
         )
 
@@ -843,9 +847,28 @@ class Exporter:
                 _remove_uploaded_outputs(b.zip_paths, b.metadata_json_path, None)
             if pmtiles_path is not None:
                 pmtiles_path.unlink(missing_ok=True)
+            if metadata_path is not None:
+                metadata_path.unlink(missing_ok=True)
             logger.info(
                 "[%s/%s] combine: removed local outputs after upload", iso, self._runner.name
             )
+
+    def _write_combined_metadata(
+        self, built_ok: list[BuiltCategory], out_root: Path, dt_name: str
+    ) -> Path | None:
+        """One dataset-level metadata file covering every layer."""
+        layers = [
+            {"category": b.category.name, **b.source_metadata.to_payload()}
+            for b in built_ok
+            if b.source_metadata is not None
+        ]
+        if not layers:
+            return None
+        path = out_root / f"{dt_name}_metadata.json"
+        path.write_text(
+            json.dumps({"dataset": dt_name, "layers": layers}, indent=2), encoding="utf-8"
+        )
+        return path
 
     def _build_combined_tiles(
         self, built_ok: list[BuiltCategory], out_root: Path, dt_name: str
@@ -854,6 +877,12 @@ class Exporter:
         if not self._cfg.output.pmtiles.enabled:
             return None
         order = {_slugify(c.name): i for i, c in enumerate(self._cfg.categories)}
+        by_slug = {_slugify(c.name): c for c in self._cfg.categories}
+
+        def tiles_on(slug: str, source: str) -> bool:
+            block = getattr(by_slug.get(slug), source, None)
+            return getattr(block, "tiles", True) if block is not None else True
+
         layers = [
             TileLayer(
                 path=str(b.geoparquet_path),
@@ -862,6 +891,7 @@ class Exporter:
             )
             for b in built_ok
             if b.geoparquet_path is not None
+            and tiles_on(_slugify(b.category.name), self._runner.name)
         ]
         if self._cfg.output.s3.enabled:
             for source, slug, url in list_layer_urls(
@@ -872,6 +902,15 @@ class Exporter:
                 if slug not in order:
                     logger.info(
                         "[%s/%s] combine: skipping staged layer %s/%s, not in this config",
+                        self._cfg.iso3.upper(),
+                        self._runner.name,
+                        source,
+                        slug,
+                    )
+                    continue
+                if not tiles_on(slug, source):
+                    logger.info(
+                        "[%s/%s] combine: skipping %s/%s, tiles disabled for category",
                         self._cfg.iso3.upper(),
                         self._runner.name,
                         source,
@@ -920,6 +959,35 @@ class Exporter:
             conn.close()
             tiles_db.unlink(missing_ok=True)
         return pmtiles_path
+
+    def _resource_prefix(self) -> str:
+        """Root for resource filenames: the combined dataset name when combining,
+        otherwise the per-category ``{key}_{iso3}`` (or the S3 folder id)."""
+        if self._cfg.hdx.combine:
+            return self._cfg.hdx.combined.name or f"{self._cfg.key}_{self._cfg.iso3.lower()}"
+        ident = self._cfg.output.s3.folder or self._cfg.iso3.lower()
+        return f"{self._cfg.key}_{ident}"
+
+    def _upload_category_to_s3(self, zip_paths: list[Path], slug: str, cat_tag: str) -> None:
+        """Upload a category's zips straight to S3 when s3 is enabled and HDX is off."""
+        s3cfg = self._cfg.output.s3
+        bucket, prefix, region, endpoint_url, acl = s3_resolve(s3cfg)
+        logger.info("%s uploading %d zip(s) to S3...", cat_tag, len(zip_paths))
+        for zp in zip_paths:
+            key = artifact_key(
+                prefix,
+                self._cfg.iso3,
+                slug,
+                zp.name,
+                folder=s3cfg.folder,
+                nest_by_category=s3cfg.nest_by_category,
+            )
+            s3_upload(zp, bucket=bucket, key=key, region=region, endpoint_url=endpoint_url, acl=acl)
+        if self._state is not None:
+            self._state.mark_uploaded(slug, hdx_dataset=None)
+        if self._cfg.output.remove_after_upload:
+            _remove_uploaded_outputs(zip_paths, None)
+            logger.info("%s removed %d local output(s) after upload", cat_tag, len(zip_paths))
 
     def _stage_layer_parquet(self, path: Path, slug: str, cat_tag: str) -> None:
         """Upload a per-layer GeoParquet to the stable S3 key so runs accumulate across sources."""
@@ -1022,8 +1090,9 @@ class Exporter:
                 # the stage dir is cleaned.
                 if fmt == "fgb":
                     continue
-                dt_name = f"{self._cfg.key}_{self._cfg.iso3.lower()}_{slug}"
-                zip_path = out_root / f"{dt_name}_{self._runner.name}_{fmt}.zip"
+                s3cfg = self._cfg.output.s3
+                source_seg = f"_{self._runner.name}" if s3cfg.name_include_source else ""
+                zip_path = out_root / f"{self._resource_prefix()}_{slug}{source_seg}_{fmt}.zip"
                 readme_lines = self._build_readme(
                     fmt=fmt,
                     category=category,

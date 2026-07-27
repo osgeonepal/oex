@@ -113,6 +113,7 @@ categories:
         - tags['height'] AS height
     overture:
       enabled: true
+      tiles: false
       theme: buildings
       feature_type: building
       select:

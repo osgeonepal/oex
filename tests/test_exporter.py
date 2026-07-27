@@ -205,3 +205,112 @@ def test_combined_tileset_skips_staged_layers_not_in_this_config(tmp_path: Path)
     assert ("overture", "buildings") in merged
     assert ("osm", "buildings") in merged
     assert ("overture", "rivers") not in merged, "stale staged layer must not be merged"
+
+
+def test_resource_prefix_prefers_dataset_name_in_combine_mode() -> None:
+    from unittest.mock import MagicMock
+
+    from oex.config.schema import CombinedHdx, HdxConfig, OutputConfig, RootConfig, S3Config
+    from oex.exporter import Exporter
+
+    def prefix(cfg: RootConfig) -> str:
+        return Exporter(cfg, MagicMock())._resource_prefix()
+
+    # Combine + a dataset name -> the dataset name.
+    assert (
+        prefix(
+            RootConfig(
+                iso3="COD",
+                key="hot_cod",
+                hdx=HdxConfig(combine=True, combined=CombinedHdx(name="hot_cod_humanitarian_data")),
+            )
+        )
+        == "hot_cod_humanitarian_data"
+    )
+    # Combine but no dataset name -> falls back to {key}_{iso3}.
+    assert (
+        prefix(RootConfig(iso3="COD", key="hot_cod", hdx=HdxConfig(combine=True))) == "hot_cod_cod"
+    )
+    # Per-category (no combine) -> {key}_{iso3}.
+    assert prefix(RootConfig(iso3="COD", key="hot_cod")) == "hot_cod_cod"
+    # Per-category with an S3 folder id -> {key}_{folder}.
+    assert (
+        prefix(
+            RootConfig(
+                iso3="MCO", key="hotosm_project", output=OutputConfig(s3=S3Config(folder="11731"))
+            )
+        )
+        == "hotosm_project_11731"
+    )
+
+
+def test_build_combined_tiles_excludes_a_source_with_tiles_false(tmp_path: Path) -> None:
+    """A category's source can opt out of the map while staying a download."""
+    from unittest.mock import MagicMock, patch
+
+    import duckdb
+
+    from oex.config.schema import (
+        CategoryConfig,
+        CategoryOverture,
+        DuckdbConfig,
+        HdxConfig,
+        OutputConfig,
+        PmtilesConfig,
+        RootConfig,
+        S3Config,
+    )
+    from oex.exporter import BuiltCategory, CategoryResult, Exporter
+    from oex.writers import write_geoparquet
+
+    cfg = RootConfig(
+        iso3="NPL",
+        key="hotosm",
+        hdx=HdxConfig(push=True, combine=True),
+        output=OutputConfig(
+            dir=str(tmp_path),
+            pmtiles=PmtilesConfig(enabled=True, min_zoom=0, max_zoom=8),
+            s3=S3Config(enabled=True, bucket="b", prefix="p"),
+        ),
+        duckdb=DuckdbConfig(temp_dir=str(tmp_path / "ddb")),
+        categories=[CategoryConfig(name="buildings", overture=CategoryOverture(tiles=False))],
+    )
+    runner = MagicMock()
+    runner.name = "osm"
+    exporter = Exporter(cfg, runner)
+    out_root = tmp_path / "npl" / "osm"
+    (out_root / "_layers").mkdir(parents=True)
+
+    conn = duckdb.connect(":memory:")
+    conn.execute("INSTALL spatial")
+    conn.execute("LOAD spatial")
+    conn.execute("CREATE TABLE t AS SELECT 'x' AS name, ST_Point(85.3, 27.7) AS geom")
+    parquet = write_geoparquet(conn, "t", out_root / "_layers" / "buildings.parquet")
+
+    built_ok = [
+        BuiltCategory(
+            result=CategoryResult(name="buildings", status="ok"),
+            category=cfg.categories[0],
+            geoparquet_path=parquet,
+        )
+    ]
+    staged = [("overture", "buildings", "https://s3/p/NPL/_layers/overture/buildings.parquet")]
+    captured: dict = {}
+
+    def fake_build(conn, layers, out_path, **kwargs):  # noqa: ANN001, ANN202
+        captured["layers"] = layers
+        out_path.write_bytes(b"PMTiles")
+        return out_path
+
+    with (
+        patch("oex.exporter.list_layer_urls", return_value=staged),
+        patch("oex.exporter.build_combined_pmtiles", side_effect=fake_build),
+        patch("oex.exporter.connect", return_value=conn),
+    ):
+        exporter._build_combined_tiles(built_ok, out_root, "hotosm_npl")
+
+    merged = {(layer.source, layer.category) for layer in captured["layers"]}
+    assert ("osm", "buildings") in merged, "osm buildings still tiled"
+    assert ("overture", "buildings") not in merged, (
+        "tiles: false keeps overture buildings off the map"
+    )

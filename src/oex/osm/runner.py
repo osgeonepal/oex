@@ -21,12 +21,14 @@ to a different area or filtered to different tags.
 
 import hashlib
 import json
+import shutil
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import requests
+from upath import UPath
 
 if TYPE_CHECKING:
     from shapely.geometry.base import BaseGeometry
@@ -50,6 +52,25 @@ logger = get_logger(__name__)
 _GEOFABRIK_DOWNLOAD_ATTEMPTS = 2
 _GEOFABRIK_RETRY_BACKOFF_SECONDS = 5
 _GeofabrikFallbackError = (GeofabrikUnavailableError, requests.RequestException)
+
+
+def _ensure_local_pbf(pbf_path: str, cache_dir: Path) -> Path:
+    """Return a local PBF, downloading it first when the path is remote (s3://, ...).
+
+    A cached download is reused when its size matches the remote object.
+    """
+    remote = UPath(pbf_path)
+    if remote.protocol in ("", "file", "local"):
+        return Path(pbf_path)
+    local = cache_dir / "_pbf" / remote.name
+    if local.is_file() and local.stat().st_size == remote.stat().st_size:
+        logger.info("Using cached PBF %s", local)
+        return local
+    local.parent.mkdir(parents=True, exist_ok=True)
+    logger.info("Downloading PBF %s -> %s", pbf_path, local)
+    with remote.open("rb") as reader, local.open("wb") as writer:
+        shutil.copyfileobj(reader, writer)
+    return local
 
 
 def _parquet_fingerprint(cfg: RootConfig, *, clip: bool) -> str:
@@ -180,9 +201,9 @@ class OsmRunner(SourceRunner):
         if not src.pbf_path:
             raise ValueError(
                 "osm.engine=planet requires source.osm.pbf_path "
-                "(absolute path to a local planet PBF)"
+                "(a local path or an s3:// URL to a planet PBF)"
             )
-        planet_pbf = Path(src.pbf_path)
+        planet_pbf = _ensure_local_pbf(src.pbf_path, Path(src.cache_dir))
         if not planet_pbf.is_file():
             if not src.auto_download_planet:
                 raise FileNotFoundError(
