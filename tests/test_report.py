@@ -177,7 +177,8 @@ def test_render_report_escapes_user_values() -> None:
 
 def test_per_tab_footer_carries_snapshot_facts() -> None:
     html = render_report({"overture": _source(pcode_source_date="2025-07-29")})
-    assert "Overture Maps (2026-04-15.0)" in html
+    # Footer states just the source; the snapshot date rides alongside, not inside it.
+    assert "Source: Overture" in html
     assert "snapshot 2026-04-15.0" in html
     assert "fieldmaps.io edge-matched humanitarian (2025-07-29)" in html
     assert "ODbL 1.0" in html

@@ -125,6 +125,7 @@ const map = new maplibregl.Map({{
   }}
 }});
 map.addControl(new maplibregl.NavigationControl());
+map.addControl(new maplibregl.FullscreenControl());
 
 // Each entry owns three style layers (polygon, line, point), so a checkbox is a
 // visibility flip on those three.

@@ -135,6 +135,17 @@ Layers appear in `categories` order. Running both sources into the same dataset
 **accumulates**: the Overture run adds to what the OSM run published rather than
 replacing it. `hdx.purge_existing_resources` clears the dataset first instead.
 
+`oex-cli all` runs every source the config enables in one command, OSM then
+Overture, into the same dataset:
+
+```bash
+oex-cli all COD --config configs/hot-ce-cod.yaml
+```
+
+It reads `source.osm.enabled` and `source.overture.enabled` and runs each in
+order, so the accumulation above happens from a single invocation. Running the
+`osm` and `overture` subcommands separately does the same thing in two steps.
+
 ## Vector tiles (PMTiles)
 
 ```yaml

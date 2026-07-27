@@ -138,6 +138,10 @@ def _summarise(results: list[ExportResult]) -> int:
     return 0 if total_fail == 0 else 1
 
 
+_RUNNERS = {"osm": OsmRunner, "overture": OvertureRunner}
+_SOURCE_ORDER = ("osm", "overture")
+
+
 def _run_one(
     yaml_path: Path | None,
     overrides: dict[str, object],
@@ -148,6 +152,12 @@ def _run_one(
     cfg = apply_overrides(cfg, overrides)
     cfg = select_categories(cfg, theme)
     return Exporter(cfg, runner_factory()).run()
+
+
+def _enabled_sources(yaml_path: Path | None, overrides: dict[str, object]) -> list[str]:
+    """Return the runnable source names in run order, honouring CLI overrides."""
+    cfg = apply_overrides(load_config(yaml_path), overrides)
+    return [name for name in _SOURCE_ORDER if name in cfg.source and cfg.source[name].enabled]
 
 
 def _resolve_args(
@@ -311,6 +321,104 @@ def cmd_osm(
         s3=s3,
     )
     results = [_run_one(y, overrides, theme_resolved, OsmRunner) for y in yamls]
+    raise typer.Exit(code=_summarise(results))
+
+
+@app.command("all")
+def cmd_all(
+    iso3_or_yaml: str | None = typer.Argument(
+        None, help="ISO3 like NPL, or name of a YAML in ./configs/ (prefer --iso3)"
+    ),
+    theme: str | None = typer.Argument(None, help="Optional theme override (e.g. buildings)"),
+    configs_dir: Path | None = typer.Option(None, "--configs-dir"),
+    config: Path | None = typer.Option(None, "--config", "-c"),
+    iso3: str | None = typer.Option(
+        None,
+        "--iso3",
+        help="ISO3 country code (e.g. NPL, COD). Overrides the positional argument and YAML.",
+    ),
+    dataset_name: str | None = typer.Option(
+        None,
+        "--dataset-name",
+        help=(
+            "Free-form area label used as the {country} substitution in hdx.title_template. "
+            "Set this to fix pycountry inversions (e.g. DRC) or for sub-national exports."
+        ),
+    ),
+    output_dir: Path | None = typer.Option(None, "--output-dir", "-o"),
+    hdx_push: bool | None = typer.Option(None, "--hdx-push/--no-hdx-push"),
+    hdx_purge: bool | None = typer.Option(
+        None,
+        "--hdx-purge/--no-hdx-purge",
+        help="Destructive: delete every existing resource on the dataset before upload.",
+    ),
+    engine: str | None = typer.Option(
+        None,
+        "--engine",
+        help="OSM engine: 'geofabrik' (default) or 'planet'. Ignored by the Overture run.",
+    ),
+    download_if_missing: bool | None = typer.Option(
+        None,
+        "--download-if-missing/--no-download-if-missing",
+        help=(
+            "When the planet path is missing, download the ~87 GB planet PBF "
+            "before running. Overrides source.osm.auto_download_planet."
+        ),
+    ),
+    resume: bool | None = typer.Option(
+        None,
+        "--resume/--no-resume",
+        help=(
+            "Skip categories already built and uploaded according to the "
+            "state file. Default: enabled (configurable via output.resume)."
+        ),
+    ),
+    hdx_combine: bool | None = typer.Option(
+        None,
+        "--hdx-combine/--no-hdx-combine",
+        help="Publish every category onto one HDX dataset instead of one per category.",
+    ),
+    pmtiles: bool | None = typer.Option(
+        None,
+        "--pmtiles/--no-pmtiles",
+        help="Generate PMTiles. With --hdx-combine, all layers merge into one tileset.",
+    ),
+    s3: bool | None = typer.Option(
+        None,
+        "--s3/--no-s3",
+        help="Upload artifacts to S3. Overrides output.s3.enabled.",
+    ),
+) -> None:
+    """Export every source the config enables, in order (OSM then Overture).
+
+    Each enabled source runs into the same config, so with ``hdx.combine`` the
+    second source accumulates onto the dataset the first published.
+    """
+    iso3_resolved, theme_resolved = _resolve_args(iso3_or_yaml, theme, configs_dir, config)
+    yamls = _resolve_config(iso3 or iso3_resolved, configs_dir, config)
+    overrides = _build_overrides(
+        iso3_resolved,
+        hdx_push,
+        output_dir,
+        osm_engine=engine,
+        hdx_purge=hdx_purge,
+        download_if_missing=download_if_missing,
+        resume=resume,
+        iso3=iso3,
+        dataset_name=dataset_name,
+        hdx_combine=hdx_combine,
+        pmtiles=pmtiles,
+        s3=s3,
+    )
+    results: list[ExportResult] = []
+    for yaml_path in yamls:
+        sources = _enabled_sources(yaml_path, overrides)
+        if not sources:
+            raise typer.BadParameter(
+                "no sources enabled; set source.osm.enabled or source.overture.enabled"
+            )
+        for name in sources:
+            results.append(_run_one(yaml_path, overrides, theme_resolved, _RUNNERS[name]))
     raise typer.Exit(code=_summarise(results))
 
 

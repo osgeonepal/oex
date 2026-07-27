@@ -448,7 +448,7 @@ def _render_attribute_table(metadata: MetadataReport) -> str:
 
 def _render_footer(source: SourceMetadata) -> str:
     parts = [
-        f"Source: {escape(source.dataset_source)}",
+        f"Source: {escape(_pretty_source_name(source.source_name))}",
         f"snapshot {escape(source.snapshot_label)}",
         f"generated {escape(source.generated_utc)}",
     ]

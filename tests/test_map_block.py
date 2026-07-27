@@ -39,6 +39,10 @@ def test_generated_script_braces_are_balanced(match: bool) -> None:
     assert "{{" not in script
 
 
+def test_map_offers_a_fullscreen_control() -> None:
+    assert "FullscreenControl" in render_map(_entries(), None)
+
+
 def test_each_entry_owns_three_toggleable_layers() -> None:
     html = render_map(_entries(), None)
     for key in ("buildings-osm", "roads-osm"):

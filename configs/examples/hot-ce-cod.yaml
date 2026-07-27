@@ -1,0 +1,290 @@
+iso3: COD
+key: hot_cod
+dataset_name: Democratic Republic of the Congo
+subnational: true
+frequency: yearly
+
+boundary:
+  # Bounding area focused on Eastern DRC / H2H response region (Ituri, Nord-Kivu, Sud-Kivu, Maniema)
+  geom: '{"type":"Polygon","coordinates":[[[25.0,-6.0],[31.5,-6.0],[31.5,4.0],[25.0,4.0],[25.0,-6.0]]]}'
+
+output:
+  dir: output
+  formats: [gpkg, shp, geojson]
+  report:
+    enabled: true
+  pmtiles:
+    enabled: true
+    max_zoom: 14
+  s3:
+    enabled: true
+    bucket: ${oc.env:OEX_S3_BUCKET}
+    prefix: hot_cod
+    region: us-east-1
+    acl: public-read
+
+hdx:
+  push: true
+  site: prod
+  api_key: ${oc.env:HDX_API_KEY}
+  owner_org: ${oc.env:HDX_OWNER_ORG}
+  maintainer: ${oc.env:HDX_MAINTAINER}
+  combine: true
+  combined:
+    name: hot_cod_humanitarian_data
+    title: "{country} - Complex Emergency & Humanitarian Mapping - OSM & Overture Data"
+    source: OpenStreetMap contributors; Overture Maps
+    caveats: >-
+      Overture building footprints and place layers are partly AI-derived; verify before
+      operational use and review usage guidelines.
+    tags:
+      - complex emergency
+      - education
+      - education facilities-schools
+      - facilities-infrastructure
+      - geodata
+      - health facilities
+      - natural disasters
+      - populated places
+      - roads
+      - transportation
+      - waterways
+    notes: |
+      This dataset contains OpenStreetMap and Overture Maps exports produced for humanitarian operations in the Democratic Republic of the Congo (DRC), focusing on eastern regions (Ituri, Nord-Kivu, Sud-Kivu) affected by complex emergencies, displacement, and infrastructure needs.
+
+      This dataset bundles ten core layers from two sources:
+
+      * OpenStreetMap layers: populated places, roads, waterways, points of interest, health facilities, education facilities, airports, river ports & ferry terminals.
+      * Overture Maps layers: building footprints (derived footprints to fill gaps where OSM coverage is sparse) and emergency facilities (hospitals, pharmacies, fire, police, ambulance/EMS).
+
+      It covers the humanitarian response area in Eastern DRC (bounding box approximately 25.0°E–31.5°E, 6.0°S–4.0°N).
+
+source:
+  overture:
+    enabled: true
+  osm:
+    enabled: true
+    engine: geofabrik
+  pcodes:
+    enabled: true
+
+categories:
+  - name: Populated Places
+    boundary_resolution: h3_neighbor
+    hdx:
+      notes: Populated place nodes and settlement areas from OpenStreetMap.
+      tags: [geodata, populated places, facilities-infrastructure]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Settlement hierarchy is community verified.
+    osm:
+      enabled: true
+      filter:
+        place: [town, village, hamlet, isolated_dwelling]
+      select:
+        - feature_id AS id
+        - tags['name'] AS name
+        - tags['name:en'] AS name_en
+        - tags['name:fr'] AS name_fr
+        - tags['place'] AS place
+        - tags['population'] AS population
+        - tags['is_in'] AS is_in
+    overture:
+      enabled: false
+
+  - name: Buildings
+    boundary_resolution: h3_neighbor
+    skip_pcodes: true
+    formats: [gpkg]
+    hdx:
+      notes: Building footprints from OpenStreetMap and Overture.
+      tags: [geodata, buildings, facilities-infrastructure]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Building data is verified at the community level only.
+    osm:
+      enabled: true
+      filter: {building: true}
+      select:
+        - feature_id AS id
+        - tags['name'] AS name
+        - tags['building'] AS building
+        - tags['building:levels'] AS levels
+        - tags['height'] AS height
+    overture:
+      enabled: true
+      theme: buildings
+      feature_type: building
+      select:
+        - id
+        - names.primary AS name
+        - class
+        - subtype
+        - height
+        - num_floors
+        - sources[1].dataset AS source
+
+  - name: Roads
+    boundary_resolution: h3_neighbor
+    hdx:
+      notes: Road network from OpenStreetMap categorized by highway classification.
+      tags: [geodata, roads, transportation]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Road network data is community verified.
+    osm:
+      enabled: true
+      filter: {highway: true}
+      select:
+        - feature_id AS id
+        - tags['name'] AS name
+        - tags['highway'] AS highway
+        - tags['surface'] AS surface
+        - tags['smoothness'] AS surface_condition
+    overture:
+      enabled: false
+
+  - name: Waterways
+    boundary_resolution: h3_neighbor
+    hdx:
+      notes: Hydrographic linear features and water bodies from OpenStreetMap.
+      tags: [geodata, waterways, natural disasters]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Waterway data is community verified.
+    osm:
+      enabled: true
+      filter:
+        waterway: true
+        natural: [water, spring]
+      select:
+        - feature_id AS id
+        - tags['name'] AS name
+        - tags['waterway'] AS waterway
+        - tags['natural'] AS natural
+        - tags['water'] AS water
+    overture:
+      enabled: false
+
+  - name: Points of Interest
+    hdx:
+      notes: Points of interest, commercial, civic, and water points from OpenStreetMap.
+      tags: [geodata, facilities-infrastructure]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: POI data may contain errors or omissions.
+    osm:
+      enabled: true
+      filter: {amenity: true, shop: true, tourism: true, office: true, man_made: true}
+      select:
+        - feature_id AS id
+        - tags['name'] AS name
+        - tags['amenity'] AS amenity
+        - tags['shop'] AS shop
+        - tags['tourism'] AS tourism
+        - tags['office'] AS office
+        - tags['man_made'] AS man_made
+    overture:
+      enabled: false
+
+  - name: Health Facilities
+    hdx:
+      notes: Hospitals, clinics, pharmacies, and health posts from OpenStreetMap.
+      tags: [health facilities]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Health facility locations are community verified.
+    osm:
+      enabled: true
+      filter:
+        amenity: [hospital, clinic, doctors, pharmacy, health_post]
+        healthcare: true
+      select:
+        - feature_id AS id
+        - tags['name'] AS name
+        - tags['amenity'] AS amenity
+        - tags['healthcare'] AS healthcare
+    overture:
+      enabled: false
+
+  - name: Education Facilities
+    hdx:
+      notes: Schools, colleges, and universities from OpenStreetMap.
+      tags: [education, education facilities-schools]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Education facility data is community verified.
+    osm:
+      enabled: true
+      filter:
+        amenity: [school, college, university, kindergarten]
+      select:
+        - feature_id AS id
+        - tags['name'] AS name
+        - tags['amenity'] AS amenity
+    overture:
+      enabled: false
+
+  - name: Airports
+    hdx:
+      notes: Airports, airfields, and helipads from OpenStreetMap.
+      tags: [transportation, facilities-infrastructure]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Aviation data is community verified.
+    osm:
+      enabled: true
+      filter:
+        aeroway: [aerodrome, terminal, helipad, runway]
+      select:
+        - feature_id AS id
+        - tags['name'] AS name
+        - tags['aeroway'] AS aeroway
+    overture:
+      enabled: false
+
+  - name: Sea & River Ports
+    hdx:
+      notes: River ports, ferry terminals, and docks from OpenStreetMap.
+      tags: [transportation, facilities-infrastructure]
+      license: ODbL 1.0
+      license_url: https://opendatacommons.org/licenses/odbl/1-0/
+      caveats: Port data is community verified.
+    osm:
+      enabled: true
+      filter:
+        amenity: [ferry_terminal]
+        harbour: true
+        landuse: [port]
+        waterway: [dock]
+      select:
+        - feature_id AS id
+        - tags['name'] AS name
+        - tags['amenity'] AS amenity
+        - tags['harbour'] AS harbour
+        - tags['waterway'] AS waterway
+    overture:
+      enabled: false
+
+  - name: Emergency Facilities
+    hdx:
+      notes: >-
+        Emergency facilities (hospitals, pharmacies, fire, police, ambulance)
+        from Overture Maps.
+      tags: [facilities-infrastructure, health facilities]
+      license: CDLA Permissive 2.0
+      license_url: https://cdla.dev/permissive-2-0/
+      caveats: POI data may contain errors.
+    osm:
+      enabled: false
+    overture:
+      enabled: true
+      theme: places
+      feature_type: place
+      select:
+        - id
+        - names.primary AS name
+        - categories.primary AS category
+        - sources[1].dataset AS source
+      where:
+        - "categories.primary IN ('hospital', 'pharmacy', 'fire_department', 'police_department', 'emergency_service')"

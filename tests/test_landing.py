@@ -76,7 +76,6 @@ def test_landing_table_has_expected_columns_and_values() -> None:
     )
     for header in (
         "Layer",
-        "Source",
         "License",
         "Features",
         "Named",
@@ -84,7 +83,19 @@ def test_landing_table_has_expected_columns_and_values() -> None:
         "Geometry",
     ):
         assert f">{header}</th>" in html
+    # The source is carried by the layer name's suffix, so the column is dropped.
+    assert ">Source</th>" not in html
     assert "Buildings (OSM)" in html
+
+
+def test_layer_rows_expand_to_attribute_chips() -> None:
+    html = render_landing(
+        title="t", subtitle="s", panels=_panels(), pmtiles_url=None, pmtiles_layer=None
+    )
+    assert 'class="attr-row"' in html
+    assert 'class="caret"' in html
+    # A fully populated column reads 100% in its chip.
+    assert "building<i>100%</i>" in html
     assert "500" in html  # feature count
     assert "50%" in html  # named coverage (100 - 50% null)
     assert "Polygon 490, Point 10" in html  # geometry mix, count-desc

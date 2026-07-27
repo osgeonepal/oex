@@ -32,7 +32,18 @@ i.cov-well { background: #22c55e; }
 i.cov-partial { background: #eab308; }
 i.cov-rare { background: #ef4444; }
 .cov-note { font-size: 11px; color: var(--muted); margin: 10px 0 0; }
+tr.layer-row { cursor: pointer; }
+tr.layer-row .caret { display: inline-block; width: 9px; color: var(--muted);
+                      transition: transform 0.15s; }
+tr.layer-row.open .caret { transform: rotate(90deg); }
+tr.attr-row > td { background: #fafafa; padding: 4px 10px 10px 26px; }
+.attr-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.attr-list .attr { font-family: var(--mono); font-size: 11px; background: var(--bg);
+                   border: 1px solid var(--line); border-radius: 3px; padding: 2px 7px; }
+.attr-list .attr i { color: var(--muted); font-style: normal; margin-left: 6px; }
 """
+
+_ATTR_COLSPAN = 6
 
 
 @dataclass(frozen=True)
@@ -94,21 +105,34 @@ def render_landing(
         "</head>\n"
         "<body>\n"
         '<div class="landing-head">'
-        f"<h1>{escape(title)}</h1>"
         f'<div class="landing-sub">{escape(subtitle)}</div>'
         "</div>\n"
         "<h2>Layers and data quality</h2>\n"
         f"{table}\n"
         f"{map_block}"
+        f"{_ATTR_TOGGLE_JS}"
         "</body>\n"
         "</html>\n"
     )
 
 
+_ATTR_TOGGLE_JS = """<script>
+document.querySelectorAll('tr.layer-row').forEach((row) => {
+  row.addEventListener('click', () => {
+    const detail = row.nextElementSibling;
+    if (!detail || !detail.classList.contains('attr-row')) return;
+    if (detail.hasAttribute('hidden')) { detail.removeAttribute('hidden'); row.classList.add('open'); }
+    else { detail.setAttribute('hidden', ''); row.classList.remove('open'); }
+  });
+});
+</script>
+"""
+
+
 def _render_table(rows: list[_Row]) -> str:
     head = (
         "<thead><tr>"
-        "<th>Layer</th><th>Source</th><th>License</th>"
+        "<th>Layer</th><th>License</th>"
         '<th class="num">Features</th><th class="num">Named</th>'
         "<th>Attribute coverage</th><th>Geometry</th>"
         "</tr></thead>"
@@ -133,16 +157,33 @@ def _render_row(row: _Row) -> str:
     license_text = escape(row.source.license_label or "n/a")
     if row.source.license_url:
         license_text = f'<a href="{escape(row.source.license_url)}">{license_text}</a>'
-    return (
-        "<tr>"
-        f'<td class="layer-name"><span class="sw" style="background:{row.color}"></span>'
+    caret = '<span class="caret">&#9656;</span> ' if meta.columns else ""
+    main = (
+        '<tr class="layer-row">'
+        f'<td class="layer-name">{caret}<span class="sw" style="background:{row.color}"></span>'
         f"{escape(_row_label(row))}</td>"
-        f"<td>{escape(row.source.dataset_source or source_label(row.source.source_name))}</td>"
         f"<td>{license_text}</td>"
         f'<td class="num">{_fmt_int(meta.feature_count)}</td>'
         f'<td class="num">{named_cell}</td>'
         f'<td class="cov">{_coverage_bar(quality)}</td>'
         f'<td class="geom">{_geometry_summary(meta)}</td>'
+        "</tr>"
+    )
+    return main + _render_attr_row(meta)
+
+
+def _render_attr_row(meta: MetadataReport) -> str:
+    """A hidden detail row listing the layer's attribute columns and their fill share."""
+    if not meta.columns:
+        return ""
+    chips = "".join(
+        f'<span class="attr">{escape(col.name)}'
+        f"<i>{max(0.0, 100.0 - col.null_percent):.0f}%</i></span>"
+        for col in meta.columns
+    )
+    return (
+        '<tr class="attr-row" hidden>'
+        f'<td colspan="{_ATTR_COLSPAN}"><div class="attr-list">{chips}</div></td>'
         "</tr>"
     )
 
