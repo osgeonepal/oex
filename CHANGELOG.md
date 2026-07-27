@@ -64,6 +64,12 @@ and is auto-managed by [commitizen](https://commitizen-tools.github.io/commitize
 
 - **config**: config fix
 
+## v0.4.4 (2026-07-27)
+
+### Fix
+
+- **fix**: map full screen and combo report on hdx
+
 ## v0.4.3 (2026-07-21)
 
 ### Fix
