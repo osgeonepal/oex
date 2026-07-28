@@ -152,6 +152,7 @@ class OsmRunner(SourceRunner):
         self._snapshot_date: datetime | None = None
         self._dataset_source: str = "OpenStreetMap"
         self._country_parquet: Path | None = None
+        self._tags_present: bool | None = None
 
     def peek_snapshot_label(self, cfg: RootConfig) -> str | None:
         src = cast(OsmSourceConfig, cfg.source["osm"])
@@ -445,6 +446,29 @@ class OsmRunner(SourceRunner):
             return existing[-1]
         return datetime.now(UTC).date().isoformat()
 
+    def _country_source_expr(self) -> str:
+        """Read expression for the country parquet.
+
+        An empty extract makes quackosm omit the tags column that category
+        selects reference, so inject an empty one when it is missing.
+        """
+        parquet = str(self._country_parquet)
+        if self._tags_present is None:
+            import duckdb
+
+            con = duckdb.connect()
+            try:
+                con.execute(f"SELECT * FROM read_parquet('{parquet}') LIMIT 0")
+                self._tags_present = any(col[0] == "tags" for col in con.description)
+            finally:
+                con.close()
+        if self._tags_present:
+            return f"read_parquet('{parquet}')"
+        return (
+            "(SELECT *, CAST(NULL AS MAP(VARCHAR, VARCHAR)) AS tags "
+            f"FROM read_parquet('{parquet}')) AS src"
+        )
+
     def query_for(self, cfg: RootConfig, category: CategoryConfig) -> SourceQuery:
         if self._country_parquet is None or not self._country_parquet.exists():
             raise CategorySkippedError(
@@ -464,7 +488,7 @@ class OsmRunner(SourceRunner):
 
         engine_label = self._engine or "osm"
         return SourceQuery(
-            source_expr=f"read_parquet('{self._country_parquet}')",
+            source_expr=self._country_source_expr(),
             select_fields=select_fields,
             where_conditions=where,
             bbox_cols="geom",

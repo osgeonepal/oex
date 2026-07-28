@@ -38,6 +38,29 @@ def test_ensure_local_pbf_downloads_a_remote_path(tmp_path: Path) -> None:
     assert out.read_bytes() == b"PBFDATA"
 
 
+def test_country_source_expr_injects_tags_when_missing(tmp_path: Path) -> None:
+    parquet = tmp_path / "empty.parquet"
+    con = duckdb.connect()
+    con.execute(f"COPY (SELECT 'way/1' AS feature_id WHERE FALSE) TO '{parquet}' (FORMAT PARQUET)")
+    con.close()
+    runner = OsmRunner()
+    runner._country_parquet = parquet
+    assert "AS tags" in runner._country_source_expr()
+
+
+def test_country_source_expr_plain_read_when_tags_present(tmp_path: Path) -> None:
+    parquet = tmp_path / "full.parquet"
+    con = duckdb.connect()
+    con.execute(
+        f"COPY (SELECT 'w' AS feature_id, MAP(['building'], ['yes']) AS tags WHERE FALSE) "
+        f"TO '{parquet}' (FORMAT PARQUET)"
+    )
+    con.close()
+    runner = OsmRunner()
+    runner._country_parquet = parquet
+    assert runner._country_source_expr() == f"read_parquet('{parquet}')"
+
+
 NPL_GEOJSON = {
     "type": "Polygon",
     "coordinates": [[[80, 26], [88, 26], [88, 30], [80, 30], [80, 26]]],

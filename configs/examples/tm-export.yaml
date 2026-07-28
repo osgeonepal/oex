@@ -1,0 +1,115 @@
+# Tasking Manager project export, reproducing the HOTOSM tm-extractor config
+# (github.com/hotosm/TM-Extractor) through oex: extract the four TM categories
+# from OSM, clip to a project boundary, write geojson/shp/kml, and upload to S3
+# in the TM layout. HDX is not involved.
+#
+# Per project, set iso3, boundary.geom (the project polygon), and
+# output.s3.folder (the project id). The boundary below is a Dili, Timor-Leste
+# box that has data, so the example runs as-is.
+
+iso3: TLS
+key: hotosm_project
+dataset_name: Tasking Manager Project
+subnational: true
+
+boundary:
+  geom: '{"type":"Polygon","coordinates":[[[125.55,-8.57],[125.57,-8.57],[125.57,-8.55],[125.55,-8.55],[125.55,-8.57]]]}'
+
+output:
+  dir: output
+  formats: [geojson, shp, kml]
+  report:
+    enabled: false
+  pmtiles:
+    enabled: false
+  s3:
+    enabled: true
+    bucket: ${oc.env:OEX_S3_BUCKET,production-raw-data-api}
+    prefix: TM
+    region: us-east-1
+    acl: public-read
+    # TM layout: {prefix}/{folder}/hotosm_project_{folder}_{category}_{format}.zip
+    folder: "1"
+    nest_by_category: false
+    name_include_source: false
+
+hdx:
+  push: false
+
+source:
+  overture:
+    enabled: false
+  osm:
+    enabled: true
+    # geofabrik auto-downloads the country PBF, then clips to the boundary.
+    # For a custom PBF use engine: planet with pbf_path (a local path or s3:// URL).
+    engine: geofabrik
+  pcodes:
+    enabled: false
+
+categories:
+  - name: Buildings
+    osm:
+      enabled: true
+      filter: {building: true}
+      select:
+        - feature_id AS id
+        - tags['name'] AS name
+        - tags['building'] AS building
+        - tags['building:levels'] AS building_levels
+        - tags['building:materials'] AS building_materials
+        - tags['addr:full'] AS addr_full
+        - tags['addr:housenumber'] AS addr_housenumber
+        - tags['addr:street'] AS addr_street
+        - tags['addr:city'] AS addr_city
+        - tags['office'] AS office
+        - tags['source'] AS source
+
+  - name: Roads
+    osm:
+      enabled: true
+      filter: {highway: true}
+      select:
+        - feature_id AS id
+        - tags['name'] AS name
+        - tags['highway'] AS highway
+        - tags['surface'] AS surface
+        - tags['smoothness'] AS smoothness
+        - tags['width'] AS width
+        - tags['lanes'] AS lanes
+        - tags['oneway'] AS oneway
+        - tags['bridge'] AS bridge
+        - tags['layer'] AS layer
+        - tags['source'] AS source
+
+  - name: Waterways
+    osm:
+      enabled: true
+      filter:
+        waterway: true
+        water: true
+        natural: [water, wetland, bay]
+      select:
+        - feature_id AS id
+        - tags['name'] AS name
+        - tags['waterway'] AS waterway
+        - tags['covered'] AS covered
+        - tags['width'] AS width
+        - tags['depth'] AS depth
+        - tags['layer'] AS layer
+        - tags['blockage'] AS blockage
+        - tags['tunnel'] AS tunnel
+        - tags['natural'] AS natural
+        - tags['water'] AS water
+        - tags['source'] AS source
+
+  - name: Landuse
+    osm:
+      enabled: true
+      filter: {landuse: true}
+      select:
+        - feature_id AS id
+        - tags['name'] AS name
+        - tags['amenity'] AS amenity
+        - tags['landuse'] AS landuse
+        - tags['leisure'] AS leisure
