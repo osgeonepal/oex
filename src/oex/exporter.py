@@ -12,7 +12,7 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 from oex.boundary import resolve_boundary
-from oex.config.schema import CategoryConfig, PcodesSourceConfig, RootConfig
+from oex.config.schema import CategoryConfig, PcodesSourceConfig, RootConfig, dataset_identity
 from oex.duckdb_session import connect
 from oex.hdx_publisher import (
     HDX_SHORT_SOURCE,
@@ -135,14 +135,14 @@ class Exporter:
         self._adaptive_workers, self._adaptive_mem_gb = adaptive_parallel_resources()
 
     def run(self) -> ExportResult:
-        if not self._cfg.iso3:
-            raise ValueError("config.iso3 is required")
+        if not dataset_identity(self._cfg):
+            raise ValueError("config.iso3 or config.output.s3.folder is required")
         if not self._cfg.categories:
             raise ValueError("config.categories is empty")
 
         check_writable_paths(self._cfg)
 
-        iso = self._cfg.iso3.upper()
+        iso = self._cfg.iso3.upper() or dataset_identity(self._cfg)
         cat_names = [c.name for c in self._cfg.categories]
         logger.info(
             "[%s/%s] run starting: %d categor%s, formats=%s, parallel=%s, hdx_push=%s",
@@ -169,7 +169,7 @@ class Exporter:
             self._adaptive_mem_gb,
         )
 
-        out_root = Path(self._cfg.output.dir) / self._cfg.iso3.lower() / self._runner.name
+        out_root = Path(self._cfg.output.dir) / dataset_identity(self._cfg) / self._runner.name
         out_root.mkdir(parents=True, exist_ok=True)
         self._state = StateStore(
             path=out_root / ".state.json",

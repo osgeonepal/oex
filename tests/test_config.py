@@ -11,6 +11,7 @@ from oex.config import (
     load_config,
     select_categories,
 )
+from oex.config.schema import RootConfig, dataset_identity
 
 
 def test_defaults_load_with_eight_categories() -> None:
@@ -148,3 +149,20 @@ def test_iter_configs_yields_yamls(tmp_path: Path) -> None:
     (tmp_path / "ignore.txt").write_text("nope", encoding="utf-8")
     paths = list(iter_configs(tmp_path))
     assert [p.name for p in paths] == ["a.yaml", "b.yml"]
+
+
+def test_dataset_identity_prefers_iso3() -> None:
+    cfg = RootConfig(iso3="NPL")
+    cfg.output.s3.folder = "4242"
+    assert dataset_identity(cfg) == "npl"
+
+
+def test_dataset_identity_falls_back_to_the_s3_folder() -> None:
+    """A Tasking Manager project identifies by project id, not by country."""
+    cfg = RootConfig(iso3="")
+    cfg.output.s3.folder = "4242"
+    assert dataset_identity(cfg) == "4242"
+
+
+def test_dataset_identity_is_empty_when_neither_is_set() -> None:
+    assert dataset_identity(RootConfig()) == ""

@@ -542,3 +542,51 @@ def test_geofabrik_does_not_fall_back_when_flag_off(tmp_path: Path) -> None:
     ):
         with pytest.raises(GeofabrikUnavailableError):
             OsmRunner().prepare(cfg)
+
+
+def test_planet_caches_by_s3_folder_id_when_there_is_no_iso3(tmp_path: Path) -> None:
+    """Tasking Manager projects have no country code; the project id is the identity."""
+    planet_pbf = tmp_path / "planet.osm.pbf"
+    planet_pbf.write_bytes(b"\x00")
+    cfg = _planet_cfg(tmp_path, planet_pbf=planet_pbf)
+    cfg.iso3 = ""
+    cfg.output.s3.folder = "4242"
+    cfg.boundary = BoundaryConfig(
+        geom=json.dumps(
+            {
+                "type": "Polygon",
+                "coordinates": [[[80, 27], [90, 27], [90, 30], [80, 30], [80, 27]]],
+            }
+        ),
+        buffer_meters=0,
+    )
+
+    snapshot_label = datetime.fromtimestamp(planet_pbf.stat().st_mtime, tz=UTC).date().isoformat()
+    snapshot_dir = Path(cfg.source["osm"].cache_dir) / "planet" / "4242" / snapshot_label
+    fingerprint = _parquet_fingerprint(cfg, clip=cfg.source["osm"].planet_clip_to_boundary)
+    _seed_country_parquet(snapshot_dir / f"country-{fingerprint}.parquet")
+
+    with (
+        patch(
+            "oex.osm.runner.osmium_polygon_extract",
+            side_effect=AssertionError("must not be called"),
+        ),
+        patch(
+            "quackosm.functions.convert_pbf_to_parquet",
+            side_effect=AssertionError("must not be called"),
+        ),
+    ):
+        runner = OsmRunner()
+        runner.prepare(cfg)
+
+    assert runner._country_parquet is not None
+    assert runner._country_parquet.parent == snapshot_dir
+
+
+def test_planet_requires_an_identity(tmp_path: Path) -> None:
+    planet_pbf = tmp_path / "planet.osm.pbf"
+    planet_pbf.write_bytes(b"\x00")
+    cfg = _planet_cfg(tmp_path, planet_pbf=planet_pbf)
+    cfg.iso3 = ""
+    with pytest.raises(ValueError, match="output.s3.folder"):
+        OsmRunner().prepare(cfg)

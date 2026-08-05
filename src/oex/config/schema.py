@@ -272,3 +272,12 @@ class RootConfig:
         }
     )
     categories: list[CategoryConfig] = field(default_factory=list)
+
+
+def dataset_identity(cfg: RootConfig) -> str:
+    """Path and filename id for a dataset: iso3 when set, else the S3 folder id.
+
+    Sub-national exports (Tasking Manager projects) have no country code; they
+    identify by project id through ``output.s3.folder``.
+    """
+    return cfg.iso3.lower() or cfg.output.s3.folder

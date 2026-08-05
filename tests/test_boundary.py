@@ -109,3 +109,20 @@ def test_negative_buffer_meters_raises() -> None:
     cfg = BoundaryConfig(geom=json.dumps(fc), buffer_meters=-100.0)
     with pytest.raises(ValueError, match="buffer_meters must be >= 0"):
         resolve_boundary("NEG", cfg)
+
+
+def test_user_geom_resolves_without_an_iso3() -> None:
+    """Sub-national exports (Tasking Manager projects) carry a polygon, not a country."""
+    geom = {
+        "type": "Polygon",
+        "coordinates": [[[80, 27], [85, 27], [85, 30], [80, 30], [80, 27]]],
+    }
+    boundary = resolve_boundary("", BoundaryConfig(geom=json.dumps(geom)))
+    assert boundary.iso3 == ""
+    assert boundary.bbox == (80, 27, 85, 30)
+    assert boundary.source == "user-provided"
+
+
+def test_missing_iso3_without_a_geom_still_raises() -> None:
+    with pytest.raises(ValueError, match="iso3"):
+        resolve_boundary("", BoundaryConfig(geom=None))

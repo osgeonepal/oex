@@ -133,8 +133,8 @@ def _buffered(boundary: Boundary, buffer_meters: float) -> Boundary:
 
 
 def resolve_boundary(iso3: str, cfg: BoundaryConfig) -> Boundary:
-    if not iso3:
-        raise ValueError("iso3 must be set on the config")
+    if not iso3 and not cfg.geom:
+        raise ValueError("iso3 must be set on the config, or boundary.geom provided")
     if cfg.buffer_meters < 0:
         raise ValueError(
             f"boundary.buffer_meters must be >= 0; got {cfg.buffer_meters}. "

@@ -38,6 +38,7 @@ from oex.config.schema import (
     CategoryConfig,
     OsmSourceConfig,
     RootConfig,
+    dataset_identity,
 )
 from oex.locale import local_osm_languages
 from oex.logging_setup import get_logger
@@ -156,7 +157,7 @@ class OsmRunner(SourceRunner):
 
     def peek_snapshot_label(self, cfg: RootConfig) -> str | None:
         src = cast(OsmSourceConfig, cfg.source["osm"])
-        if not src.enabled or not cfg.iso3:
+        if not src.enabled or not dataset_identity(cfg):
             return None
         engine = (src.engine or "geofabrik").lower()
         if engine == "geofabrik":
@@ -197,8 +198,11 @@ class OsmRunner(SourceRunner):
             raise ValueError(f"Unknown osm.engine={engine!r}; expected 'geofabrik' or 'planet'")
 
     def _prepare_planet(self, cfg: RootConfig, src: OsmSourceConfig) -> None:
-        if not cfg.iso3:
-            raise ValueError("osm.engine=planet requires `iso3` in the config")
+        if not dataset_identity(cfg):
+            raise ValueError(
+                "osm.engine=planet requires `iso3`, or `output.s3.folder` when the "
+                "export has no country code"
+            )
         if not src.pbf_path:
             raise ValueError(
                 "osm.engine=planet requires source.osm.pbf_path "
@@ -227,7 +231,7 @@ class OsmRunner(SourceRunner):
             planet_pbf = result.path
 
         snapshot_label = self._planet_snapshot_label(planet_pbf, src.snapshot)
-        country_root = Path(src.cache_dir) / "planet" / cfg.iso3.lower()
+        country_root = Path(src.cache_dir) / "planet" / dataset_identity(cfg)
         snapshot_dir = country_root / snapshot_label
         snapshot_dir.mkdir(parents=True, exist_ok=True)
 
