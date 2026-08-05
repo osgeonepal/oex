@@ -64,6 +64,13 @@ and is auto-managed by [commitizen](https://commitizen-tools.github.io/commitize
 
 - **config**: config fix
 
+## v0.4.5 (2026-08-06)
+
+### Fix
+
+- **chore**: add tm export example config
+- **tm**: fixes tm path
+
 ## v0.4.4 (2026-07-27)
 
 ### Fix
