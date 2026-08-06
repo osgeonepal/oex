@@ -39,6 +39,22 @@ _LAYER_CREATION_OPTIONS = {
 _DEFAULT_LAYER_CREATION_OPTIONS = "ENCODING=UTF-8"
 
 
+GEOMETRY_LABELS = ("points", "lines", "polygons")
+
+
+def geometry_labels(conn: duckdb.DuckDBPyConnection, table_name: str) -> dict[str, list[str]]:
+    """Geometry labels present in a table, mapped to the source types they cover."""
+    rows = conn.execute(f"SELECT DISTINCT ST_GeometryType(geom) FROM {table_name}").fetchall()
+    labels: dict[str, list[str]] = {}
+    for (geom_type,) in rows:
+        label = _GEOM_TYPE_TO_LABEL.get(geom_type)
+        if label is None:
+            logger.warning("unmapped geometry type %s in %s", geom_type, table_name)
+            continue
+        labels.setdefault(label, []).append(geom_type)
+    return labels
+
+
 def write_format(
     conn: duckdb.DuckDBPyConnection,
     table_name: str,

@@ -37,12 +37,16 @@ def artifact_key(
     *,
     folder: str = "",
     nest_by_category: bool = True,
+    geometry: str = "",
 ) -> str:
     """S3 key for a category artifact. ``folder`` overrides the iso3 segment
-    (empty falls back to iso3); a false ``nest_by_category`` flattens the path."""
+    (empty falls back to iso3); a false ``nest_by_category`` flattens the path.
+    ``geometry`` adds a points/lines/polygons segment under the category."""
     segments = [prefix, folder or iso3.upper()]
     if nest_by_category:
         segments.append(category_slug)
+    if geometry:
+        segments.append(geometry)
     parts = [s.strip("/") for s in segments if s]
     parts.append(filename)
     return "/".join(parts)

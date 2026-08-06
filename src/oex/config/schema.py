@@ -110,6 +110,8 @@ class S3Config:
     nest_by_category: bool = True
     # Keep the source token (osm/overture) in the artifact filename.
     name_include_source: bool = True
+    # Requires output.split_by_geometry.
+    nest_by_geometry: bool = False
 
 
 @dataclass
@@ -122,6 +124,8 @@ class OutputConfig:
     s3: S3Config = field(default_factory=S3Config)
     resume: bool = True
     remove_after_upload: bool = True
+    # Labels are points, lines, polygons.
+    split_by_geometry: bool = False
 
 
 @dataclass

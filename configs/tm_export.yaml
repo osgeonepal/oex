@@ -3,8 +3,7 @@
 # base path to publish there. Deploy-specific values come from env so Windmill
 # can set them per run.
 
-iso3: ${oc.env:OEX_ISO3,NPL}
-key: ${oc.env:OEX_DATASET_KEY,hotosm_project}
+key: ${oc.env:OEX_DATASET_KEY,""}
 dataset_name: ${oc.env:OEX_DATASET_NAME,Tasking Manager Project}
 subnational: true
 frequency: yearly
@@ -16,6 +15,8 @@ boundary:
 output:
   dir: output
   formats: [geojson, shp, kml]
+  # One artifact per geometry type, which is what the TM frontend links to.
+  split_by_geometry: true
   report:
     enabled: false
   pmtiles:
@@ -27,10 +28,12 @@ output:
     prefix: ${oc.env:OEX_S3_PREFIX,TM}
     region: ${oc.env:OEX_S3_REGION,us-east-1}
     acl: public-read
-    # Flat TM layout: {prefix}/{folder}/{key}_{folder}_{category}_{format}.zip
-    # folder empty falls back to iso3.
+    # TM layout:
+    # {prefix}/{folder}/{category}/{geometry}/{folder}_{category}_{geometry}_{format}.zip
+    # Set folder to hotosm_project_<id>; empty falls back to iso3.
     folder: ${oc.env:OEX_S3_FOLDER,""}
-    nest_by_category: false
+    nest_by_category: true
+    nest_by_geometry: true
     name_include_source: false
 
 hdx:
@@ -50,7 +53,7 @@ categories:
   - name: Buildings
     osm:
       enabled: true
-      filter: {building: true}
+      filter: { building: true }
       select:
         - feature_id AS id
         - tags['name'] AS name
@@ -67,7 +70,7 @@ categories:
   - name: Roads
     osm:
       enabled: true
-      filter: {highway: true}
+      filter: { highway: true }
       select:
         - feature_id AS id
         - tags['name'] AS name
@@ -105,7 +108,7 @@ categories:
   - name: Landuse
     osm:
       enabled: true
-      filter: {landuse: true}
+      filter: { landuse: true }
       select:
         - feature_id AS id
         - tags['name'] AS name
@@ -116,7 +119,7 @@ categories:
   - name: Seamarks
     osm:
       enabled: true
-      filter: {'seamark:type': true}
+      filter: { "seamark:type": true }
       select:
         - feature_id AS id
         - tags['name'] AS name

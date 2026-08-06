@@ -1,6 +1,7 @@
 """Per-category export loop, shared by Overture and OSM sources."""
 
 import concurrent.futures
+import itertools
 import json
 import re
 import shutil
@@ -45,8 +46,10 @@ from oex.state import StateStore
 from oex.system import adaptive_parallel_resources, cpu_count
 from oex.translit import transliterate_table
 from oex.writers import (
+    GEOMETRY_LABELS,
     TileLayer,
     build_combined_pmtiles,
+    geometry_labels,
     write_format,
     write_geoparquet,
     write_pmtiles,
@@ -966,7 +969,21 @@ class Exporter:
         if self._cfg.hdx.combine:
             return self._cfg.hdx.combined.name or f"{self._cfg.key}_{self._cfg.iso3.lower()}"
         ident = self._cfg.output.s3.folder or self._cfg.iso3.lower()
-        return f"{self._cfg.key}_{ident}"
+        # An empty key means the folder id is already the whole prefix (hotosm_project_1).
+        return f"{self._cfg.key}_{ident}" if self._cfg.key else ident
+
+    def _artifact_geometry(self, zip_path: Path) -> str:
+        """The geometry label this artifact holds, read back off the name we wrote."""
+        if not self._cfg.output.split_by_geometry:
+            raise ValueError(
+                "output.s3.nest_by_geometry needs output.split_by_geometry; without it "
+                "one artifact holds every geometry type and cannot sit under one segment"
+            )
+        tokens = zip_path.stem.split("_")
+        for label in GEOMETRY_LABELS:
+            if label in tokens:
+                return label
+        raise ValueError(f"no geometry label in artifact name {zip_path.name}")
 
     def _upload_category_to_s3(self, zip_paths: list[Path], slug: str, cat_tag: str) -> None:
         """Upload a category's zips straight to S3 when s3 is enabled and HDX is off."""
@@ -981,6 +998,7 @@ class Exporter:
                 zp.name,
                 folder=s3cfg.folder,
                 nest_by_category=s3cfg.nest_by_category,
+                geometry=self._artifact_geometry(zp) if s3cfg.nest_by_geometry else "",
             )
             s3_upload(zp, bucket=bucket, key=key, region=region, endpoint_url=endpoint_url, acl=acl)
         if self._state is not None:
@@ -1062,14 +1080,24 @@ class Exporter:
         feature_count: int,
     ) -> list[Path]:
         zip_paths: list[Path] = []
-        for fmt in formats:
-            stage_dir = out_root / f"_stage_{slug}_{fmt}"
+        # An empty label means one artifact per format, covering every geometry.
+        if self._cfg.output.split_by_geometry:
+            partitions = [
+                (label, self._geometry_view(conn, table, label, types))
+                for label, types in sorted(geometry_labels(conn, table).items())
+            ]
+        else:
+            partitions = [("", table)]
+
+        for fmt, (geometry, source_table) in itertools.product(formats, partitions):
+            geom_seg = f"_{geometry}" if geometry else ""
+            stage_dir = out_root / f"_stage_{slug}{geom_seg}_{fmt}"
             if stage_dir.exists():
                 shutil.rmtree(stage_dir)
             stage_dir.mkdir(parents=True)
             try:
                 try:
-                    files = write_format(conn, table, slug, fmt, stage_dir)
+                    files = write_format(conn, source_table, slug, fmt, stage_dir)
                 except Exception as exc:  # noqa: BLE001 - per-format boundary
                     # GDAL's COPY can fail mid-write on bogus OSM coords or
                     # blow past memory_limit on huge tables. Skip this format
@@ -1092,7 +1120,9 @@ class Exporter:
                     continue
                 s3cfg = self._cfg.output.s3
                 source_seg = f"_{self._runner.name}" if s3cfg.name_include_source else ""
-                zip_path = out_root / f"{self._resource_prefix()}_{slug}{source_seg}_{fmt}.zip"
+                zip_path = (
+                    out_root / f"{self._resource_prefix()}_{slug}{geom_seg}{source_seg}_{fmt}.zip"
+                )
                 readme_lines = self._build_readme(
                     fmt=fmt,
                     category=category,
@@ -1116,6 +1146,16 @@ class Exporter:
                 if stage_dir.exists():
                     shutil.rmtree(stage_dir, ignore_errors=True)
         return zip_paths
+
+    def _geometry_view(self, conn, table: str, label: str, types: list[str]) -> str:
+        """A view over one geometry label, so each artifact holds a single type."""
+        view = f"{table}_{label}"
+        in_list = ", ".join(f"'{t}'" for t in types)
+        conn.execute(
+            f"CREATE OR REPLACE TEMP VIEW {view} AS "
+            f"SELECT * FROM {table} WHERE ST_GeometryType(geom) IN ({in_list})"
+        )
+        return view
 
     def _build_readme(
         self,

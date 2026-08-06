@@ -3,12 +3,13 @@
 # from OSM, clip to a project boundary, write geojson/shp/kml, and upload to S3
 # in the TM layout. HDX is not involved.
 #
-# Per project, set iso3, boundary.geom (the project polygon), and
-# output.s3.folder (the project id). The boundary below is a Dili, Timor-Leste
-# box that has data, so the example runs as-is.
+# Per project, set boundary.geom (the project polygon) and output.s3.folder
+# (hotosm_project_<id>). Projects have no country code, so there is no iso3 and
+# the folder id is the dataset identity. The boundary below is a Dili,
+# Timor-Leste box that has data, so the example runs as-is.
 
-iso3: TLS
-key: hotosm_project
+# Empty: output.s3.folder already carries the whole dataset prefix.
+key: ""
 dataset_name: Tasking Manager Project
 subnational: true
 
@@ -18,6 +19,8 @@ boundary:
 output:
   dir: output
   formats: [geojson, shp, kml]
+  # One artifact per geometry type, which is what the TM frontend links to.
+  split_by_geometry: true
   report:
     enabled: false
   pmtiles:
@@ -28,9 +31,11 @@ output:
     prefix: TM
     region: us-east-1
     acl: public-read
-    # TM layout: {prefix}/{folder}/hotosm_project_{folder}_{category}_{format}.zip
-    folder: "1"
-    nest_by_category: false
+    # TM layout:
+    # {prefix}/{folder}/{category}/{geometry}/{folder}_{category}_{geometry}_{format}.zip
+    folder: hotosm_project_1
+    nest_by_category: true
+    nest_by_geometry: true
     name_include_source: false
 
 hdx:

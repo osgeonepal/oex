@@ -128,3 +128,22 @@ def test_build_layer_key_is_stable_and_globbable() -> None:
         build_layer_key("hot", "vnm", "overture", "roads")
         == "hot/VNM/_layers/overture/roads.parquet"
     )
+
+
+def test_artifact_key_adds_a_geometry_segment_under_the_category() -> None:
+    """The Tasking Manager frontend requests {folder}/{category}/{geometry}/{file}."""
+    assert artifact_key(
+        "TM",
+        "",
+        "buildings",
+        "hotosm_project_1_buildings_polygons_shp.zip",
+        folder="hotosm_project_1",
+        nest_by_category=True,
+        geometry="polygons",
+    ) == ("TM/hotosm_project_1/buildings/polygons/hotosm_project_1_buildings_polygons_shp.zip")
+
+
+def test_artifact_key_without_a_geometry_is_unchanged() -> None:
+    assert artifact_key("TM", "npl", "buildings", "x.zip", geometry="") == artifact_key(
+        "TM", "npl", "buildings", "x.zip"
+    )

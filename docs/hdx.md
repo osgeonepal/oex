@@ -84,6 +84,31 @@ output:
 Each artifact uploads to `s3://<bucket>/<prefix>/<iso3>/<category>/<filename>`,
 then attaches to HDX as a URL link instead of an upload.
 
+### Shaping the key
+
+For consumers that expect a fixed layout, these reshape the path:
+
+```yaml
+output:
+  split_by_geometry: true      # one artifact per points/lines/polygons, not one per format
+  s3:
+    folder: hotosm_project_1   # replaces the iso3 segment, and the filename id
+    nest_by_category: true     # keep the {category}/ segment
+    nest_by_geometry: true     # add a {geometry}/ segment under it
+    name_include_source: false # drop the osm/overture token from the filename
+```
+
+With an empty `key`, so the folder id carries the whole dataset prefix, that gives
+the Tasking Manager layout:
+
+```
+TM/hotosm_project_1/buildings/polygons/hotosm_project_1_buildings_polygons_shp.zip
+```
+
+`nest_by_geometry` needs `split_by_geometry`. Without it one artifact holds every
+geometry type and cannot sit under a single segment, so the run fails rather than
+writing a misleading key.
+
 AWS credentials come from boto3's default chain: `AWS_ACCESS_KEY_ID` +
 `AWS_SECRET_ACCESS_KEY` (with optional `AWS_SESSION_TOKEN`), `AWS_PROFILE`,
 or an IAM role on EC2. Nothing oex-specific needed for credentials.

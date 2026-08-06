@@ -1,7 +1,11 @@
 """Exporter helpers."""
 
 from pathlib import Path
+from unittest.mock import Mock
 
+import pytest
+
+from oex.config.schema import RootConfig
 from oex.exporter import _remove_uploaded_outputs
 
 
@@ -314,3 +318,27 @@ def test_build_combined_tiles_excludes_a_source_with_tiles_false(tmp_path: Path)
     assert ("overture", "buildings") not in merged, (
         "tiles: false keeps overture buildings off the map"
     )
+
+
+def test_nest_by_geometry_without_the_split_is_rejected() -> None:
+    """One artifact holding every geometry type cannot sit under a single segment."""
+    from oex.exporter import Exporter
+
+    cfg = RootConfig(iso3="NPL")
+    cfg.output.split_by_geometry = False
+    cfg.output.s3.nest_by_geometry = True
+    exporter = Exporter(cfg, Mock(name="osm"))
+    with pytest.raises(ValueError, match="split_by_geometry"):
+        exporter._artifact_geometry(Path("x_buildings_polygons_shp.zip"))
+
+
+def test_the_geometry_label_is_read_back_off_the_artifact_name() -> None:
+    from oex.exporter import Exporter
+
+    cfg = RootConfig(iso3="NPL")
+    cfg.output.split_by_geometry = True
+    exporter = Exporter(cfg, Mock(name="osm"))
+    name = Path("hotosm_project_1_buildings_polygons_shp.zip")
+    assert exporter._artifact_geometry(name) == "polygons"
+    with pytest.raises(ValueError, match="no geometry label"):
+        exporter._artifact_geometry(Path("hotosm_project_1_buildings_shp.zip"))

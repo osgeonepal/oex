@@ -5,7 +5,7 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from oex.writers import write_format
+from oex.writers import geometry_labels, write_format
 
 
 @pytest.fixture
@@ -171,3 +171,31 @@ def test_build_combined_pmtiles_injects_category_source_and_handles_missing_name
     # The per-layer parquet itself carries no category column; it is injected at merge time.
     cols_a = {r[0] for r in conn.execute(f"DESCRIBE SELECT * FROM read_parquet('{pa}')").fetchall()}
     assert "category" not in cols_a and "geom" in cols_a
+
+
+@pytest.fixture
+def conn_mixed_geometry() -> duckdb.DuckDBPyConnection:
+    conn = duckdb.connect(":memory:")
+    conn.execute("INSTALL spatial; LOAD spatial;")
+    conn.execute(
+        """
+        CREATE TABLE mixed AS SELECT * FROM (VALUES
+            (1, ST_Point(83.5, 28.5)),
+            (2, ST_GeomFromText('LINESTRING (83 28, 84 29)')),
+            (3, ST_GeomFromText('POLYGON ((83 28, 84 28, 84 29, 83 29, 83 28))')),
+            (4, ST_GeomFromText('MULTIPOLYGON (((83 28, 84 28, 84 29, 83 28)))'))
+        ) AS t(id, geom)
+        """
+    )
+    return conn
+
+
+def test_geometry_labels_groups_source_types_by_label(conn_mixed_geometry) -> None:
+    labels = geometry_labels(conn_mixed_geometry, "mixed")
+    assert sorted(labels) == ["lines", "points", "polygons"]
+    assert sorted(labels["polygons"]) == ["MULTIPOLYGON", "POLYGON"]
+
+
+def test_geometry_labels_is_empty_for_an_empty_table(conn_mixed_geometry) -> None:
+    conn_mixed_geometry.execute("CREATE TABLE none_ AS SELECT * FROM mixed WHERE false")
+    assert geometry_labels(conn_mixed_geometry, "none_") == {}
