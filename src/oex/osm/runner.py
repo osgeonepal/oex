@@ -24,6 +24,7 @@ import json
 import shutil
 import time
 from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -349,14 +350,14 @@ class OsmRunner(SourceRunner):
         country_root = Path(src.cache_dir) / "geofabrik" / cfg.iso3.lower()
         country_root.mkdir(parents=True, exist_ok=True)
 
-        snapshot = self._resolve_or_create_snapshot(country_root, src.snapshot)
+        extract = lookup_country(cfg.iso3, index_url=src.geofabrik_index_url)
+        snapshot = self._resolve_geofabrik_snapshot(country_root, src.snapshot, extract.pbf_url)
         snapshot_dir = country_root / snapshot
         snapshot_dir.mkdir(parents=True, exist_ok=True)
         fingerprint = _parquet_fingerprint(cfg, clip=src.geofabrik_clip_to_boundary)
         country_parquet = snapshot_dir / f"country-{fingerprint}.parquet"
 
         if not country_parquet.exists():
-            extract = lookup_country(cfg.iso3, index_url=src.geofabrik_index_url)
             pbf_dir = country_root / "_pbf"
             pbf_path = pbf_dir / f"{extract.geofabrik_id}-latest.osm.pbf"
 
@@ -449,6 +450,29 @@ class OsmRunner(SourceRunner):
         if existing:
             return existing[-1]
         return datetime.now(UTC).date().isoformat()
+
+    @staticmethod
+    def _resolve_geofabrik_snapshot(country_root: Path, requested: str, pbf_url: str) -> str:
+        """The date Geofabrik last rebuilt the extract, so `latest` tracks upstream.
+
+        Resolving from the cache directory instead would pin a country to the first
+        snapshot ever exported: the parquet is keyed by that label, so it is found,
+        nothing is re-downloaded, and the export republishes the same data forever.
+        """
+        if requested and requested != "latest":
+            return requested
+        try:
+            head = requests.head(pbf_url, allow_redirects=True, timeout=60)
+            head.raise_for_status()
+            last_modified = head.headers["Last-Modified"]
+        except (requests.RequestException, KeyError) as exc:
+            logger.warning(
+                "Could not read Last-Modified for %s (%s); falling back to the cached snapshot",
+                pbf_url,
+                exc,
+            )
+            return OsmRunner._resolve_or_create_snapshot(country_root, requested)
+        return parsedate_to_datetime(last_modified).astimezone(UTC).date().isoformat()
 
     def _country_source_expr(self) -> str:
         """Read expression for the country parquet.
