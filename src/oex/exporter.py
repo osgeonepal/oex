@@ -430,6 +430,8 @@ class Exporter:
             )
             if count == 0:
                 logger.info("%s empty: no features within boundary", cat_tag)
+                if publisher is not None and not self._cfg.hdx.combine:
+                    self._refresh_empty_category(category, query, publisher, cat_tag)
                 return _early(
                     CategoryResult(
                         name=category.name,
@@ -1022,6 +1024,33 @@ class Exporter:
             path, bucket=bucket, key=key, region=region, endpoint_url=endpoint_url, acl=acl
         )
         logger.info("%s staged layer geoparquet -> %s", cat_tag, url)
+
+    def _refresh_empty_category(
+        self,
+        category: CategoryConfig,
+        query: SourceQuery,
+        publisher: HdxPublisher,
+        cat_tag: str,
+    ) -> None:
+        """Restate the snapshot date on an empty category's existing dataset.
+
+        A failure leaves the dataset showing its older date, which is the behaviour
+        before this existed, so it is logged rather than failing an export that
+        otherwise succeeded.
+        """
+        try:
+            publisher.refresh_metadata(
+                self._cfg,
+                category,
+                PublishContext(
+                    dataset_source=query.dataset_source,
+                    snapshot_date=query.snapshot_date,
+                    source_name=self._runner.name,
+                    s3=self._cfg.output.s3,
+                ),
+            )
+        except Exception:
+            logger.exception("%s metadata refresh failed", cat_tag)
 
     def _upload_only(
         self,

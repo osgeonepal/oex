@@ -203,6 +203,51 @@ class HdxPublisher:
             )
         return dt_name
 
+    def refresh_metadata(
+        self,
+        cfg: RootConfig,
+        category: CategoryConfig,
+        ctx: PublishContext,
+    ) -> str | None:
+        """Restate an existing dataset's snapshot date when a category exports nothing.
+
+        A category with no features publishes no resources, so without this its dataset
+        keeps the date of the last run that did find some and drifts past the update
+        frequency it advertises. The source data was still read at ``ctx.snapshot_date``,
+        so recording that is accurate. Returns None when nothing is published yet, since
+        an empty category is no reason to create a resourceless dataset.
+        """
+        from hdx.data.dataset import Dataset
+
+        category_slug = _slugify(category.name)
+        dt_name = f"{cfg.key}_{cfg.iso3.lower()}_{category_slug}"
+        existing = Dataset.read_from_hdx(dt_name)
+        if existing is None:
+            logger.info("%s empty and not on HDX; nothing to refresh", dt_name)
+            return None
+
+        existing_org = existing.get("owner_org")
+        if existing_org and existing_org != self._owner_org:
+            raise RuntimeError(
+                f"HDX dataset {dt_name} exists under a different organisation "
+                f"(owner_org={existing_org!r}; you are publishing as {self._owner_org!r})."
+            )
+
+        if ctx.temporal_min and ctx.temporal_max:
+            existing.set_time_period(ctx.temporal_min, ctx.temporal_max)
+        else:
+            existing.set_time_period(ctx.snapshot_date)
+        _hdx_publish_with_retry(
+            lambda: existing.update_in_hdx(
+                update_resources=False,
+                match_resources_by_metadata=True,
+                hxl_update=False,
+            ),
+            label=f"refresh {dt_name}",
+        )
+        logger.info("%s empty; refreshed snapshot date to %s", dt_name, ctx.snapshot_date)
+        return dt_name
+
     def _create_or_update(  # noqa: ANN001 - hdx Dataset
         self, dataset, dt_name: str, *, remove_additional: bool
     ) -> None:
