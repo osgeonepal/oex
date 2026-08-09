@@ -64,6 +64,12 @@ and is auto-managed by [commitizen](https://commitizen-tools.github.io/commitize
 
 - **config**: config fix
 
+## v0.4.8 (2026-08-09)
+
+### Fix
+
+- **latest**: fix the cache stale based on date
+
 ## v0.4.7 (2026-08-06)
 
 ### Fix
