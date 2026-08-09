@@ -64,6 +64,12 @@ and is auto-managed by [commitizen](https://commitizen-tools.github.io/commitize
 
 - **config**: config fix
 
+## v0.4.9 (2026-08-10)
+
+### Fix
+
+- **hdx**: fix hdx pipeline when data is empty
+
 ## v0.4.8 (2026-08-09)
 
 ### Fix
