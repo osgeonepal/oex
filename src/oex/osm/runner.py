@@ -48,6 +48,7 @@ from oex.osm.extract import osmium_polygon_extract
 from oex.osm.fetch_planet import download_pbf
 from oex.osm.geofabrik import GeofabrikUnavailableError, lookup_country
 from oex.sources.base import CategorySkippedError, SourceQuery, SourceRunner
+from oex.system import cpu_count, default_memory_limit_gb
 
 logger = get_logger(__name__)
 
@@ -73,6 +74,12 @@ def _ensure_local_pbf(pbf_path: str, cache_dir: Path) -> Path:
     with remote.open("rb") as reader, local.open("wb") as writer:
         shutil.copyfileobj(reader, writer)
     return local
+
+
+def _row_group_size(memory_gb: int) -> int:
+    """Parquet row group size, scaled to the memory budget: quackosm holds one row
+    group per worker as an Arrow table, outside the DuckDB budget."""
+    return 100_000 if memory_gb >= 16 else max(10_000, memory_gb * 5_000)
 
 
 def _parquet_fingerprint(cfg: RootConfig, *, clip: bool) -> str:
@@ -306,6 +313,9 @@ class OsmRunner(SourceRunner):
             len(union_filter),
             sorted(union_filter.keys()),
         )
+        # quackosm's own DuckDB sizes itself from the host unless told otherwise.
+        threads = cpu_count()
+        memory_gb = cfg.parallel.memory_gb or default_memory_limit_gb()
         convert_pbf_to_parquet(
             pbf_path=country_pbf,
             tags_filter=union_filter,
@@ -315,10 +325,14 @@ class OsmRunner(SourceRunner):
             sort_result=True,
             compression="zstd",
             compression_level=3,
-            row_group_size=100_000,
+            row_group_size=_row_group_size(memory_gb),
             working_directory=work_dir,
             ignore_cache=True,
             verbosity_mode="silent",
+            cpu_limit=threads,
+            duckdb_conn_kwargs={
+                "config_kwargs": {"memory_limit": f"{memory_gb}GB", "threads": threads}
+            },
         )
         manifest = {
             "snapshot": snapshot_dir.name,

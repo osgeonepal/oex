@@ -12,6 +12,8 @@ from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
+from hdx.data.hdxobject import HDXError
+
 from oex.boundary import resolve_boundary
 from oex.config.schema import CategoryConfig, PcodesSourceConfig, RootConfig, dataset_identity
 from oex.duckdb_session import connect
@@ -1032,11 +1034,10 @@ class Exporter:
         publisher: HdxPublisher,
         cat_tag: str,
     ) -> None:
-        """Restate the snapshot date on an empty category's existing dataset.
+        """Restate the snapshot date on an empty category's dataset.
 
-        A failure leaves the dataset showing its older date, which is the behaviour
-        before this existed, so it is logged rather than failing an export that
-        otherwise succeeded.
+        HDXError leaves the older date in place, which costs nothing an empty category
+        was going to publish, so it is logged instead of failing the export.
         """
         try:
             publisher.refresh_metadata(
@@ -1049,7 +1050,7 @@ class Exporter:
                     s3=self._cfg.output.s3,
                 ),
             )
-        except Exception:
+        except HDXError:
             logger.exception("%s metadata refresh failed", cat_tag)
 
     def _upload_only(
