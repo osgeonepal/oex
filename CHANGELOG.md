@@ -64,6 +64,12 @@ and is auto-managed by [commitizen](https://commitizen-tools.github.io/commitize
 
 - **config**: config fix
 
+## v0.4.10 (2026-08-13)
+
+### Fix
+
+- **oex**: cpu limit
+
 ## v0.4.9 (2026-08-10)
 
 ### Fix
