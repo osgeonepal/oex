@@ -2,6 +2,7 @@
 
 import os
 import time
+import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -30,6 +31,20 @@ _HDX_SITE_URLS = {
 }
 
 HDX_SHORT_SOURCE = {"osm": "OpenStreetMap", "overture": "Overture"}
+# Resource names are what people scan on the dataset page, so they read as a layer
+# and a source rather than a filename. Format is part of the name because
+# ResourceMatcher collapses same-named resources that differ only by format.
+RESOURCE_SOURCE = {"osm": "OSM", "overture": "Overture"}
+FORMAT_LABEL = {
+    "gpkg": "GeoPackage",
+    "shp": "Shapefile",
+    "geojson": "GeoJSON",
+    "kml": "KML",
+    "fgb": "FlatGeobuf",
+    "pmtiles": "PMTiles",
+    "json": "JSON",
+    "html": "HTML",
+}
 
 # Kept lowercase mid-phrase so "Points of Interest" reads naturally.
 _TITLE_LOWER_WORDS = {"a", "an", "and", "at", "by", "for", "in", "of", "on", "or", "the", "to"}
@@ -312,10 +327,14 @@ class HdxPublisher:
             res = self._make_resource_for_path(
                 path=pmtiles_path,
                 fmt="pmtiles",
-                description=f"Combined vector tiles ({len(entries)} layers, coloured by category)",
+                description=(
+                    f"Vector tiles covering all {len(entries)} layers in one archive, "
+                    "with a category and source attribute per feature. For web maps."
+                ),
                 ctx=ctx,
                 iso3=cfg.iso3,
                 category_slug="combined",
+                name="Vector Tiles, All Layers (PMTiles)",
             )
             dataset.add_update_resource(res)
 
@@ -331,10 +350,15 @@ class HdxPublisher:
             res = self._make_resource_for_path(
                 path=metadata_path,
                 fmt="json",
-                description=f"Layer metadata for all {len(entries)} layers",
+                description=(
+                    f"Field-level metadata for all {len(entries)} "
+                    f"{HDX_SHORT_SOURCE.get(ctx.source_name, ctx.source_name)} layers: "
+                    "feature counts, geometry types, columns and value distributions."
+                ),
                 ctx=ctx,
                 iso3=cfg.iso3,
                 category_slug="combined",
+                name=f"Layer Metadata ({RESOURCE_SOURCE.get(ctx.source_name, ctx.source_name)}), JSON",
             )
             dataset.add_update_resource(res)
 
@@ -429,6 +453,7 @@ class HdxPublisher:
         iso3: str,
         category_slug: str,
         s3_cfg: S3Config | None,
+        name: str | None = None,
     ) -> None:
         """Attach an HTML page to the dataset and make it the custom visualisation."""
         viz_ctx = PublishContext(
@@ -444,6 +469,7 @@ class HdxPublisher:
             ctx=viz_ctx,
             iso3=iso3,
             category_slug=category_slug,
+            name=name,
         )
         dataset.add_update_resource(resource)
         url = resource["url"] if "url" in resource.data else None
@@ -479,7 +505,9 @@ class HdxPublisher:
             _resource_url(resources, f"{pmtiles_layer}.pmtiles") if pmtiles_layer else None
         )
 
-        prefix = f"{cfg.key}_{cfg.iso3.lower()}_"
+        # Resources are named from the dataset name, which `hdx.combined.name` can
+        # override, so the slug prefix has to come from there rather than key + iso3.
+        prefix = f"{dt_name}_"
         by_slug: dict[str, list[SourceMetadata]] = {}
         for name, source_metadata in _load_source_metadata(resources, dt_name):
             # Every category on the dataset, not just this run's: a later run of the
@@ -528,10 +556,15 @@ class HdxPublisher:
             dataset=dataset,
             dt_name=dt_name,
             html_path=landing_path,
-            description=f"{place} interactive overview",
+            description=(
+                f"Interactive map and data quality report for {place}: every layer on one "
+                "map, with feature counts, attribute completeness and source per layer. "
+                "Open this first to see what the dataset contains."
+            ),
             iso3=cfg.iso3,
             category_slug="overview",
             s3_cfg=ctx.s3,
+            name="Data Quality Report and Interactive Map",
         )
 
     def _set_customviz_after_upload(self, dt_name: str, resource_name: str) -> None:
@@ -616,11 +649,17 @@ class HdxPublisher:
         parts = zip_path.stem.rsplit("_", 2)
         source = parts[-2] if len(parts) >= 3 else ""
         fmt = parts[-1]
-        description = (
-            f"{category.name} ({source}) data in {fmt.upper()} format"
-            if source
-            else f"{category.name} data in {fmt.upper()} format"
-        )
+        label = category_label(category)
+        fmt_label = FORMAT_LABEL.get(fmt, fmt.upper())
+        if source:
+            name = f"{label} ({RESOURCE_SOURCE.get(source, source)}), {fmt_label}"
+            description = (
+                f"{label} for this area, from {HDX_SHORT_SOURCE.get(source, source)}, "
+                f"as {fmt_label}."
+            )
+        else:
+            name = f"{label}, {fmt_label}"
+            description = f"{label} for this area, as {fmt_label}."
         return self._make_resource_for_path(
             path=zip_path,
             fmt=fmt,
@@ -628,6 +667,7 @@ class HdxPublisher:
             ctx=ctx,
             iso3=iso3,
             category_slug=category_slug,
+            name=name,
         )
 
     def _make_resource_for_path(
@@ -639,12 +679,13 @@ class HdxPublisher:
         ctx: PublishContext,
         iso3: str,
         category_slug: str,
+        name: str | None = None,
     ):  # noqa: ANN202 - hdx-python-api Resource
         from hdx.data.resource import Resource
 
         size_bytes = path.stat().st_size
         resource_data: dict[str, object] = {
-            "name": path.name,
+            "name": name or path.name,
             "description": description,
             "format": fmt,
             "size": int(size_bytes),
@@ -734,10 +775,14 @@ class HdxPublisher:
             dataset=dataset,
             dt_name=dt_name,
             html_path=report_path,
-            description=f"{category.name} (interactive report)",
+            description=(
+                f"Interactive map and data quality report for {category_label(category)}: "
+                "feature counts, attribute completeness and value distributions."
+            ),
             iso3=cfg.iso3,
             category_slug=category_slug,
             s3_cfg=s3_cfg,
+            name=f"{category_label(category)}, Data Quality Report",
         )
 
 
@@ -805,8 +850,9 @@ def _slugify(value: str) -> str:
     return re.sub(r"[^a-zA-Z0-9]+", "_", value).lower().strip("_")
 
 
-def _resource_url(resources: list, name: str) -> str | None:  # noqa: ANN001 - hdx Resource
-    resource = next((r for r in resources if r["name"] == name), None)
+def _resource_url(resources: list, filename: str) -> str | None:  # noqa: ANN001 - hdx Resource
+    """Look up by uploaded filename: resource names are human-readable titles."""
+    resource = next((r for r in resources if _resource_filename(r) == filename), None)
     return resource.get("url") if resource else None
 
 
@@ -818,7 +864,7 @@ def _category_tilesets(resources: list) -> dict[str, tuple[str, str]]:  # noqa: 
     """
     tilesets: dict[str, tuple[str, str]] = {}
     for resource in resources:
-        name = resource["name"]
+        name = _resource_filename(resource)
         if not name.endswith(".pmtiles"):
             continue
         stem = name[: -len(".pmtiles")]
@@ -828,6 +874,12 @@ def _category_tilesets(resources: list) -> dict[str, tuple[str, str]]:  # noqa: 
     return tilesets
 
 
+def _resource_filename(resource) -> str:  # noqa: ANN001 - hdx Resource
+    """The uploaded filename behind a resource, whatever its display name is."""
+    url = resource.get("url") or ""
+    return urllib.parse.unquote(url.rsplit("/", 1)[-1].split("?")[0]) or resource["name"]
+
+
 def _load_source_metadata(  # noqa: ANN001 - hdx Resource
     resources: list, dt_name: str
 ) -> "list[tuple[str, SourceMetadata]]":
@@ -835,20 +887,42 @@ def _load_source_metadata(  # noqa: ANN001 - hdx Resource
 
     Both report pages describe whatever layers the dataset carries, so both read
     the metadata resources rather than only the ones this run published.
+
+    Matching is on the uploaded filename rather than the resource name, because the
+    resource name is a human-readable title that carries no filename convention.
     """
     from oex.report import SourceMetadata
 
     loaded: list[tuple[str, SourceMetadata]] = []
     for resource in resources:
-        name = resource["name"]
+        name = _resource_filename(resource)
         if not name.endswith("_metadata.json"):
             continue
         try:
             payload = _download_json(resource["url"])
-            loaded.append((name, SourceMetadata.from_payload(payload)))
+            for entry_name, entry in _metadata_entries(name, payload):
+                loaded.append((entry_name, SourceMetadata.from_payload(entry)))
         except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
             raise RuntimeError(f"HDX dataset {dt_name}: could not parse {name}: {exc}") from exc
     return loaded
+
+
+def _metadata_entries(name: str, payload: dict) -> list[tuple[str, dict]]:
+    """One (resource name, source payload) pair per layer a metadata resource describes.
+
+    A combined dataset publishes one envelope covering every layer, so its entries take
+    the per-category resource name that the slug matcher resolves.
+    """
+    layers = payload.get("layers")
+    if layers is None:
+        return [(name, payload)]
+    # The envelope names its own dataset, so entry names stay stable no matter what
+    # the resource carrying it is called.
+    stem = payload.get("dataset") or name[: -len("_metadata.json")]
+    return [
+        (f"{stem}_{layer['category']}_{layer['source_name']}_metadata.json", layer)
+        for layer in layers
+    ]
 
 
 def _slug_from_metadata_name(

@@ -147,3 +147,14 @@ def test_artifact_key_without_a_geometry_is_unchanged() -> None:
     assert artifact_key("TM", "npl", "buildings", "x.zip", geometry="") == artifact_key(
         "TM", "npl", "buildings", "x.zip"
     )
+
+
+def test_layer_key_separates_two_configs_for_one_country() -> None:
+    """Two datasets covering the same country must not share a staging area."""
+    from oex.s3 import build_layer_key
+
+    flood = build_layer_key("ISO3", "NPL", "osm", "buildings")
+    corridor = build_layer_key("ISO3", "NPL", "osm", "buildings", "NPL_corridor")
+    assert flood == "ISO3/NPL/_layers/osm/buildings.parquet"
+    assert corridor == "ISO3/NPL_CORRIDOR/_layers/osm/buildings.parquet"
+    assert flood != corridor

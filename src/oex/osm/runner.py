@@ -47,6 +47,7 @@ from oex.osm.category_filter import category_where_predicate, union_tag_filter
 from oex.osm.extract import osmium_polygon_extract
 from oex.osm.fetch_planet import download_pbf
 from oex.osm.geofabrik import GeofabrikUnavailableError, lookup_country
+from oex.osm.postpass import boundary_area_sq_km, fetch_country_parquet
 from oex.sources.base import CategorySkippedError, SourceQuery, SourceRunner
 from oex.system import cpu_count, default_memory_limit_gb
 
@@ -202,8 +203,51 @@ class OsmRunner(SourceRunner):
                 self._prepare_planet(cfg, src)
         elif engine == "planet":
             self._prepare_planet(cfg, src)
+        elif engine == "postpass":
+            self._prepare_postpass(cfg, src)
         else:
-            raise ValueError(f"Unknown osm.engine={engine!r}; expected 'geofabrik' or 'planet'")
+            raise ValueError(
+                f"Unknown osm.engine={engine!r}; expected 'geofabrik', 'planet' or 'postpass'"
+            )
+
+    def _prepare_postpass(self, cfg: RootConfig, src: OsmSourceConfig) -> None:
+        """Live OSM for a small area. Always refetches, since the point is freshness."""
+        if not cfg.iso3:
+            raise ValueError("osm.engine=postpass requires `iso3` in the config")
+
+        boundary = resolve_boundary(cfg.iso3, cfg.boundary)
+        area_sq_km = boundary_area_sq_km(boundary.geojson)
+        if area_sq_km > src.postpass_max_area_sq_km:
+            raise ValueError(
+                f"Boundary covers {area_sq_km:,.0f} km2, above the "
+                f"{src.postpass_max_area_sq_km:,.0f} km2 ceiling for osm.engine=postpass. "
+                "Postpass is a shared Geofabrik service; use engine=geofabrik for an area "
+                "this size, or raise osm.postpass_max_area_sq_km deliberately."
+            )
+
+        union_filter = union_tag_filter(cfg.categories)
+        snapshot_dir = Path(src.cache_dir) / "postpass" / cfg.iso3.lower()
+        country_parquet = snapshot_dir / f"country-{_parquet_fingerprint(cfg, clip=True)}.parquet"
+
+        logger.info(
+            "Postpass fetch for %s: boundary %.1f km2, %d filter keys",
+            cfg.iso3.upper(),
+            area_sq_km,
+            len(union_filter),
+        )
+        snapshot = fetch_country_parquet(
+            boundary_geojson=boundary.geojson,
+            tag_filter=union_filter,
+            out_path=country_parquet,
+            endpoint=src.postpass_endpoint,
+        )
+
+        self._engine = "postpass"
+        self._snapshot_dir = snapshot_dir
+        self._snapshot_label = snapshot.label
+        self._snapshot_date = snapshot.timestamp
+        self._dataset_source = f"OpenStreetMap (Postpass {snapshot.label})"
+        self._country_parquet = country_parquet
 
     def _prepare_planet(self, cfg: RootConfig, src: OsmSourceConfig) -> None:
         if not dataset_identity(cfg):

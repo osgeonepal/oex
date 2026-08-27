@@ -395,15 +395,21 @@ def test_landing_describes_every_layer_on_the_dataset_not_just_this_run() -> Non
     # On HDX already: Buildings from both sources, Roads from OSM only. This run
     # publishes Overture, so `entries` carries Buildings alone.
     resources = [
-        {"name": "demo_eq_ven_buildings_osm_metadata.json", "url": "https://x/b_osm.json"},
-        {"name": "demo_eq_ven_buildings_overture_metadata.json", "url": "https://x/b_ovt.json"},
-        {"name": "demo_eq_ven_roads_osm_metadata.json", "url": "https://x/r_osm.json"},
+        {
+            "name": "Buildings (OSM), JSON",
+            "url": "https://x/demo_eq_ven_buildings_osm_metadata.json",
+        },
+        {
+            "name": "Buildings (Overture), JSON",
+            "url": "https://x/demo_eq_ven_buildings_overture_metadata.json",
+        },
+        {"name": "Roads (OSM), JSON", "url": "https://x/demo_eq_ven_roads_osm_metadata.json"},
     ]
     fresh = MagicMock()
     fresh.get_resources.return_value = resources
 
     def payload_for(url):
-        source = "osm" if url.endswith("_osm.json") else "overture"
+        source = "osm" if "_osm_metadata" in url else "overture"
         return {"source_name": source}
 
     captured: dict = {}

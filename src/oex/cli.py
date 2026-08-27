@@ -269,7 +269,10 @@ def cmd_osm(
     engine: str | None = typer.Option(
         None,
         "--engine",
-        help="OSM engine: 'geofabrik' (default) or 'planet'",
+        help=(
+            "OSM engine: 'geofabrik' (default), 'planet', or 'postpass' for live "
+            "OSM over a small area."
+        ),
     ),
     download_if_missing: bool | None = typer.Option(
         None,

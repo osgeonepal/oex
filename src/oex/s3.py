@@ -52,9 +52,13 @@ def artifact_key(
     return "/".join(parts)
 
 
-def build_layer_key(prefix: str, iso3: str, source: str, slug: str) -> str:
-    """Stable, globbable key for a per-layer GeoParquet so runs accumulate across sources."""
-    return build_key(prefix, iso3, f"_layers/{source}", f"{slug}.parquet")
+def build_layer_key(prefix: str, iso3: str, source: str, slug: str, folder: str = "") -> str:
+    """Stable, globbable key for a per-layer GeoParquet so runs accumulate across sources.
+
+    ``folder`` overrides the iso3 segment, so two configs covering the same country stage
+    into separate areas instead of overwriting each other.
+    """
+    return build_key(prefix, folder or iso3, f"_layers/{source}", f"{slug}.parquet")
 
 
 def list_layer_urls(
@@ -66,7 +70,8 @@ def list_layer_urls(
     bucket, prefix, region, endpoint_url, _ = resolve(cfg)
     if not bucket:
         return []
-    key_prefix = "/".join(p.strip("/") for p in (prefix, iso3.upper(), "_layers") if p) + "/"
+    ident = (cfg.folder or iso3).upper()
+    key_prefix = "/".join(p.strip("/") for p in (prefix, ident, "_layers") if p) + "/"
     client = boto3.client("s3", region_name=region or None, endpoint_url=endpoint_url)
     found: list[tuple[str, str, str]] = []
     for page in client.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=key_prefix):

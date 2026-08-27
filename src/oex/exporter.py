@@ -15,7 +15,13 @@ from pathlib import Path
 from hdx.data.hdxobject import HDXError
 
 from oex.boundary import resolve_boundary
-from oex.config.schema import CategoryConfig, PcodesSourceConfig, RootConfig, dataset_identity
+from oex.config.schema import (
+    CategoryConfig,
+    PcodesSourceConfig,
+    RootConfig,
+    dataset_identity,
+    license_label,
+)
 from oex.duckdb_session import connect
 from oex.hdx_publisher import (
     HDX_SHORT_SOURCE,
@@ -503,7 +509,7 @@ class Exporter:
                     dataset_source=query.dataset_source,
                     generated_utc=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
                     oex_version=_oex_version(),
-                    license_label=category.hdx.license,
+                    license_label=license_label(category.hdx.license),
                     license_url=category.hdx.license_url,
                     pcode_source_date=(
                         next(iter(self._pcode_cache.values())).upstream_date
@@ -863,7 +869,11 @@ class Exporter:
     def _write_combined_metadata(
         self, built_ok: list[BuiltCategory], out_root: Path, dt_name: str
     ) -> Path | None:
-        """One dataset-level metadata file covering every layer."""
+        """One metadata file covering every layer this source built.
+
+        Named per source so a combined dataset keeps one resource per source rather
+        than each run overwriting the last, which would drop the other's layers.
+        """
         layers = [
             {"category": b.category.name, **b.source_metadata.to_payload()}
             for b in built_ok
@@ -871,7 +881,7 @@ class Exporter:
         ]
         if not layers:
             return None
-        path = out_root / f"{dt_name}_metadata.json"
+        path = out_root / f"{dt_name}_{self._runner.name}_metadata.json"
         path.write_text(
             json.dumps({"dataset": dt_name, "layers": layers}, indent=2), encoding="utf-8"
         )
@@ -1021,7 +1031,9 @@ class Exporter:
             raise ValueError(
                 "output.s3.enabled is true but no bucket given via output.s3.bucket or OEX_S3_BUCKET"
             )
-        key = build_layer_key(prefix, self._cfg.iso3, self._runner.name, slug)
+        key = build_layer_key(
+            prefix, self._cfg.iso3, self._runner.name, slug, self._cfg.output.s3.folder
+        )
         url = s3_upload(
             path, bucket=bucket, key=key, region=region, endpoint_url=endpoint_url, acl=acl
         )

@@ -170,6 +170,10 @@ class OsmSourceConfig:
     pbf_path: str | None = None
     planet_fallback: bool = False
     auto_download_planet: bool = False
+    # Postpass is a shared Geofabrik service, so the engine refuses areas above
+    # this rather than letting a country-sized boundary through by accident.
+    postpass_endpoint: str = "https://postpass.geofabrik.de/api/interpreter"
+    postpass_max_area_sq_km: float = 2000.0
 
 
 @dataclass
@@ -187,6 +191,25 @@ class PcodesSourceConfig:
     # high-cardinality categories (buildings, roads, waterways) to avoid OOM on big
     # countries; small categories keep geos by inheritance.
     boundary_resolution: str = "geos"
+
+
+# HDX licence ids are identifiers, not titles; reports show the title instead.
+HDX_LICENSE_LABELS = {
+    "hdx-odc-odbl": "Open Database License (ODC-ODbL)",
+    "hdx-odc-by": "Open Data Commons Attribution License",
+    "hdx-odc-pddl": "Open Data Commons Public Domain Dedication and License",
+    "cc-by": "Creative Commons Attribution 4.0",
+    "cc-by-sa": "Creative Commons Attribution Share-Alike 4.0",
+    "cc-by-igo": "Creative Commons Attribution for Intergovernmental Organisations",
+    "cc-zero": "Creative Commons Zero (Public Domain)",
+    "cc-by-nc": "Creative Commons Attribution Non-Commercial",
+    "public-domain": "Public Domain",
+}
+
+
+def license_label(value: str) -> str:
+    """Human-readable licence name, falling back to whatever the config set."""
+    return HDX_LICENSE_LABELS.get(value, value)
 
 
 @dataclass
