@@ -88,17 +88,31 @@ def test_landing_table_has_expected_columns_and_values() -> None:
     assert "Buildings (OSM)" in html
 
 
-def test_layer_rows_expand_to_attribute_chips() -> None:
+def test_layer_rows_expand_to_attribute_detail() -> None:
     html = render_landing(
         title="t", subtitle="s", panels=_panels(), pmtiles_url=None, pmtiles_layer=None
     )
     assert 'class="attr-row"' in html
     assert 'class="caret"' in html
-    # A fully populated column reads 100% in its chip.
-    assert "building<i>100%</i>" in html
+    assert 'class="attr-detail"' in html
+    # A fully populated column reads 100% next to its name.
+    assert '<td class="k">building</td><td class="f">100%</td>' in html
     assert "500" in html  # feature count
     assert "50%" in html  # named coverage (100 - 50% null)
     assert "Polygon 490, Point 10" in html  # geometry mix, count-desc
+
+
+def test_attribute_detail_lists_the_commonest_values() -> None:
+    """The quickest read on whether a column is usable, so it belongs on this page."""
+    html = render_landing(
+        title="t", subtitle="s", panels=_panels(), pmtiles_url=None, pmtiles_layer=None
+    )
+    assert ">Most common values</th>" in html
+    assert "<code>yes</code>" in html
+    assert "<code>house</code>" in html
+    assert ">150</span>" in html
+    # A column with no recorded values says so rather than rendering an empty cell.
+    assert "n/a" in html
 
 
 def test_landing_table_shows_the_same_attribute_coverage_the_report_measures() -> None:

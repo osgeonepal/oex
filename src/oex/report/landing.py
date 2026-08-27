@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from html import escape
 
 from oex.config.schema import MapAssetsConfig
-from oex.metadata import MetadataReport
+from oex.metadata import ColumnReport, MetadataReport
 from oex.palette import DEFAULT_PALETTE
 from oex.report.html import _CSS, SourceMetadata, _fmt_int
 from oex.report.map_block import MAP_CSS, MapEntry, head_scripts, render_map
@@ -37,6 +37,15 @@ tr.layer-row .caret { display: inline-block; width: 9px; color: var(--muted);
                       transition: transform 0.15s; }
 tr.layer-row.open .caret { transform: rotate(90deg); }
 tr.attr-row > td { background: #fafafa; padding: 4px 10px 10px 26px; }
+table.attr-detail { border-collapse: collapse; font-size: 11px; width: 100%; }
+table.attr-detail th { text-align: left; color: var(--muted); font-weight: 400;
+                       padding: 2px 12px 4px 0; }
+table.attr-detail td { padding: 2px 12px 2px 0; vertical-align: top; }
+table.attr-detail td.k { font-family: var(--mono); white-space: nowrap; }
+table.attr-detail td.f { font-family: var(--mono); color: var(--muted); white-space: nowrap; }
+table.attr-detail code { font-family: var(--mono); background: var(--bg);
+                         border: 1px solid var(--line); border-radius: 2px; padding: 0 3px; }
+table.attr-detail .count { color: var(--muted); }
 .attr-list { display: flex; flex-wrap: wrap; gap: 6px; }
 .attr-list .attr { font-family: var(--mono); font-size: 11px; background: var(--bg);
                    border: 1px solid var(--line); border-radius: 3px; padding: 2px 7px; }
@@ -69,6 +78,7 @@ def render_landing(
     pmtiles_url: str | None,
     pmtiles_layer: str | None,
     boundary_bbox: tuple[float, float, float, float] | None = None,
+    boundary_geojson: str | None = None,
     palette: list[str] | None = None,
     map_assets: MapAssetsConfig | None = None,
 ) -> str:
@@ -87,7 +97,12 @@ def render_landing(
 
     table = _render_table(rows)
     entries = _map_entries(rows, pmtiles_url, pmtiles_layer)
-    map_block = render_map(entries, boundary_bbox or _overall_bounds(rows), map_assets)
+    map_block = render_map(
+        entries,
+        boundary_bbox or _overall_bounds(rows),
+        map_assets,
+        boundary_geojson=boundary_geojson,
+    )
     scripts = head_scripts(map_assets) if entries else ""
 
     return (
@@ -173,19 +188,48 @@ def _render_row(row: _Row) -> str:
 
 
 def _render_attr_row(meta: MetadataReport) -> str:
-    """A hidden detail row listing the layer's attribute columns and their fill share."""
+    """A hidden detail row: every attribute column, how full it is and what is in it.
+
+    The commonest values are the quickest way to judge whether a column is usable,
+    so they belong next to the coverage figure rather than only in the per-layer report.
+    """
     if not meta.columns:
         return ""
-    chips = "".join(
-        f'<span class="attr">{escape(col.name)}'
-        f"<i>{max(0.0, 100.0 - col.null_percent):.0f}%</i></span>"
+    rows = "".join(
+        "<tr>"
+        f'<td class="k">{escape(col.name)}</td>'
+        f'<td class="f">{max(0.0, 100.0 - col.null_percent):.0f}%</td>'
+        f'<td class="f">{_fmt_int(col.distinct_count)}</td>'
+        f"<td>{_top_values(col)}</td>"
+        "</tr>"
         for col in meta.columns
+    )
+    head = (
+        "<thead><tr><th>Column</th><th>Filled</th><th>Distinct</th>"
+        "<th>Most common values</th></tr></thead>"
     )
     return (
         '<tr class="attr-row" hidden>'
-        f'<td colspan="{_ATTR_COLSPAN}"><div class="attr-list">{chips}</div></td>'
-        "</tr>"
+        f'<td colspan="{_ATTR_COLSPAN}">'
+        f'<table class="attr-detail">{head}<tbody>{rows}</tbody></table>'
+        "</td></tr>"
     )
+
+
+def _top_values(col: ColumnReport) -> str:
+    if not col.top_values:
+        if col.distinct_count == 0:
+            return "all null"
+        return "n/a"
+    parts = []
+    for entry in col.top_values:
+        value = entry.get("value")
+        shown = "(blank)" if value is None or value == "" else str(value)
+        if len(shown) > 40:
+            shown = shown[:39] + "\u2026"
+        count = _fmt_int(int(entry.get("count", 0)))
+        parts.append(f'<code>{escape(shown)}</code> <span class="count">{count}</span>')
+    return " &middot; ".join(parts)
 
 
 def _coverage_bar(quality: LayerQuality) -> str:

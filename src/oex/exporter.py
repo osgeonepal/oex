@@ -279,7 +279,12 @@ class Exporter:
 
         if self._cfg.hdx.combine:
             self._finish_combined(
-                built_list, out_root, publisher, peeked_label=peeked, boundary_bbox=bbox
+                built_list,
+                out_root,
+                publisher,
+                peeked_label=peeked,
+                boundary_bbox=bbox,
+                boundary_geojson=boundary.geojson,
             )
 
         result.total_duration_s = time.time() - start
@@ -588,6 +593,7 @@ class Exporter:
                     report_path=out_root / f"{dt_name}_{self._runner.name}_report.html",
                     pmtiles_path=pmtiles_path,
                     boundary_bbox=boundary_obj.bbox,
+                    boundary_geojson=boundary_obj.geojson,
                     cat_tag=cat_tag,
                 )
 
@@ -677,6 +683,7 @@ class Exporter:
         pmtiles_path: Path | None,
         boundary_bbox: tuple[float, float, float, float],
         cat_tag: str,
+        boundary_geojson: str | None = None,
     ) -> None:
         """Write this source's report next to its outputs, mapping the local tileset."""
         # A relative URL keeps the page working under any host serving the output directory.
@@ -693,6 +700,7 @@ class Exporter:
                 category_label(category),
                 self._cfg.output.report.palette,
                 self._cfg.output.report.map_assets,
+                boundary_geojson=boundary_geojson,
             ),
             encoding="utf-8",
         )
@@ -706,6 +714,7 @@ class Exporter:
         *,
         peeked_label: str | None,
         boundary_bbox: tuple[float, float, float, float],
+        boundary_geojson: str | None = None,
     ) -> None:
         """Build the combined artifacts, then publish them when HDX push is on."""
         iso = self._cfg.iso3.upper()
@@ -727,6 +736,7 @@ class Exporter:
                 dt_name=dt_name,
                 pmtiles_path=pmtiles_path,
                 boundary_bbox=boundary_bbox,
+                boundary_geojson=boundary_geojson,
             )
             return
 
@@ -738,6 +748,7 @@ class Exporter:
             pmtiles_path=pmtiles_path,
             peeked_label=peeked_label,
             boundary_bbox=boundary_bbox,
+            boundary_geojson=boundary_geojson,
         )
 
     def _write_local_landing(
@@ -748,6 +759,7 @@ class Exporter:
         dt_name: str,
         pmtiles_path: Path | None,
         boundary_bbox: tuple[float, float, float, float],
+        boundary_geojson: str | None = None,
     ) -> None:
         """Render the combined overview from this run's own layers, with no HDX round-trip.
 
@@ -780,6 +792,7 @@ class Exporter:
             pmtiles_url=pmtiles_path.name if pmtiles_path else None,
             pmtiles_layer=pmtiles_path.stem if pmtiles_path else None,
             boundary_bbox=boundary_bbox,
+            boundary_geojson=boundary_geojson,
             palette=self._cfg.output.report.palette,
             map_assets=self._cfg.output.report.map_assets,
         )
@@ -803,6 +816,7 @@ class Exporter:
         pmtiles_path: Path | None,
         peeked_label: str | None,
         boundary_bbox: tuple[float, float, float, float],
+        boundary_geojson: str | None = None,
     ) -> None:
         iso = self._cfg.iso3.upper()
         entries = [
@@ -826,6 +840,7 @@ class Exporter:
             temporal_min=t_min,
             temporal_max=t_max,
             boundary_bbox=boundary_bbox,
+            boundary_geojson=boundary_geojson,
         )
         logger.info(
             "[%s/%s] combine: publishing %d categories as single dataset %s",

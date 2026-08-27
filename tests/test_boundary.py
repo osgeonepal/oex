@@ -1,8 +1,10 @@
 """Boundary resolution from user-supplied geometry."""
 
 import json
+import math
 
 import pytest
+from shapely.geometry import mapping
 
 from oex.boundary import resolve_boundary
 from oex.config.schema import BoundaryConfig
@@ -126,3 +128,29 @@ def test_user_geom_resolves_without_an_iso3() -> None:
 def test_missing_iso3_without_a_geom_still_raises() -> None:
     with pytest.raises(ValueError, match="iso3"):
         resolve_boundary("", BoundaryConfig(geom=None))
+
+
+def test_buffer_distance_is_true_on_the_ground_not_in_mercator() -> None:
+    """EPSG:3857 metres are inflated by 1/cos(latitude), so buffering there would
+    fall roughly 12% short at this latitude."""
+    from pyproj import Geod
+    from shapely.geometry import Point, shape
+
+    from oex.boundary import Boundary, _buffered
+
+    centre = Point(85.0, 28.0)
+    boundary = Boundary(
+        iso3="NPL",
+        bbox=centre.buffer(0.01).bounds,
+        geojson=json.dumps(mapping(centre.buffer(0.01))),
+        source="test",
+    )
+    widened = shape(json.loads(_buffered(boundary, 200.0).geojson))
+
+    geod = Geod(ellps="WGS84")
+    before = abs(geod.geometry_area_perimeter(shape(json.loads(boundary.geojson)))[0])
+    after = abs(geod.geometry_area_perimeter(widened)[0])
+    # A disc grown by 200 m: compare the implied radii rather than the areas.
+    radius_before = math.sqrt(before / math.pi)
+    radius_after = math.sqrt(after / math.pi)
+    assert 195 < (radius_after - radius_before) < 205

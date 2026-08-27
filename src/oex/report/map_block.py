@@ -10,7 +10,16 @@ import json
 from dataclasses import dataclass
 from html import escape
 
+from shapely.geometry import mapping, shape
+
 from oex.config.schema import MapAssetsConfig
+
+AOI_COLOR = "#e11d48"
+AOI_LABEL = "Area of interest"
+
+# A full-resolution country boundary runs to megabytes. The outline only has to read
+# correctly on screen, so anything larger than this is thinned before inlining.
+_AOI_INLINE_LIMIT_BYTES = 200_000
 
 MAP_CSS = """
 span.sw { display: inline-block; width: 11px; height: 11px; border-radius: 2px;
@@ -31,6 +40,7 @@ table.popup { border-collapse: collapse; margin-top: 6px; font-size: 12px; }
 table.popup th { text-align: left; color: var(--muted); font-weight: 400;
                  padding: 2px 10px 2px 0; white-space: nowrap; }
 table.popup td { font-family: var(--mono); padding: 2px 0; }
+.legend .sw.outline { background: transparent; border: 2px solid #e11d48; }
 """
 
 
@@ -64,25 +74,39 @@ def render_map(
     entries: list[MapEntry],
     boundary_bbox: tuple[float, float, float, float] | None,
     assets: MapAssetsConfig | None = None,
+    *,
+    boundary_geojson: str | None = None,
 ) -> str:
     """Render the map section: heading, canvas, legend with a checkbox per entry."""
     if not entries:
         return ""
-    script = _map_script(entries, boundary_bbox, assets or MapAssetsConfig())
+    outline = _display_boundary(boundary_geojson) if boundary_geojson else None
+    script = _map_script(entries, boundary_bbox, assets or MapAssetsConfig(), outline)
     return (
         "<h2>Map preview</h2>\n"
         '<div class="map-wrap">'
         '<div id="map"></div>'
-        f"{_render_legend(entries)}"
+        f"{_render_legend(entries, show_aoi=outline is not None)}"
         "</div>\n"
         f"<script>{script}</script>\n"
     )
+
+
+def _display_boundary(boundary_geojson: str) -> str:
+    """The export boundary, thinned only when inlining it whole would bloat the page."""
+    if len(boundary_geojson) <= _AOI_INLINE_LIMIT_BYTES:
+        return boundary_geojson
+    geometry = shape(json.loads(boundary_geojson))
+    minx, miny, maxx, maxy = geometry.bounds
+    tolerance = max(maxx - minx, maxy - miny) / 4000
+    return json.dumps(mapping(geometry.simplify(tolerance, preserve_topology=True)))
 
 
 def _map_script(
     entries: list[MapEntry],
     boundary_bbox: tuple[float, float, float, float] | None,
     assets: MapAssetsConfig,
+    boundary_geojson: str | None = None,
 ) -> str:
     tilesets = {e.tileset_url for e in entries}
     sources = {f"src{i}": url for i, url in enumerate(sorted(tilesets))}
@@ -92,6 +116,14 @@ def _map_script(
         f"{name}: {{ type: 'vector', url: 'pmtiles://{url}' }}" for name, url in sources.items()
     )
     layer_defs = ",\n      ".join(_layer_defs(e, source_of[e.tileset_url]) for e in entries)
+    if boundary_geojson:
+        source_defs += f",\n      aoi: {{ type: 'geojson', data: {boundary_geojson} }}"
+        # Drawn after the data layers so the outline stays readable over them.
+        layer_defs += (
+            ",\n      { id: 'aoi-line', type: 'line', source: 'aoi',"
+            f" paint: {{ 'line-color': '{AOI_COLOR}', 'line-width': 2 }} }}"
+        )
+
     labels = json.dumps(
         {f"{e.key}-{suffix}": e.label for e in entries for suffix in ("fill", "line", "point")}
     )
@@ -135,7 +167,8 @@ const toggles = document.querySelectorAll('.legend input');
 function applyToggle(toggle) {{
   const visibility = toggle.checked ? 'visible' : 'none';
   for (const suffix of suffixes) {{
-    map.setLayoutProperty(`${{toggle.dataset.key}}-${{suffix}}`, 'visibility', visibility);
+    const id = `${{toggle.dataset.key}}-${{suffix}}`;
+    if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', visibility);
   }}
 }}
 toggles.forEach((t) => t.addEventListener('change', () => applyToggle(t)));
@@ -189,8 +222,16 @@ def _filter(entry: MapEntry, geometry: str) -> str:
     return f"['all', {geometry_test}, ['==', {key_expr}, '{entry.match_key}']]"
 
 
-def _render_legend(entries: list[MapEntry]) -> str:
-    items = "".join(
+def _render_legend(entries: list[MapEntry], *, show_aoi: bool = False) -> str:
+    aoi_item = (
+        "<li><label>"
+        '<input type="checkbox" checked data-key="aoi">'
+        f'<span class="sw outline"></span>{escape(AOI_LABEL)}'
+        "</label></li>"
+        if show_aoi
+        else ""
+    )
+    items = aoi_item + "".join(
         "<li><label>"
         f'<input type="checkbox" checked data-key="{escape(e.key)}">'
         f'<span class="sw" style="background:{e.color}"></span>{escape(e.label)}'

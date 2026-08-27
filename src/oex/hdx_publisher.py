@@ -1,5 +1,6 @@
 """HDX dataset and resource publication. Imports hdx-python-api lazily."""
 
+import json
 import os
 import time
 import urllib.parse
@@ -119,6 +120,32 @@ class PublishContext:
     temporal_max: datetime | None = None
     # Export boundary as (min_lon, min_lat, max_lon, max_lat), used to frame the map.
     boundary_bbox: tuple[float, float, float, float] | None = None
+    boundary_geojson: str | None = None
+
+
+def _aoi_payload(boundary_geojson: str, buffer_meters: float) -> tuple[str, str]:
+    """The area of interest as a FeatureCollection, plus a description naming its size."""
+    from pyproj import Geod
+    from shapely.geometry import shape
+
+    geometry = json.loads(boundary_geojson)
+    area = abs(Geod(ellps="WGS84").geometry_area_perimeter(shape(geometry))[0]) / 1e6
+    widened = f", the configured geometry widened by {buffer_meters:g} m" if buffer_meters else ""
+    collection = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {"area_sq_km": round(area, 2), "buffer_meters": buffer_meters},
+                "geometry": geometry,
+            }
+        ],
+    }
+    description = (
+        f"The boundary every layer in this dataset is extracted from, {area:,.2f} sq km"
+        f"{widened}. This is the outline drawn on the map preview."
+    )
+    return json.dumps(collection, ensure_ascii=False), description
 
 
 @dataclass
@@ -338,6 +365,24 @@ class HdxPublisher:
             )
             dataset.add_update_resource(res)
 
+        # The map preview draws this outline, so the geometry behind it is published
+        # alongside rather than left as something only the picture shows.
+        if ctx.boundary_geojson and ctx.output_dir is not None:
+            payload, description = _aoi_payload(ctx.boundary_geojson, cfg.boundary.buffer_meters)
+            aoi_path = ctx.output_dir / f"{dt_name}_aoi.geojson"
+            aoi_path.write_text(payload, encoding="utf-8")
+            dataset.add_update_resource(
+                self._make_resource_for_path(
+                    path=aoi_path,
+                    fmt="geojson",
+                    description=description,
+                    ctx=ctx,
+                    iso3=cfg.iso3,
+                    category_slug="combined",
+                    name="Area of Interest, GeoJSON",
+                )
+            )
+
         for entry in entries:
             slug = _slugify(entry.category.name)
             sorted_zips = sorted(entry.zip_paths, key=lambda p: p.stat().st_size, reverse=True)
@@ -544,6 +589,7 @@ class HdxPublisher:
             pmtiles_url=pmtiles_url,
             pmtiles_layer=pmtiles_layer,
             boundary_bbox=ctx.boundary_bbox,
+            boundary_geojson=ctx.boundary_geojson,
             palette=cfg.output.report.palette,
             map_assets=cfg.output.report.map_assets,
         )

@@ -219,6 +219,14 @@ def cmd_overture(
         "--s3/--no-s3",
         help="Upload artifacts to S3. Overrides output.s3.enabled.",
     ),
+    resume: bool | None = typer.Option(
+        None,
+        "--resume/--no-resume",
+        help=(
+            "Skip categories already built and uploaded according to the "
+            "state file. Default: enabled (configurable via output.resume)."
+        ),
+    ),
 ) -> None:
     """Export Overture data."""
     iso3_resolved, theme_resolved = _resolve_args(iso3_or_yaml, theme, configs_dir, config)
@@ -233,6 +241,7 @@ def cmd_overture(
         hdx_combine=hdx_combine,
         pmtiles=pmtiles,
         s3=s3,
+        resume=resume,
     )
     results = [_run_one(y, overrides, theme_resolved, OvertureRunner) for y in yamls]
     raise typer.Exit(code=_summarise(results))

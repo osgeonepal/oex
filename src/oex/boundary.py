@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import requests
-from pyproj import Transformer
+from pyproj import CRS, Transformer
 from shapely.geometry import mapping, shape
 from shapely.ops import transform
 
@@ -22,9 +22,6 @@ WORLD_GEOJSON: dict[str, Any] = {
     "type": "Polygon",
     "coordinates": [[[-180, -90], [180, -90], [180, 90], [-180, 90], [-180, -90]]],
 }
-
-_to_3857 = Transformer.from_crs(4326, 3857, always_xy=True).transform
-_to_4326 = Transformer.from_crs(3857, 4326, always_xy=True).transform
 
 
 @dataclass(frozen=True)
@@ -117,13 +114,18 @@ def _from_user_geom(iso3: str, geom_str: str) -> Boundary:
 
 
 def _buffered(boundary: Boundary, buffer_meters: float) -> Boundary:
-    # shapely.buffer operates in the geometry's own CRS units. The boundary is
-    # in EPSG:4326 (degrees), so we project to EPSG:3857 to make the metre
-    # value mean what the config says it means before reprojecting back.
+    # shapely.buffer works in the geometry's own units, and a metre in EPSG:3857 is
+    # inflated by 1/cos(latitude), so buffering there falls short of the distance the
+    # config asks for. An azimuthal equidistant projection centred on the boundary
+    # keeps the buffer true to the ground at any latitude.
     geom = shape(json.loads(boundary.geojson))
-    projected = transform(_to_3857, geom)
-    buffered = projected.buffer(buffer_meters)
-    back = transform(_to_4326, buffered)
+    centre = geom.centroid
+    local = CRS.from_proj4(
+        f"+proj=aeqd +lat_0={centre.y} +lon_0={centre.x} +datum=WGS84 +units=m +no_defs"
+    )
+    to_local = Transformer.from_crs(4326, local, always_xy=True).transform
+    to_wgs84 = Transformer.from_crs(local, 4326, always_xy=True).transform
+    back = transform(to_wgs84, transform(to_local, geom).buffer(buffer_meters))
     return Boundary(
         iso3=boundary.iso3,
         bbox=back.bounds,

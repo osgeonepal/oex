@@ -4,6 +4,13 @@ import json
 
 from oex.metadata import ColumnReport, MetadataReport, TemporalReport
 from oex.report import SourceMetadata, render_report
+from oex.report.map_block import (
+    AOI_COLOR,
+    AOI_LABEL,
+    MapEntry,
+    _display_boundary,
+    render_map,
+)
 
 
 def _meta(
@@ -462,3 +469,52 @@ def test_attribute_table_uses_coverage_not_null_percent() -> None:
     assert "100.00%" in html
     assert 'style="width:17.86%"' in html
     assert 'style="width:100.00%"' in html
+
+
+def _entry() -> MapEntry:
+    return MapEntry(
+        key="buildings-osm",
+        label="Buildings (OSM)",
+        color="#1f77b4",
+        tileset_url="https://example.invalid/x.pmtiles",
+        source_layer="x",
+        match_key="buildings|osm",
+    )
+
+
+SMALL_AOI = (
+    '{"type": "Polygon", "coordinates": '
+    "[[[85.0, 27.0], [85.1, 27.0], [85.1, 27.1], [85.0, 27.1], [85.0, 27.0]]]}"
+)
+
+
+def test_map_draws_the_boundary_when_one_is_given() -> None:
+    html = render_map([_entry()], None, boundary_geojson=SMALL_AOI)
+    assert "aoi: { type: 'geojson'" in html
+    assert "id: 'aoi-line'" in html
+    assert AOI_COLOR in html
+    assert AOI_LABEL in html
+    assert 'data-key="aoi"' in html
+
+
+def test_map_has_no_boundary_layer_without_one() -> None:
+    html = render_map([_entry()], None)
+    assert "aoi-line" not in html
+    assert AOI_LABEL not in html
+
+
+def test_a_small_boundary_is_inlined_unchanged() -> None:
+    assert _display_boundary(SMALL_AOI) == SMALL_AOI
+
+
+def test_an_oversized_boundary_is_thinned_before_inlining() -> None:
+    """A full-resolution country outline would otherwise bloat every report page."""
+    import json as _json
+
+    ring = [[85.0 + i * 1e-6, 27.0 + (i % 2) * 1e-6] for i in range(30000)]
+    ring.append(ring[0])
+    big = _json.dumps({"type": "Polygon", "coordinates": [ring]})
+    assert len(big) > 200_000
+    thinned = _display_boundary(big)
+    assert len(thinned) < len(big)
+    assert _json.loads(thinned)["type"] in ("Polygon", "MultiPolygon")

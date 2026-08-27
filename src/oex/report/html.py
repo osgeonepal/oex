@@ -172,6 +172,8 @@ def render_report(
     layer_label: str | None = None,
     palette: list[str] | None = None,
     map_assets: MapAssetsConfig | None = None,
+    *,
+    boundary_geojson: str | None = None,
 ) -> str:
     """Per-category data quality report.
 
@@ -228,7 +230,7 @@ def render_report(
         for i, name in enumerate(ordered)
         if tilesets and name in tilesets
     ]
-    map_block = render_map(entries, boundary_bbox, map_assets)
+    map_block = render_map(entries, boundary_bbox, map_assets, boundary_geojson=boundary_geojson)
     scripts = head_scripts(map_assets) if entries else ""
 
     return (
