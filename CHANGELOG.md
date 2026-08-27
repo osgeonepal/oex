@@ -64,6 +64,12 @@ and is auto-managed by [commitizen](https://commitizen-tools.github.io/commitize
 
 - **config**: config fix
 
+## v0.4.11 (2026-08-28)
+
+### Fix
+
+- **onthefly**: postpass support
+
 ## v0.4.10 (2026-08-13)
 
 ### Fix

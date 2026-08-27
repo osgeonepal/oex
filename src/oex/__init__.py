@@ -15,7 +15,7 @@ from oex.config.schema import (
 )
 from oex.exporter import Exporter, ExportResult
 
-__version__ = "0.4.10"
+__version__ = "0.4.11"
 __all__ = [
     "BoundaryConfig",
     "CategoryConfig",
