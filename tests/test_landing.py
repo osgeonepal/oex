@@ -272,3 +272,17 @@ def test_landing_uses_the_configured_palette() -> None:
     assert 'style="background:#111111"' in html
     assert "'fill-color': '#222222'" in html
     assert "#e6194B" not in html
+
+
+def test_layer_rows_are_ordered_by_name_not_config_order() -> None:
+    """The table matches how the resources are listed, so one lookup habit works for both."""
+    panels = [
+        CategoryPanel(slug="waterways", label="Waterways", sources=[_source()]),
+        CategoryPanel(slug="bridges", label="Bridges", sources=[_source()]),
+        CategoryPanel(slug="buildings", label="Buildings", sources=[_source()]),
+    ]
+    html = render_landing(
+        title="t", subtitle="s", panels=panels, pmtiles_url=None, pmtiles_layer=None
+    )
+    positions = [html.index(f"{label} (") for label in ("Bridges", "Buildings", "Waterways")]
+    assert positions == sorted(positions)

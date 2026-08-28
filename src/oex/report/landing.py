@@ -89,7 +89,11 @@ def render_landing(
 
     # One colour per (category, source) row, so a merged single-layer tileset can
     # still be read per category and per source on the map and in the swatches.
-    flat = [(p, s) for p in panels for s in p.sources]
+    # Ordered by name to match how the resources are listed on the dataset.
+    flat = sorted(
+        ((p, s) for p in panels for s in p.sources),
+        key=lambda pair: (pair[0].label.casefold(), source_label(pair[1].source_name).casefold()),
+    )
     rows = [
         _Row(slug=p.slug, label=p.label, color=colors[i % len(colors)], source=s)
         for i, (p, s) in enumerate(flat)

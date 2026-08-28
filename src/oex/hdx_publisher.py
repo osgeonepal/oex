@@ -332,6 +332,26 @@ class HdxPublisher:
                 ),
                 label=f"create {dt_name}",
             )
+        self._sort_resources_by_name(dataset, dt_name)
+
+    @staticmethod
+    def _sort_resources_by_name(dataset, dt_name: str) -> None:  # noqa: ANN001 - hdx Dataset
+        """Order the dataset's resources by name, so a reader can find one by scanning.
+
+        A resource updated in place keeps whatever position it already held, so the
+        order has to be set after the write rather than by the order they were added.
+        """
+        resources = dataset.get_resources() or []
+        if len(resources) < 2:
+            return
+        ordered = sorted(resources, key=lambda r: (r.get("name") or "").casefold())
+        if [r["id"] for r in ordered] == [r["id"] for r in resources]:
+            return
+        _hdx_publish_with_retry(
+            lambda: dataset.reorder_resources([r["id"] for r in ordered]),
+            label=f"reorder {dt_name}",
+        )
+        logger.info("%s: ordered %d resources by name", dt_name, len(ordered))
 
     def publish_combined(
         self,

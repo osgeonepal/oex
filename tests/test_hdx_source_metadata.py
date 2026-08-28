@@ -217,3 +217,54 @@ def test_slug_prefix_follows_a_custom_dataset_name() -> None:
         )
         is None
     )
+
+
+class _FakeResource(dict):
+    pass
+
+
+class _FakeDataset:
+    """Just enough of the hdx Dataset surface for the ordering check."""
+
+    def __init__(self, names):
+        self._resources = [_FakeResource({"id": str(i), "name": n}) for i, n in enumerate(names)]
+        self.reordered = None
+
+    def get_resources(self):
+        return self._resources
+
+    def reorder_resources(self, ids):
+        self.reordered = list(ids)
+        by_id = {r["id"]: r for r in self._resources}
+        self._resources = [by_id[i] for i in ids]
+
+
+def test_resources_are_ordered_by_name() -> None:
+    from oex.hdx_publisher import HdxPublisher
+
+    dataset = _FakeDataset(
+        ["Waterways (OSM), KML", "Area of Interest, GeoJSON", "Buildings (OSM), KML"]
+    )
+    HdxPublisher._sort_resources_by_name(dataset, "ds")
+    assert [r["name"] for r in dataset.get_resources()] == [
+        "Area of Interest, GeoJSON",
+        "Buildings (OSM), KML",
+        "Waterways (OSM), KML",
+    ]
+
+
+def test_ordering_is_skipped_when_already_sorted() -> None:
+    """Reordering is an extra HDX write, so it only happens when it changes something."""
+    from oex.hdx_publisher import HdxPublisher
+
+    dataset = _FakeDataset(["Alpha", "Beta", "Gamma"])
+    HdxPublisher._sort_resources_by_name(dataset, "ds")
+    assert dataset.reordered is None
+
+
+def test_ordering_ignores_case() -> None:
+    from oex.hdx_publisher import HdxPublisher
+
+    dataset = _FakeDataset(["beta", "Alpha"])
+    HdxPublisher._sort_resources_by_name(dataset, "ds")
+    assert [r["name"] for r in dataset.get_resources()] == ["Alpha", "beta"]
