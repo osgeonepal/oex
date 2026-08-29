@@ -444,6 +444,11 @@ def cmd_metadata(
     check: bool = typer.Option(
         False, "--check", help="Report what would change and write nothing."
     ),
+    prune: bool = typer.Option(
+        False,
+        "--prune",
+        help="Destructive: delete resources whose category is no longer in the config.",
+    ),
 ) -> None:
     """Push config text to HDX without re-running the export.
 
@@ -462,13 +467,14 @@ def cmd_metadata(
             continue
         publisher = HdxPublisher(cfg.hdx)
         try:
-            dt_name, changed = publisher.update_metadata(cfg, dry_run=check)
+            dt_name, changed, pruned = publisher.update_metadata(cfg, dry_run=check, prune=prune)
         except RuntimeError as error:
             typer.echo(f"{yaml_path}: {error}")
             failed += 1
             continue
         verb = "would change" if check else "changed"
-        typer.echo(f"{dt_name}: {verb} {changed} resource(s)")
+        removed = f", {verb} {pruned} removed" if pruned else ""
+        typer.echo(f"{dt_name}: {verb} {changed} resource(s){removed}")
     raise typer.Exit(code=1 if failed else 0)
 
 

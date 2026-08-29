@@ -40,10 +40,6 @@ RESOURCE_SOURCE = {"osm": "OSM", "overture": "Overture"}
 
 _SUMMARY_CHARS = 240
 
-_UPDATE_NOTE = (
-    "Updated as mapping progresses, so subscribe to the dataset for updates and "
-    "expect coverage to grow as more volunteers contribute."
-)
 
 # A reader wants to know what a layer holds, not which OSM keys select it.
 
@@ -480,7 +476,9 @@ class HdxPublisher:
             )
         return dt_name
 
-    def update_metadata(self, cfg: RootConfig, *, dry_run: bool = False) -> tuple[str, int]:
+    def update_metadata(
+        self, cfg: RootConfig, *, dry_run: bool = False, prune: bool = False
+    ) -> tuple[str, int, int]:
         """Rewrite dataset and resource text from the config, leaving files and ids alone.
 
         Returns the dataset name and how many resources changed.
@@ -510,7 +508,15 @@ class HdxPublisher:
 
         by_slug = {_slugify(c.name): c for c in cfg.categories}
         changed = 0
-        for resource in dataset.get_resources() or []:
+        pruned = 0
+        for resource in list(dataset.get_resources() or []):
+            slug = _resource_slug(resource, dt_name)
+            if prune and slug is not None and slug not in by_slug:
+                logger.info("%s: removing %s, no longer in the config", dt_name, resource["name"])
+                pruned += 1
+                if not dry_run:
+                    resource.delete_from_hdx()
+                continue
             wanted = _resource_text(resource, dt_name, by_slug)
             if wanted is None:
                 continue
@@ -525,7 +531,7 @@ class HdxPublisher:
             resource.update_in_hdx()
 
         if dry_run:
-            return dt_name, changed
+            return dt_name, changed, pruned
         _hdx_publish_with_retry(
             lambda: dataset.update_in_hdx(
                 update_resources=False, hxl_update=False, remove_additional_resources=False
@@ -534,7 +540,7 @@ class HdxPublisher:
         )
         self._sort_resources_by_name(dataset, dt_name)
         logger.info("%s: metadata updated, %d resource(s) changed", dt_name, changed)
-        return dt_name, changed
+        return dt_name, changed, pruned
 
     def _build_combined_dataset_object(
         self,
@@ -815,13 +821,10 @@ class HdxPublisher:
         summary = _category_summary(category)
         if source:
             name = f"{label} ({RESOURCE_SOURCE.get(source, source)}), {fmt_label}"
-            description = (
-                f"{summary} From {HDX_SHORT_SOURCE.get(source, source)}, as {fmt_label}. "
-                f"{_UPDATE_NOTE}"
-            )
+            description = f"{summary} From {HDX_SHORT_SOURCE.get(source, source)}, as {fmt_label}."
         else:
             name = f"{label}, {fmt_label}"
-            description = f"{summary} As {fmt_label}. {_UPDATE_NOTE}"
+            description = f"{summary} As {fmt_label}."
         return self._make_resource_for_path(
             path=zip_path,
             fmt=fmt,
@@ -1036,6 +1039,17 @@ def _category_tilesets(resources: list) -> dict[str, tuple[str, str]]:  # noqa: 
     return tilesets
 
 
+def _resource_slug(resource, dt_name: str) -> str | None:  # noqa: ANN001 - hdx Resource
+    """Category slug a layer resource belongs to, or None when it is not a layer."""
+    stem = _resource_filename(resource).rsplit(".", 1)[0]
+    if not stem.startswith(f"{dt_name}_"):
+        return None
+    parts = stem[len(dt_name) + 1 :].rsplit("_", 2)
+    if len(parts) != 3 or parts[1] not in RESOURCE_SOURCE:
+        return None
+    return parts[0]
+
+
 def _resource_text(resource, dt_name: str, by_slug: dict) -> tuple[str, str] | None:  # noqa: ANN001
     """Name and description for a layer resource, keyed off the filename rather than
     the display name, which is not an identifier."""
@@ -1053,7 +1067,7 @@ def _resource_text(resource, dt_name: str, by_slug: dict) -> tuple[str, str] | N
     name = f"{category_label(category)} ({RESOURCE_SOURCE[source]}), {fmt_label}"
     description = (
         f"{_category_summary(category)} From {HDX_SHORT_SOURCE.get(source, source)}, "
-        f"as {fmt_label}. {_UPDATE_NOTE}"
+        f"as {fmt_label}."
     )
     return name, description
 
