@@ -64,6 +64,14 @@ and is auto-managed by [commitizen](https://commitizen-tools.github.io/commitize
 
 - **config**: config fix
 
+## v0.4.12 (2026-08-29)
+
+### Fix
+
+- **summary**: fixes summary to be passed form config
+- **ordering**: add ordering to datasets
+- **boundary**: add boundary support in html report
+
 ## v0.4.11 (2026-08-28)
 
 ### Fix
