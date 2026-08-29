@@ -216,6 +216,8 @@ def license_label(value: str) -> str:
 class CategoryHdx:
     title: str | None = None
     notes: str = "Vector data export."
+    # Each resource's description; falls back to the opening of `notes` when unset.
+    summary: str = ""
     tags: list[str] = field(default_factory=lambda: ["geodata"])
     license: str = "hdx-odc-odbl"
     license_url: str | None = None

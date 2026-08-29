@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import time
 import urllib.parse
 from dataclasses import dataclass
@@ -36,6 +37,16 @@ HDX_SHORT_SOURCE = {"osm": "OpenStreetMap", "overture": "Overture"}
 # and a source rather than a filename. Format is part of the name because
 # ResourceMatcher collapses same-named resources that differ only by format.
 RESOURCE_SOURCE = {"osm": "OSM", "overture": "Overture"}
+
+_SUMMARY_CHARS = 240
+
+_UPDATE_NOTE = (
+    "Updated as mapping progresses, so subscribe to the dataset for updates and "
+    "expect coverage to grow as more volunteers contribute."
+)
+
+# A reader wants to know what a layer holds, not which OSM keys select it.
+
 FORMAT_LABEL = {
     "gpkg": "GeoPackage",
     "shp": "Shapefile",
@@ -123,6 +134,34 @@ class PublishContext:
     boundary_geojson: str | None = None
 
 
+def _category_summary(category: CategoryConfig) -> str:
+    """Resource description for a category: `hdx.summary`, else the opening of its notes."""
+    if category.hdx.summary:
+        return " ".join(category.hdx.summary.split())
+    notes = " ".join((category.hdx.notes or "").split())
+    if not notes:
+        return f"{category_label(category)} for this area."
+    notes = _strip_tag_names(notes, category)
+    notes = re.sub(r"\s+", " ", notes).replace(" ,", ",").replace(" :", ":").strip()
+    chosen: list[str] = []
+    for sentence in notes.split(". "):
+        if chosen and len(". ".join([*chosen, sentence])) > _SUMMARY_CHARS:
+            break
+        chosen.append(sentence)
+    return ". ".join(chosen).rstrip(".") + "."
+
+
+def _strip_tag_names(notes: str, category: CategoryConfig) -> str:
+    """Drop the OSM keys a layer selects on; a reader wants the subject, not the query."""
+    keys = {k.split(":")[-1] for k in category.osm.filter} | set(category.osm.filter)
+    span = re.compile(r"`([^`]+)`")
+    kept = span.sub(
+        lambda m: "" if m.group(1).split("=")[0].strip(":") in keys else m.group(0), notes
+    )
+    kept = re.sub(r"\s*(tagged(\s+via| with| as)?|via)\s*(([,]|or|and)\s*)*(?=[.,:;]|$)", "", kept)
+    return re.sub(r"[ ]*(,\s*)+(?=[.,:;])|(?<=\s)(,\s*)+", "", kept)
+
+
 def _aoi_payload(boundary_geojson: str, buffer_meters: float) -> tuple[str, str]:
     """The area of interest as a FeatureCollection, plus a description naming its size."""
     from pyproj import Geod
@@ -130,7 +169,7 @@ def _aoi_payload(boundary_geojson: str, buffer_meters: float) -> tuple[str, str]
 
     geometry = json.loads(boundary_geojson)
     area = abs(Geod(ellps="WGS84").geometry_area_perimeter(shape(geometry))[0]) / 1e6
-    widened = f", the configured geometry widened by {buffer_meters:g} m" if buffer_meters else ""
+    widened = ", widened beyond the source geometry" if buffer_meters else ""
     collection = {
         "type": "FeatureCollection",
         "features": [
@@ -142,8 +181,8 @@ def _aoi_payload(boundary_geojson: str, buffer_meters: float) -> tuple[str, str]
         ],
     }
     description = (
-        f"The boundary every layer in this dataset is extracted from, {area:,.2f} sq km"
-        f"{widened}. This is the outline drawn on the map preview."
+        f"The boundary every layer in this dataset is extracted from{widened}. "
+        "This is the outline drawn on the map preview."
     )
     return json.dumps(collection, ensure_ascii=False), description
 
@@ -375,8 +414,8 @@ class HdxPublisher:
                 path=pmtiles_path,
                 fmt="pmtiles",
                 description=(
-                    f"Vector tiles covering all {len(entries)} layers in one archive, "
-                    "with a category and source attribute per feature. For web maps."
+                    "Every layer in one tile archive, with a category and source "
+                    "attribute per feature. For web maps."
                 ),
                 ctx=ctx,
                 iso3=cfg.iso3,
@@ -416,8 +455,8 @@ class HdxPublisher:
                 path=metadata_path,
                 fmt="json",
                 description=(
-                    f"Field-level metadata for all {len(entries)} "
-                    f"{HDX_SHORT_SOURCE.get(ctx.source_name, ctx.source_name)} layers: "
+                    "Field-level metadata for every "
+                    f"{HDX_SHORT_SOURCE.get(ctx.source_name, ctx.source_name)} layer: "
                     "feature counts, geometry types, columns and value distributions."
                 ),
                 ctx=ctx,
@@ -440,6 +479,62 @@ class HdxPublisher:
                 ctx=ctx,
             )
         return dt_name
+
+    def update_metadata(self, cfg: RootConfig, *, dry_run: bool = False) -> tuple[str, int]:
+        """Rewrite dataset and resource text from the config, leaving files and ids alone.
+
+        Returns the dataset name and how many resources changed.
+        """
+        from hdx.data.dataset import Dataset
+
+        dt_name = cfg.hdx.combined.name or f"{cfg.key}_{cfg.iso3.lower()}"
+        dataset = Dataset.read_from_hdx(dt_name)
+        if dataset is None:
+            raise RuntimeError(f"HDX dataset {dt_name} not found; publish it before updating text")
+
+        place = country_name(cfg.iso3, dataset_name=cfg.dataset_name)
+        hdx_source = cfg.hdx.combined.source or HDX_SHORT_SOURCE.get("osm", "OpenStreetMap")
+        if cfg.hdx.combined.title:
+            dataset["title"] = combined_title(cfg, place, hdx_source)
+        for field, value in (
+            ("notes", cfg.hdx.combined.notes),
+            ("caveats", cfg.hdx.combined.caveats),
+            ("dataset_source", cfg.hdx.combined.source),
+            ("methodology_other", cfg.hdx.methodology_other),
+        ):
+            if value:
+                dataset[field] = value
+        if cfg.hdx.combined.tags:
+            dataset.add_tags(list(cfg.hdx.combined.tags))
+        dataset.set_expected_update_frequency(cfg.frequency)
+
+        by_slug = {_slugify(c.name): c for c in cfg.categories}
+        changed = 0
+        for resource in dataset.get_resources() or []:
+            wanted = _resource_text(resource, dt_name, by_slug)
+            if wanted is None:
+                continue
+            name, description = wanted
+            if resource["name"] == name and resource.get("description") == description:
+                continue
+            changed += 1
+            if dry_run:
+                continue
+            resource["name"] = name
+            resource["description"] = description
+            resource.update_in_hdx()
+
+        if dry_run:
+            return dt_name, changed
+        _hdx_publish_with_retry(
+            lambda: dataset.update_in_hdx(
+                update_resources=False, hxl_update=False, remove_additional_resources=False
+            ),
+            label=f"metadata {dt_name}",
+        )
+        self._sort_resources_by_name(dataset, dt_name)
+        logger.info("%s: metadata updated, %d resource(s) changed", dt_name, changed)
+        return dt_name, changed
 
     def _build_combined_dataset_object(
         self,
@@ -717,15 +812,16 @@ class HdxPublisher:
         fmt = parts[-1]
         label = category_label(category)
         fmt_label = FORMAT_LABEL.get(fmt, fmt.upper())
+        summary = _category_summary(category)
         if source:
             name = f"{label} ({RESOURCE_SOURCE.get(source, source)}), {fmt_label}"
             description = (
-                f"{label} for this area, from {HDX_SHORT_SOURCE.get(source, source)}, "
-                f"as {fmt_label}."
+                f"{summary} From {HDX_SHORT_SOURCE.get(source, source)}, as {fmt_label}. "
+                f"{_UPDATE_NOTE}"
             )
         else:
             name = f"{label}, {fmt_label}"
-            description = f"{label} for this area, as {fmt_label}."
+            description = f"{summary} As {fmt_label}. {_UPDATE_NOTE}"
         return self._make_resource_for_path(
             path=zip_path,
             fmt=fmt,
@@ -938,6 +1034,28 @@ def _category_tilesets(resources: list) -> dict[str, tuple[str, str]]:  # noqa: 
         if url:
             tilesets[stem.rsplit("_", 1)[-1]] = (url, stem)
     return tilesets
+
+
+def _resource_text(resource, dt_name: str, by_slug: dict) -> tuple[str, str] | None:  # noqa: ANN001
+    """Name and description for a layer resource, keyed off the filename rather than
+    the display name, which is not an identifier."""
+    stem = _resource_filename(resource).rsplit(".", 1)[0]
+    if not stem.startswith(f"{dt_name}_"):
+        return None
+    parts = stem[len(dt_name) + 1 :].rsplit("_", 2)
+    if len(parts) != 3:
+        return None
+    slug, source, fmt = parts
+    category = by_slug.get(slug)
+    if category is None or source not in RESOURCE_SOURCE:
+        return None
+    fmt_label = FORMAT_LABEL.get(fmt, fmt.upper())
+    name = f"{category_label(category)} ({RESOURCE_SOURCE[source]}), {fmt_label}"
+    description = (
+        f"{_category_summary(category)} From {HDX_SHORT_SOURCE.get(source, source)}, "
+        f"as {fmt_label}. {_UPDATE_NOTE}"
+    )
+    return name, description
 
 
 def _resource_filename(resource) -> str:  # noqa: ANN001 - hdx Resource

@@ -434,6 +434,44 @@ def cmd_all(
     raise typer.Exit(code=_summarise(results))
 
 
+@app.command("metadata")
+def cmd_metadata(
+    configs_dir: Path | None = typer.Option(
+        None, "--configs-dir", help="Run every YAML in this directory"
+    ),
+    config: Path | None = typer.Option(None, "--config", "-c", help="Explicit config YAML path"),
+    iso3: str | None = typer.Option(None, "--iso3", help="ISO3 country code (e.g. NPL, COD)"),
+    check: bool = typer.Option(
+        False, "--check", help="Report what would change and write nothing."
+    ),
+) -> None:
+    """Push config text to HDX without re-running the export.
+
+    Rewrites the dataset title, description, caveats, source and tags, and every
+    resource's name and description, from the config. Data files are untouched, so
+    a wording change takes seconds instead of a full export.
+    """
+    from oex.hdx_publisher import HdxPublisher
+
+    yamls = _resolve_config(iso3, configs_dir, config)
+    failed = 0
+    for yaml_path in yamls:
+        cfg = load_config(yaml_path)
+        if not cfg.hdx.combined.name:
+            typer.echo(f"{yaml_path}: no hdx.combined.name, skipping")
+            continue
+        publisher = HdxPublisher(cfg.hdx)
+        try:
+            dt_name, changed = publisher.update_metadata(cfg, dry_run=check)
+        except RuntimeError as error:
+            typer.echo(f"{yaml_path}: {error}")
+            failed += 1
+            continue
+        verb = "would change" if check else "changed"
+        typer.echo(f"{dt_name}: {verb} {changed} resource(s)")
+    raise typer.Exit(code=1 if failed else 0)
+
+
 @app.command("osm-build-cache")
 def cmd_osm_build_cache(
     config: Path | None = typer.Option(
