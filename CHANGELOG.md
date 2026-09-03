@@ -64,6 +64,13 @@ and is auto-managed by [commitizen](https://commitizen-tools.github.io/commitize
 
 - **config**: config fix
 
+## v0.4.13 (2026-09-03)
+
+### Fix
+
+- **raw**: fix rawdata api bundle
+- **update**: remove update note
+
 ## v0.4.12 (2026-08-29)
 
 ### Fix
