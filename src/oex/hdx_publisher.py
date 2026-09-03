@@ -510,8 +510,8 @@ class HdxPublisher:
         changed = 0
         pruned = 0
         for resource in list(dataset.get_resources() or []):
-            slug = _resource_slug(resource, dt_name)
-            if prune and slug is not None and slug not in by_slug:
+            layer = _resource_slug(resource, dt_name)
+            if prune and layer is not None and _is_dropped(layer, by_slug):
                 logger.info("%s: removing %s, no longer in the config", dt_name, resource["name"])
                 pruned += 1
                 if not dry_run:
@@ -1039,15 +1039,25 @@ def _category_tilesets(resources: list) -> dict[str, tuple[str, str]]:  # noqa: 
     return tilesets
 
 
-def _resource_slug(resource, dt_name: str) -> str | None:  # noqa: ANN001 - hdx Resource
-    """Category slug a layer resource belongs to, or None when it is not a layer."""
+def _resource_slug(resource, dt_name: str) -> tuple[str, str] | None:  # noqa: ANN001
+    """(category slug, source) a layer resource belongs to, or None when it is not a layer."""
     stem = _resource_filename(resource).rsplit(".", 1)[0]
     if not stem.startswith(f"{dt_name}_"):
         return None
     parts = stem[len(dt_name) + 1 :].rsplit("_", 2)
     if len(parts) != 3 or parts[1] not in RESOURCE_SOURCE:
         return None
-    return parts[0]
+    return parts[0], parts[1]
+
+
+def _is_dropped(layer: tuple[str, str], by_slug: dict) -> bool:
+    """True when the config no longer publishes this category from this source."""
+    slug, source = layer
+    category = by_slug.get(slug)
+    if category is None:
+        return True
+    block = getattr(category, source, None)
+    return block is not None and not block.enabled
 
 
 def _resource_text(resource, dt_name: str, by_slug: dict) -> tuple[str, str] | None:  # noqa: ANN001

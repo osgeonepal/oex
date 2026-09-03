@@ -48,6 +48,7 @@ from oex.osm.extract import osmium_polygon_extract
 from oex.osm.fetch_planet import download_pbf
 from oex.osm.geofabrik import GeofabrikUnavailableError, lookup_country
 from oex.osm.postpass import boundary_area_sq_km, fetch_country_parquet
+from oex.osm.rawdata import fetch_country_parquet as fetch_rawdata_parquet
 from oex.sources.base import CategorySkippedError, SourceQuery, SourceRunner
 from oex.system import cpu_count, default_memory_limit_gb
 
@@ -189,6 +190,21 @@ class OsmRunner(SourceRunner):
             raise RuntimeError("OSM source is disabled in config")
 
         engine = (src.engine or "geofabrik").lower()
+        fallback = (src.fallback_engine or "").lower()
+        try:
+            self._prepare_engine(cfg, src, engine)
+        except (RuntimeError, requests.RequestException) as error:
+            if not fallback:
+                raise
+            logger.warning(
+                "osm.engine=%s failed (%s); falling back to %s for this run",
+                engine,
+                error,
+                fallback,
+            )
+            self._prepare_engine(cfg, src, fallback)
+
+    def _prepare_engine(self, cfg: RootConfig, src: OsmSourceConfig, engine: str) -> None:
         if engine == "geofabrik":
             try:
                 self._prepare_geofabrik(cfg, src)
@@ -205,10 +221,40 @@ class OsmRunner(SourceRunner):
             self._prepare_planet(cfg, src)
         elif engine == "postpass":
             self._prepare_postpass(cfg, src)
+        elif engine == "rawdata":
+            self._prepare_rawdata(cfg, src)
         else:
             raise ValueError(
-                f"Unknown osm.engine={engine!r}; expected 'geofabrik', 'planet' or 'postpass'"
+                f"Unknown osm.engine={engine!r}; expected one of "
+                "'geofabrik', 'planet', 'postpass', 'rawdata'"
             )
+
+    def _prepare_rawdata(self, cfg: RootConfig, src: OsmSourceConfig) -> None:
+        """Live OSM through the HOT Raw Data API. Always refetches; freshness is the point."""
+        if not cfg.iso3:
+            raise ValueError("osm.engine=rawdata requires `iso3` in the config")
+
+        boundary = resolve_boundary(cfg.iso3, cfg.boundary)
+        union_filter = union_tag_filter(cfg.categories)
+        snapshot_dir = Path(src.cache_dir) / "rawdata" / cfg.iso3.lower()
+        country_parquet = snapshot_dir / f"country-{_parquet_fingerprint(cfg, clip=True)}.parquet"
+
+        logger.info(
+            "Raw Data API fetch for %s: %d filter keys", cfg.iso3.upper(), len(union_filter)
+        )
+        snapshot = fetch_rawdata_parquet(
+            boundary_geojson=boundary.geojson,
+            tag_filter=union_filter,
+            out_path=country_parquet,
+            endpoint=src.rawdata_endpoint,
+        )
+
+        self._engine = "rawdata"
+        self._snapshot_dir = snapshot_dir
+        self._snapshot_label = snapshot.label
+        self._snapshot_date = snapshot.timestamp
+        self._dataset_source = f"OpenStreetMap (HOT Raw Data API {snapshot.label})"
+        self._country_parquet = country_parquet
 
     def _prepare_postpass(self, cfg: RootConfig, src: OsmSourceConfig) -> None:
         """Live OSM for a small area. Always refetches, since the point is freshness."""

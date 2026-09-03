@@ -16,6 +16,7 @@ from shapely.geometry import shape
 
 from oex.logging_setup import get_logger
 from oex.osm.category_filter import OsmTagsFilter
+from oex.osm.country_parquet import write_country_parquet
 
 logger = get_logger(__name__)
 
@@ -24,14 +25,6 @@ DEFAULT_TIMEOUT_SECONDS = 600
 
 # osm2pgsql spreads OSM over three tables and stores relations as negative ids.
 _TABLES = ("planet_osm_point", "planet_osm_line", "planet_osm_polygon")
-
-# The exporter writes one output schema regardless of engine, so this parquet must
-# match what quackosm produces for the geofabrik and planet engines.
-PARQUET_CONTRACT = [
-    ("feature_id", "VARCHAR"),
-    ("tags", "MAP(VARCHAR, VARCHAR)"),
-    ("geometry", "GEOMETRY('OGC:CRS84')"),
-]
 
 _GEOD = Geod(ellps="WGS84")
 
@@ -105,42 +98,6 @@ def _rows(payload: dict) -> list[tuple[str, str, str]]:
     return [(p["feature_id"], p["tags_json"], p["wkt"]) for p in properties if p["wkt"] is not None]
 
 
-def _write_parquet(rows: list[tuple[str, str, str]], out_path: Path) -> None:
-    import duckdb
-
-    conn = duckdb.connect()
-    conn.execute("INSTALL spatial; LOAD spatial; INSTALL json; LOAD json;")
-    conn.execute("CREATE TEMP TABLE rows (feature_id VARCHAR, tags_json VARCHAR, wkt VARCHAR)")
-    if rows:
-        conn.executemany("INSERT INTO rows VALUES (?, ?, ?)", rows)
-    # osm2pgsql returns every areal feature as MULTIPOLYGON and every linear one as
-    # MULTILINESTRING; quackosm keeps single-part features singular. Downcasting here
-    # keeps the geometry type in the published files the same across engines.
-    conn.execute(f"""
-        COPY (
-            SELECT feature_id,
-                   CAST(json(tags_json) AS MAP(VARCHAR, VARCHAR)) AS tags,
-                   CASE WHEN ST_NumGeometries(parsed) = 1
-                        THEN ST_Dump(parsed)[1].geom
-                        ELSE parsed
-                   END AS geometry
-            FROM (SELECT feature_id, tags_json, ST_GeomFromText(wkt) AS parsed FROM rows)
-        ) TO '{out_path}' (FORMAT PARQUET, COMPRESSION ZSTD)
-    """)
-    written = [
-        (name, dtype)
-        for name, dtype, *_ in conn.execute(
-            f"DESCRIBE SELECT * FROM read_parquet('{out_path}')"
-        ).fetchall()
-    ]
-    conn.close()
-    if written != PARQUET_CONTRACT:
-        raise RuntimeError(
-            f"Postpass parquet schema {written} does not match the contract "
-            f"{PARQUET_CONTRACT} the exporter expects from every OSM engine"
-        )
-
-
 def fetch_country_parquet(
     *,
     boundary_geojson: str,
@@ -169,7 +126,7 @@ def fetch_country_parquet(
             "be written as a geometry parquet."
         )
 
-    _write_parquet(rows, out_path)
+    write_country_parquet(rows, out_path, "Postpass")
     logger.info("Postpass snapshot %s: %d features -> %s", label, len(rows), out_path)
     return PostpassSnapshot(
         parquet=out_path,

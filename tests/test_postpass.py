@@ -11,11 +11,10 @@ import pytest
 
 from oex.config import ConfigError
 from oex.config.loader import load_config
+from oex.osm.country_parquet import PARQUET_CONTRACT, write_country_parquet
 from oex.osm.postpass import (
-    PARQUET_CONTRACT,
     _feature_id_expr,
     _rows,
-    _write_parquet,
     boundary_area_sq_km,
     build_sql,
     fetch_country_parquet,
@@ -102,7 +101,9 @@ def test_rows_drop_features_without_geometry() -> None:
 
 def test_written_parquet_matches_the_quackosm_contract(tmp_path: Path) -> None:
     out = tmp_path / "country.parquet"
-    _write_parquet([("way/1", '{"building":"yes"}', "POLYGON((0 0,1 0,1 1,0 0))")], out)
+    write_country_parquet(
+        [("way/1", '{"building":"yes"}', "POLYGON((0 0,1 0,1 1,0 0))")], out, "test"
+    )
 
     import duckdb
 
@@ -120,13 +121,14 @@ def test_written_parquet_matches_the_quackosm_contract(tmp_path: Path) -> None:
 def test_single_part_geometries_are_downcast_to_match_quackosm(tmp_path: Path) -> None:
     """osm2pgsql returns MULTI* for everything; the published files must not change shape."""
     out = tmp_path / "country.parquet"
-    _write_parquet(
+    write_country_parquet(
         [
             ("way/1", "{}", "MULTIPOLYGON(((0 0,1 0,1 1,0 0)))"),
             ("way/2", "{}", "MULTILINESTRING((0 0,1 1))"),
             ("way/3", "{}", "MULTIPOLYGON(((0 0,1 0,1 1,0 0)),((5 5,6 5,6 6,5 5)))"),
         ],
         out,
+        "test",
     )
 
     import duckdb

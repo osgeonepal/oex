@@ -84,7 +84,7 @@ def _validate_osm_engine(cfg: RootConfig) -> None:
     osm = cfg.source.get("osm")
     if osm is None:
         return
-    valid_engines = {"geofabrik", "planet", "postpass"}
+    valid_engines = {"geofabrik", "planet", "postpass", "rawdata"}
     if osm.engine not in valid_engines:
         raise ConfigError(
             f"source.osm.engine={osm.engine!r} is invalid; must be one of {sorted(valid_engines)}"
@@ -103,6 +103,14 @@ def _validate_osm_engine(cfg: RootConfig) -> None:
         raise ConfigError(
             "source.osm.planet_clip_to_boundary=false only applies to source.osm.engine='planet'"
         )
+    if osm.fallback_engine:
+        if osm.fallback_engine not in valid_engines:
+            raise ConfigError(
+                f"source.osm.fallback_engine={osm.fallback_engine!r} is invalid; "
+                f"must be one of {sorted(valid_engines)}"
+            )
+        if osm.fallback_engine == osm.engine:
+            raise ConfigError("source.osm.fallback_engine must differ from source.osm.engine")
     if osm.postpass_max_area_sq_km <= 0:
         raise ConfigError(
             "source.osm.postpass_max_area_sq_km must be greater than 0; "
