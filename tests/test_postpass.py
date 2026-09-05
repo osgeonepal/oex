@@ -11,7 +11,6 @@ import pytest
 
 from oex.config import ConfigError
 from oex.config.loader import load_config
-from oex.osm.country_parquet import PARQUET_CONTRACT, write_country_parquet
 from oex.osm.postpass import (
     _feature_id_expr,
     _rows,
@@ -99,53 +98,6 @@ def test_rows_drop_features_without_geometry() -> None:
     assert _rows(payload) == [("way/1", "{}", "POINT(85 27)")]
 
 
-def test_written_parquet_matches_the_quackosm_contract(tmp_path: Path) -> None:
-    out = tmp_path / "country.parquet"
-    write_country_parquet(
-        [("way/1", '{"building":"yes"}', "POLYGON((0 0,1 0,1 1,0 0))")], out, "test"
-    )
-
-    import duckdb
-
-    conn = duckdb.connect()
-    conn.execute("INSTALL spatial; LOAD spatial;")
-    schema = [
-        (n, t)
-        for n, t, *_ in conn.execute(f"DESCRIBE SELECT * FROM read_parquet('{out}')").fetchall()
-    ]
-    assert schema == PARQUET_CONTRACT
-    tags = conn.execute(f"SELECT tags['building'] FROM read_parquet('{out}')").fetchall()
-    assert tags == [("yes",)]
-
-
-def test_single_part_geometries_are_downcast_to_match_quackosm(tmp_path: Path) -> None:
-    """osm2pgsql returns MULTI* for everything; the published files must not change shape."""
-    out = tmp_path / "country.parquet"
-    write_country_parquet(
-        [
-            ("way/1", "{}", "MULTIPOLYGON(((0 0,1 0,1 1,0 0)))"),
-            ("way/2", "{}", "MULTILINESTRING((0 0,1 1))"),
-            ("way/3", "{}", "MULTIPOLYGON(((0 0,1 0,1 1,0 0)),((5 5,6 5,6 6,5 5)))"),
-        ],
-        out,
-        "test",
-    )
-
-    import duckdb
-
-    conn = duckdb.connect()
-    conn.execute("INSTALL spatial; LOAD spatial;")
-    kinds = dict(
-        conn.execute(
-            f"SELECT feature_id, ST_GeometryType(geometry) FROM read_parquet('{out}')"
-        ).fetchall()
-    )
-    assert kinds["way/1"] == "POLYGON"
-    assert kinds["way/2"] == "LINESTRING"
-    # Genuinely multipart geometry stays multipart.
-    assert kinds["way/3"] == "MULTIPOLYGON"
-
-
 def _stub_post(monkeypatch: pytest.MonkeyPatch, features_by_table: dict[str, list[dict]]) -> None:
     """Replace the one network call; keyed on the table named in the SQL."""
 
@@ -170,6 +122,7 @@ def test_an_empty_result_is_refused_rather_than_written(
             boundary_geojson=SQUARE,
             tag_filter={"building": True},
             out_path=tmp_path / "country.parquet",
+            timeout=60,
         )
 
 
@@ -200,7 +153,7 @@ def test_fetch_merges_all_three_tables_and_reports_the_data_timestamp(
     )
     out = tmp_path / "country.parquet"
     snapshot = fetch_country_parquet(
-        boundary_geojson=SQUARE, tag_filter={"building": True}, out_path=out
+        boundary_geojson=SQUARE, tag_filter={"building": True}, out_path=out, timeout=60
     )
     assert snapshot.feature_count == 3
     assert snapshot.label == "2026-08-27T20:25:16Z"

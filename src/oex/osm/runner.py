@@ -23,6 +23,7 @@ import hashlib
 import json
 import shutil
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -44,6 +45,9 @@ from oex.config.schema import (
 from oex.locale import local_osm_languages
 from oex.logging_setup import get_logger
 from oex.osm.category_filter import category_where_predicate, union_tag_filter
+from oex.osm.country_parquet import LiveSnapshot
+from oex.osm.engines import ENGINE_NAMES
+from oex.osm.errors import OsmEngineUnavailableError
 from oex.osm.extract import osmium_polygon_extract
 from oex.osm.fetch_planet import download_pbf
 from oex.osm.geofabrik import GeofabrikUnavailableError, lookup_country
@@ -137,22 +141,6 @@ def _inject_local_name(select_fields: list[str], iso3: str) -> list[str]:
     return new_fields
 
 
-def _resolve_snapshot(cache_root: Path, requested: str) -> str:
-    if requested and requested != "latest":
-        if not (cache_root / requested).is_dir():
-            raise FileNotFoundError(
-                f"No OSM cache snapshot {requested!r} under {cache_root}. "
-                "Run 'oex-cli osm-build-cache' first."
-            )
-        return requested
-    snapshots = sorted(p.name for p in cache_root.iterdir() if p.is_dir())
-    if not snapshots:
-        raise FileNotFoundError(
-            f"No OSM cache snapshots found in {cache_root}. Run 'oex-cli osm-build-cache' first."
-        )
-    return snapshots[-1]
-
-
 class OsmRunner(SourceRunner):
     name = "osm"
 
@@ -162,6 +150,7 @@ class OsmRunner(SourceRunner):
         self._snapshot_label: str | None = None
         self._snapshot_date: datetime | None = None
         self._dataset_source: str = "OpenStreetMap"
+        self._source_description: str = "Country features are extracted from the source PBF via quackosm with the union of all category tag filters; per-category exports apply tag predicates at query time."
         self._country_parquet: Path | None = None
         self._tags_present: bool | None = None
 
@@ -193,7 +182,7 @@ class OsmRunner(SourceRunner):
         fallback = (src.fallback_engine or "").lower()
         try:
             self._prepare_engine(cfg, src, engine)
-        except (RuntimeError, requests.RequestException) as error:
+        except (OsmEngineUnavailableError, requests.RequestException) as error:
             if not fallback:
                 raise
             logger.warning(
@@ -202,7 +191,10 @@ class OsmRunner(SourceRunner):
                 error,
                 fallback,
             )
-            self._prepare_engine(cfg, src, fallback)
+            try:
+                self._prepare_engine(cfg, src, fallback)
+            except Exception as fallback_error:
+                raise fallback_error from error
 
     def _prepare_engine(self, cfg: RootConfig, src: OsmSourceConfig, engine: str) -> None:
         if engine == "geofabrik":
@@ -225,44 +217,58 @@ class OsmRunner(SourceRunner):
             self._prepare_rawdata(cfg, src)
         else:
             raise ValueError(
-                f"Unknown osm.engine={engine!r}; expected one of "
-                "'geofabrik', 'planet', 'postpass', 'rawdata'"
+                f"Unknown osm.engine={engine!r}; expected one of {sorted(ENGINE_NAMES)}"
             )
 
-    def _prepare_rawdata(self, cfg: RootConfig, src: OsmSourceConfig) -> None:
-        """Live OSM through the HOT Raw Data API. Always refetches; freshness is the point."""
+    def _prepare_live_engine(
+        self,
+        cfg: RootConfig,
+        src: OsmSourceConfig,
+        *,
+        engine: str,
+        fetch: Callable[..., LiveSnapshot],
+        endpoint: str,
+        timeout: int,
+        dataset_source: str,
+        source_description: str,
+    ) -> None:
+        """Shared path for the engines that query a live OSM database.
+
+        Always refetches: freshness is the reason to use one, so a cached parquet
+        from an earlier run would defeat the point.
+        """
         if not cfg.iso3:
-            raise ValueError("osm.engine=rawdata requires `iso3` in the config")
+            raise ValueError(f"osm.engine={engine} requires `iso3` in the config")
 
         boundary = resolve_boundary(cfg.iso3, cfg.boundary)
+        self._check_area(engine, src, boundary.geojson)
         union_filter = union_tag_filter(cfg.categories)
-        snapshot_dir = Path(src.cache_dir) / "rawdata" / cfg.iso3.lower()
+        snapshot_dir = Path(src.cache_dir) / engine / cfg.iso3.lower()
         country_parquet = snapshot_dir / f"country-{_parquet_fingerprint(cfg, clip=True)}.parquet"
 
-        logger.info(
-            "Raw Data API fetch for %s: %d filter keys", cfg.iso3.upper(), len(union_filter)
-        )
-        snapshot = fetch_rawdata_parquet(
+        logger.info("%s fetch for %s: %d filter keys", engine, cfg.iso3.upper(), len(union_filter))
+        snapshot = fetch(
             boundary_geojson=boundary.geojson,
             tag_filter=union_filter,
             out_path=country_parquet,
-            endpoint=src.rawdata_endpoint,
+            endpoint=endpoint,
+            timeout=timeout,
         )
 
-        self._engine = "rawdata"
+        self._engine = engine
         self._snapshot_dir = snapshot_dir
         self._snapshot_label = snapshot.label
         self._snapshot_date = snapshot.timestamp
-        self._dataset_source = f"OpenStreetMap (HOT Raw Data API {snapshot.label})"
+        self._dataset_source = dataset_source.format(label=snapshot.label)
+        self._source_description = source_description
         self._country_parquet = country_parquet
 
-    def _prepare_postpass(self, cfg: RootConfig, src: OsmSourceConfig) -> None:
-        """Live OSM for a small area. Always refetches, since the point is freshness."""
-        if not cfg.iso3:
-            raise ValueError("osm.engine=postpass requires `iso3` in the config")
-
-        boundary = resolve_boundary(cfg.iso3, cfg.boundary)
-        area_sq_km = boundary_area_sq_km(boundary.geojson)
+    @staticmethod
+    def _check_area(engine: str, src: OsmSourceConfig, boundary_geojson: str) -> None:
+        """Postpass is a shared Geofabrik service and refuses large areas server-side."""
+        if engine != "postpass":
+            return
+        area_sq_km = boundary_area_sq_km(boundary_geojson)
         if area_sq_km > src.postpass_max_area_sq_km:
             raise ValueError(
                 f"Boundary covers {area_sq_km:,.0f} km2, above the "
@@ -271,29 +277,36 @@ class OsmRunner(SourceRunner):
                 "this size, or raise osm.postpass_max_area_sq_km deliberately."
             )
 
-        union_filter = union_tag_filter(cfg.categories)
-        snapshot_dir = Path(src.cache_dir) / "postpass" / cfg.iso3.lower()
-        country_parquet = snapshot_dir / f"country-{_parquet_fingerprint(cfg, clip=True)}.parquet"
-
-        logger.info(
-            "Postpass fetch for %s: boundary %.1f km2, %d filter keys",
-            cfg.iso3.upper(),
-            area_sq_km,
-            len(union_filter),
+    def _prepare_rawdata(self, cfg: RootConfig, src: OsmSourceConfig) -> None:
+        self._prepare_live_engine(
+            cfg,
+            src,
+            engine="rawdata",
+            fetch=fetch_rawdata_parquet,
+            endpoint=src.rawdata_endpoint,
+            timeout=src.rawdata_timeout_s,
+            dataset_source="OpenStreetMap (HOT Raw Data API {label})",
+            source_description=(
+                "Features are exported from the HOT Raw Data API, which tracks OpenStreetMap "
+                "continuously, as one job per run; per-category exports apply tag predicates "
+                "at query time."
+            ),
         )
-        snapshot = fetch_country_parquet(
-            boundary_geojson=boundary.geojson,
-            tag_filter=union_filter,
-            out_path=country_parquet,
+
+    def _prepare_postpass(self, cfg: RootConfig, src: OsmSourceConfig) -> None:
+        self._prepare_live_engine(
+            cfg,
+            src,
+            engine="postpass",
+            fetch=fetch_country_parquet,
             endpoint=src.postpass_endpoint,
+            timeout=src.postpass_timeout_s,
+            dataset_source="OpenStreetMap (Postpass {label})",
+            source_description=(
+                "Features are queried from Geofabrik's Postpass database, which tracks "
+                "OpenStreetMap continuously, one SQL query per category."
+            ),
         )
-
-        self._engine = "postpass"
-        self._snapshot_dir = snapshot_dir
-        self._snapshot_label = snapshot.label
-        self._snapshot_date = snapshot.timestamp
-        self._dataset_source = f"OpenStreetMap (Postpass {snapshot.label})"
-        self._country_parquet = country_parquet
 
     def _prepare_planet(self, cfg: RootConfig, src: OsmSourceConfig) -> None:
         if not dataset_identity(cfg):
@@ -628,9 +641,7 @@ class OsmRunner(SourceRunner):
             source_url="https://www.openstreetmap.org/",
             source_description=(
                 "OpenStreetMap is a community-edited geographic dataset of the world. "
-                "Country features are extracted from the source PBF via quackosm with "
-                "the union of all category tag filters; per-category exports apply "
-                "tag predicates at query time."
+                f"{self._source_description}"
             ),
             snapshot_date=snapshot_date,
             snapshot_label=snapshot_label,

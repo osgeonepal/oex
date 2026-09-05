@@ -6,7 +6,6 @@ same country.parquet contract quackosm produces: feature_id, tags, geometry.
 """
 
 import json
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -16,25 +15,17 @@ from shapely.geometry import shape
 
 from oex.logging_setup import get_logger
 from oex.osm.category_filter import OsmTagsFilter
-from oex.osm.country_parquet import write_country_parquet
+from oex.osm.country_parquet import LiveSnapshot, write_country_parquet
+from oex.osm.errors import OsmEngineUnavailableError
 
 logger = get_logger(__name__)
 
 DEFAULT_ENDPOINT = "https://postpass.geofabrik.de/api/interpreter"
-DEFAULT_TIMEOUT_SECONDS = 600
 
 # osm2pgsql spreads OSM over three tables and stores relations as negative ids.
 _TABLES = ("planet_osm_point", "planet_osm_line", "planet_osm_polygon")
 
 _GEOD = Geod(ellps="WGS84")
-
-
-@dataclass(frozen=True)
-class PostpassSnapshot:
-    parquet: Path
-    timestamp: datetime
-    label: str
-    feature_count: int
 
 
 def boundary_area_sq_km(boundary_geojson: str) -> float:
@@ -88,7 +79,9 @@ def build_sql(table: str, predicate: str, boundary_geojson: str) -> str:
 def _post(endpoint: str, sql: str, timeout: int) -> dict:
     response = requests.post(endpoint, data={"data": sql}, timeout=timeout)
     if response.status_code != 200:
-        raise RuntimeError(f"Postpass returned HTTP {response.status_code}: {response.text[:500]}")
+        raise OsmEngineUnavailableError(
+            f"Postpass returned HTTP {response.status_code}: {response.text[:500]}"
+        )
     return dict(response.json())
 
 
@@ -104,8 +97,8 @@ def fetch_country_parquet(
     tag_filter: OsmTagsFilter,
     out_path: Path,
     endpoint: str = DEFAULT_ENDPOINT,
-    timeout: int = DEFAULT_TIMEOUT_SECONDS,
-) -> PostpassSnapshot:
+    timeout: int,
+) -> LiveSnapshot:
     """Query Postpass for everything matching the filter and write country.parquet."""
     predicate = hstore_predicate(tag_filter)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -128,7 +121,7 @@ def fetch_country_parquet(
 
     write_country_parquet(rows, out_path, "Postpass")
     logger.info("Postpass snapshot %s: %d features -> %s", label, len(rows), out_path)
-    return PostpassSnapshot(
+    return LiveSnapshot(
         parquet=out_path,
         timestamp=datetime.fromisoformat(label.replace("Z", "+00:00")),
         label=label,

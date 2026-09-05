@@ -9,13 +9,22 @@ oex-cli osm <iso3> [theme]
 oex-cli osm --configs-dir <dir>
 oex-cli osm-build-cache --pbf <path>
 oex-cli osm-build-cache --planet
+oex-cli metadata --iso3 <iso3>
+oex-cli metadata --configs-dir <dir>
 ```
+
+`metadata` pushes config text to HDX without re-running the export. It
+rewrites the dataset title, description, caveats, source and tags, and every
+resource's name and description, leaving the data files alone, so a wording
+change takes seconds rather than a full export. `--check` reports what would
+change and writes nothing. `--prune` deletes resources whose category has
+left the config, which is destructive and off by default.
 
 Common options:
 
 - `--config <path>`: explicit YAML
 - `--configs-dir <dir>`: run every YAML in the directory (200-country fan-out)
-- `--engine geofabrik|planet_parquet`: OSM engine override
+- `--engine geofabrik|planet|postpass|rawdata`: OSM engine override
 - `--output-dir <dir>`: override output dir
 - `--hdx-push / --no-hdx-push`: HDX toggle
 

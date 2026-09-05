@@ -9,6 +9,8 @@ from typing import Any, cast
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
 from oex.config.schema import RootConfig
+from oex.osm.engines import ENGINE_NAMES
+from oex.writers import SUPPORTED_FORMATS
 
 
 class ConfigError(ValueError):
@@ -77,17 +79,32 @@ def load_config(
     if not isinstance(container, RootConfig):
         raise ConfigError("Merged config did not resolve to RootConfig")
     _validate_osm_engine(container)
+    _validate_formats(container)
     return container
+
+
+def _validate_formats(cfg: RootConfig) -> None:
+    """A typo here would otherwise surface only as a category silently skipped."""
+    wanted = {(None, fmt) for fmt in cfg.output.formats}
+    wanted |= {
+        (category.name, fmt) for category in cfg.categories for fmt in (category.formats or [])
+    }
+    for name, fmt in sorted(wanted, key=lambda item: (item[0] or "", item[1])):
+        if fmt not in SUPPORTED_FORMATS:
+            where = f"categories[{name}].formats" if name else "output.formats"
+            raise ConfigError(
+                f"{where}={fmt!r} is not a supported format; "
+                f"must be one of {sorted(SUPPORTED_FORMATS)}"
+            )
 
 
 def _validate_osm_engine(cfg: RootConfig) -> None:
     osm = cfg.source.get("osm")
     if osm is None:
         return
-    valid_engines = {"geofabrik", "planet", "postpass", "rawdata"}
-    if osm.engine not in valid_engines:
+    if osm.engine not in ENGINE_NAMES:
         raise ConfigError(
-            f"source.osm.engine={osm.engine!r} is invalid; must be one of {sorted(valid_engines)}"
+            f"source.osm.engine={osm.engine!r} is invalid; must be one of {sorted(ENGINE_NAMES)}"
         )
     if osm.engine == "planet" and not osm.pbf_path:
         raise ConfigError(
@@ -104,10 +121,10 @@ def _validate_osm_engine(cfg: RootConfig) -> None:
             "source.osm.planet_clip_to_boundary=false only applies to source.osm.engine='planet'"
         )
     if osm.fallback_engine:
-        if osm.fallback_engine not in valid_engines:
+        if osm.fallback_engine not in ENGINE_NAMES:
             raise ConfigError(
                 f"source.osm.fallback_engine={osm.fallback_engine!r} is invalid; "
-                f"must be one of {sorted(valid_engines)}"
+                f"must be one of {sorted(ENGINE_NAMES)}"
             )
         if osm.fallback_engine == osm.engine:
             raise ConfigError("source.osm.fallback_engine must differ from source.osm.engine")

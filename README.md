@@ -50,7 +50,7 @@ for Overture Maps instead.
 ## Two ways to customise
 
 ```bash
-# Curated schema (12-layer HOT-style HDX export, Overture data package, etc)
+# Curated schema from configs/examples/ in this repo (HOT-style HDX export, Overture package)
 oex-cli osm --config configs/examples/hot-schema.yaml --iso3 NPL
 
 # Your own categories

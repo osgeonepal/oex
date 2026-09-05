@@ -55,7 +55,7 @@ class DuckdbConfig:
     http_retries: int = 8
     http_retry_wait_ms: int = 500
     http_retry_backoff: float = 2.0
-    http_timeout_ms: int = 120_000
+    http_timeout_s: int = 120
     temp_dir: str = "/tmp/duckdb_temp"
 
 
@@ -175,6 +175,8 @@ class OsmSourceConfig:
     postpass_endpoint: str = "https://postpass.geofabrik.de/api/interpreter"
     postpass_max_area_sq_km: float = 2000.0
     rawdata_endpoint: str = "https://api-prod.raw-data.hotosm.org/v1"
+    postpass_timeout_s: int = 600
+    rawdata_timeout_s: int = 1800
     # Engine to try when `engine` fails, so one upstream outage does not stop a run.
     fallback_engine: str = ""
 

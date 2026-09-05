@@ -813,9 +813,7 @@ class HdxPublisher:
         iso3: str,
         category_slug: str,
     ):  # noqa: ANN202 - hdx-python-api Resource
-        parts = zip_path.stem.rsplit("_", 2)
-        source = parts[-2] if len(parts) >= 3 else ""
-        fmt = parts[-1]
+        _, source, fmt = _split_artifact_stem(zip_path.stem)
         label = category_label(category)
         fmt_label = FORMAT_LABEL.get(fmt, fmt.upper())
         summary = _category_summary(category)
@@ -1039,15 +1037,28 @@ def _category_tilesets(resources: list) -> dict[str, tuple[str, str]]:  # noqa: 
     return tilesets
 
 
+def _split_artifact_stem(stem: str) -> tuple[str, str, str]:
+    """(slug, source, format) from an artifact stem.
+
+    The source token is optional (`output.s3.name_include_source`) and the slug may carry
+    a geometry segment, so the source is recognised by name rather than by position.
+    """
+    slug, _, fmt = stem.rpartition("_")
+    head, _, maybe_source = slug.rpartition("_")
+    if maybe_source in RESOURCE_SOURCE:
+        return head, maybe_source, fmt
+    return slug, "", fmt
+
+
 def _resource_slug(resource, dt_name: str) -> tuple[str, str] | None:  # noqa: ANN001
     """(category slug, source) a layer resource belongs to, or None when it is not a layer."""
     stem = _resource_filename(resource).rsplit(".", 1)[0]
     if not stem.startswith(f"{dt_name}_"):
         return None
-    parts = stem[len(dt_name) + 1 :].rsplit("_", 2)
-    if len(parts) != 3 or parts[1] not in RESOURCE_SOURCE:
+    slug, source, _ = _split_artifact_stem(stem[len(dt_name) + 1 :])
+    if not slug or not source:
         return None
-    return parts[0], parts[1]
+    return slug, source
 
 
 def _is_dropped(layer: tuple[str, str], by_slug: dict) -> bool:
@@ -1066,12 +1077,9 @@ def _resource_text(resource, dt_name: str, by_slug: dict) -> tuple[str, str] | N
     stem = _resource_filename(resource).rsplit(".", 1)[0]
     if not stem.startswith(f"{dt_name}_"):
         return None
-    parts = stem[len(dt_name) + 1 :].rsplit("_", 2)
-    if len(parts) != 3:
-        return None
-    slug, source, fmt = parts
+    slug, source, fmt = _split_artifact_stem(stem[len(dt_name) + 1 :])
     category = by_slug.get(slug)
-    if category is None or source not in RESOURCE_SOURCE:
+    if category is None or not source:
         return None
     fmt_label = FORMAT_LABEL.get(fmt, fmt.upper())
     name = f"{category_label(category)} ({RESOURCE_SOURCE[source]}), {fmt_label}"

@@ -278,10 +278,7 @@ def cmd_osm(
     engine: str | None = typer.Option(
         None,
         "--engine",
-        help=(
-            "OSM engine: 'geofabrik' (default), 'planet', or 'postpass' for live "
-            "OSM over a small area."
-        ),
+        help=("OSM engine: 'geofabrik' (default), 'planet', or 'postpass'/'rawdata' for live OSM."),
     ),
     download_if_missing: bool | None = typer.Option(
         None,
@@ -367,7 +364,7 @@ def cmd_all(
     engine: str | None = typer.Option(
         None,
         "--engine",
-        help="OSM engine: 'geofabrik' (default) or 'planet'. Ignored by the Overture run.",
+        help="OSM engine override for the OSM half of the run. Ignored by the Overture run.",
     ),
     download_if_missing: bool | None = typer.Option(
         None,

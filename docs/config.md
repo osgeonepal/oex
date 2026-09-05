@@ -50,8 +50,9 @@ country PBF. For `source.osm.engine: geofabrik` the country PBF comes
 pre-cut from Geofabrik (a small overlap beyond the legal border is
 included, but it's bounded). Switch to `engine: planet` if you need a
 larger buffer than Geofabrik's slice; the buffered polygon is passed
-straight to `osmium extract`. Overture is not affected; it reads from
-the global S3 bucket.
+straight to `osmium extract`. The `postpass` and `rawdata` engines take the
+buffered polygon as the query area itself, so the buffer applies exactly.
+Overture is not affected; it reads from the global S3 bucket.
 
 ## Output formats
 
@@ -244,20 +245,37 @@ Each category needs `name`, plus any of:
 - `overture`: `theme`, `feature_type`, `select` (SQL), `where` (SQL).
 - `osm`: `filter` (quackosm tag filter), `select` (SQL), `where` (SQL).
 
+`output.formats` and a category's own `formats` accept `gpkg`, `shp`, `geojson`,
+`kml`, `fgb` and `geoparquet`. An unrecognised name fails at config load rather
+than part way through a run.
+
 ## OSM source: engines
 
 ```yaml
 source:
   osm:
-    engine: geofabrik          # or planet
+    engine: geofabrik          # geofabrik | planet | postpass | rawdata
     cache_dir: data/osm
     snapshot: latest
+    fallback_engine: ""        # engine to retry with when the primary is unreachable
     geofabrik_clip_to_boundary: true
     planet_clip_to_boundary: true  # planet only; false = whole planet, no clip
     pbf_path: null             # required for engine: planet or planet_fallback
     planet_fallback: false     # try geofabrik, fall back to planet on 404
     auto_download_planet: false  # when true, download the planet PBF if pbf_path is missing
+    postpass_endpoint: https://postpass.geofabrik.de/api/interpreter
+    postpass_max_area_sq_km: 2000
+    postpass_timeout_s: 600
+    rawdata_endpoint: https://api-prod.raw-data.hotosm.org/v1
+    rawdata_timeout_s: 1800   # the API queues the job, so allow for the wait
 ```
+
+`geofabrik` and `planet` read a PBF, so they see OSM as of that file's
+snapshot. `postpass` and `rawdata` query a live database instead, which is
+what you want during an active response where edits made this morning have
+to reach today's export. All four write the same
+`feature_id` / `tags` / `geometry` parquet, so switching engines does not
+change the output schema.
 
 `geofabrik` (default): no pre-build. First run per country downloads the
 country PBF from Geofabrik and runs quackosm once per category. Cache layout:
@@ -275,6 +293,28 @@ extraction at query time is a tag-predicate WHERE on the resulting
 switches to the planet path when Geofabrik does not publish the country
 (e.g. some small territories). Other Geofabrik failures (network errors,
 rate limits) are not swallowed.
+
+`postpass`: sends one SQL query per category to Geofabrik's Postpass API,
+which serves a minutely-updated OSM database, and writes the rows to
+`<cache_dir>/postpass/<iso3>/<snapshot>/country.parquet`. No download and no
+local PBF. Postpass caps how much area one query may cover, so
+`postpass_max_area_sq_km` (default 2000) fails the run before submitting a
+boundary that is too large rather than waiting for the server to refuse it.
+Suited to event-sized areas, not to whole countries.
+
+`rawdata`: submits one job per run to the HOT Raw Data API, polls it to
+completion, and reads the returned GeoJSON into
+`<cache_dir>/rawdata/<iso3>/<snapshot>/country.parquet`. The snapshot label
+is the mirror's own `lastUpdated` time, so it records when the data was
+current rather than when the run happened. Slower than Postpass because the
+work is queued, but it takes the same filters and has no area cap.
+
+`fallback_engine`: names a second engine to try when the first cannot be
+reached. It covers an outage, not a defect: a transport error or a rejected
+job triggers it, while an engine that answers with data oex cannot read
+fails the run where the problem is. Set it to an engine of the same kind as
+the primary, for example `engine: postpass` with `fallback_engine: rawdata`,
+so a fallback does not quietly change how fresh the output is.
 
 Download the planet PBF once with `oex-cli osm-build-cache`; the result
 lives at `<cache_dir>/_pbf/planet-latest.osm.pbf` and you point

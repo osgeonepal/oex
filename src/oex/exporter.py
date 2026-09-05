@@ -424,7 +424,7 @@ class Exporter:
             http_retries=d.http_retries,
             http_retry_wait_ms=d.http_retry_wait_ms,
             http_retry_backoff=d.http_retry_backoff,
-            http_timeout_ms=d.http_timeout_ms,
+            http_timeout_s=d.http_timeout_s,
             anonymous_s3_bucket=getattr(
                 self._cfg.source.get("overture"), "s3_bucket", "overturemaps-us-west-2"
             ),
@@ -969,7 +969,7 @@ class Exporter:
             http_retries=d.http_retries,
             http_retry_wait_ms=d.http_retry_wait_ms,
             http_retry_backoff=d.http_retry_backoff,
-            http_timeout_ms=d.http_timeout_ms,
+            http_timeout_s=d.http_timeout_s,
             anonymous_s3_bucket=getattr(
                 self._cfg.source.get("overture"), "s3_bucket", "overturemaps-us-west-2"
             ),
@@ -1322,10 +1322,7 @@ def _temporal_bounds_from_metadata_file(
 ) -> tuple[datetime | None, datetime | None]:
     if path is None or not path.exists():
         return (None, None)
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return (None, None)
+    payload = json.loads(path.read_text(encoding="utf-8"))
     temporal = payload.get("metadata", {}).get("temporal")
     if not temporal:
         return (None, None)

@@ -19,7 +19,7 @@ def connect(
     http_retries: int = 8,
     http_retry_wait_ms: int = 500,
     http_retry_backoff: float = 2.0,
-    http_timeout_ms: int = 120_000,
+    http_timeout_s: int = 120,
     anonymous_s3_bucket: str | None = None,
 ) -> duckdb.DuckDBPyConnection:
     resolved_threads = max(2, threads or default_thread_count())
@@ -47,7 +47,7 @@ def connect(
         f"SET http_retries={http_retries}",
         f"SET http_retry_wait_ms={http_retry_wait_ms}",
         f"SET http_retry_backoff={http_retry_backoff}",
-        f"SET http_timeout={http_timeout_ms}",
+        f"SET http_timeout={http_timeout_s}",
         "SET http_keep_alive=true",
     ):
         conn.execute(stmt)

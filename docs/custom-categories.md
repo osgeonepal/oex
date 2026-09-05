@@ -111,7 +111,7 @@ schema.
 
 | File                                            | What it produces                         |
 | ----------------------------------------------- | ---------------------------------------- |
-| `configs/examples/hot-schema.yaml`              | 12 layers matching HOT's HDX exports     |
+| `configs/examples/hot-schema.yaml`              | 12 layers in the style of HOT's HDX exports |
 | `configs/examples/overture-package-schema.yaml` | 15 datasets, one per Overture theme/type |
 | `configs/examples/custom-schema.yaml`           | Minimal 2-category example               |
 

@@ -40,7 +40,7 @@ That writes `/usr/local/bin/oex-cli` wrapping the docker image.
 # 1. Download a country with the bundled defaults
 oex-cli osm npl
 
-# 2. Use a curated category set (HOT-style, Overture data package, ...)
+# 2. Use a curated category set from the source repo (HOT-style, Overture package, ...)
 oex-cli osm --config configs/examples/hot-schema.yaml --iso3 NPL
 
 # 3. Define your own categories

@@ -79,8 +79,10 @@ oex-cli overture npl
 
 ### 2. Use a curated category set
 
-Three schemas are bundled in `configs/examples/`. Reference one with
-`--config`:
+Example schemas live in `configs/examples/` in the source repository, and in
+the docker image at `/app/configs/examples/`. They are not installed by `pip`
+or `uv tool install`, so from a released package download the one you want and
+pass its path to `--config`. From a source checkout:
 
 ```bash
 # HOT-style HDX layers (12 categories matching hotosm_<iso3>_*)
@@ -93,8 +95,8 @@ oex-cli overture --config configs/examples/overture-package-schema.yaml --iso3 N
 oex-cli osm --config configs/examples/custom-schema.yaml --iso3 NPL
 ```
 
-When running from the docker image, the bundled examples live at
-`/app/configs/examples/`.
+These are starting points to copy and edit, not a supported interface: their
+category lists and HDX metadata change between releases.
 
 ### 3. Add your own category
 

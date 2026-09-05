@@ -166,3 +166,30 @@ def test_dataset_identity_falls_back_to_the_s3_folder() -> None:
 
 def test_dataset_identity_is_empty_when_neither_is_set() -> None:
     assert dataset_identity(RootConfig()) == ""
+
+
+def test_an_unsupported_output_format_is_rejected(tmp_path: Path) -> None:
+    """Without this the format reaches the writer, raises, and the category reports as skipped."""
+    path = tmp_path / "c.yaml"
+    path.write_text(
+        "iso3: NPL\noutput:\n  formats: [gpkg, gepkg]\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="gepkg"):
+        load_config(path)
+
+
+def test_an_unsupported_per_category_format_is_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "c.yaml"
+    path.write_text(
+        "iso3: NPL\ncategories:\n  - name: buildings\n    formats: [shapefile]\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="shapefile"):
+        load_config(path)
+
+
+def test_geoparquet_is_accepted_although_it_has_no_ogr_driver(tmp_path: Path) -> None:
+    path = tmp_path / "c.yaml"
+    path.write_text("iso3: NPL\noutput:\n  formats: [geoparquet]\n", encoding="utf-8")
+    assert load_config(path).output.formats == ["geoparquet"]

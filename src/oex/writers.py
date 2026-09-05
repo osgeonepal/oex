@@ -33,6 +33,9 @@ _FORMAT_DRIVERS = {
     "fgb": "FlatGeobuf",
 }
 
+# geoparquet is written by the exporter itself, not through an OGR driver.
+SUPPORTED_FORMATS = frozenset(_FORMAT_DRIVERS) | {"geoparquet"}
+
 _LAYER_CREATION_OPTIONS = {
     "fgb": "ENCODING=UTF-8,SPATIAL_INDEX=YES",
 }

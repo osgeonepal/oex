@@ -54,7 +54,7 @@ duckdb:
   http_retries: 8
   http_retry_wait_ms: 500
   http_retry_backoff: 2.0
-  http_timeout_ms: 120000
+  http_timeout_s: 120
   temp_dir: /var/tmp/duckdb_temp
 
 logging:
@@ -124,7 +124,7 @@ categories:
         - geodata
         - buildings
         - infrastructure
-      license: ODbL 1.0
+      license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
       caveats: >-
         Building data may contain errors and is verified at the community
@@ -175,7 +175,7 @@ categories:
         - geodata
         - transportation
         - roads
-      license: ODbL 1.0
+      license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
       caveats: Road data may contain errors and is community verified.
     overture:
@@ -286,7 +286,7 @@ categories:
       tags:
         - environment
         - water
-      license: ODbL 1.0
+      license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
       caveats: Hydrography from OSM via Overture or directly from OSM.
     overture:
@@ -323,7 +323,7 @@ categories:
       tags:
         - environment
         - landuse
-      license: ODbL 1.0
+      license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
       caveats: Land use data from OSM via Overture or directly from OSM.
     overture:
@@ -395,7 +395,7 @@ categories:
       tags:
         - population
         - settlements
-      license: ODbL 1.0
+      license: hdx-odc-odbl
       license_url: https://opendatacommons.org/licenses/odbl/1-0/
       caveats: Locality data from Overture divisions or OSM.
     overture:

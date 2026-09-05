@@ -5,7 +5,20 @@ engines; the live engines assemble the same three columns so the exporter, the
 category selects and the published schema stay identical whichever engine ran.
 """
 
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
+
+
+@dataclass(frozen=True)
+class LiveSnapshot:
+    """What a live engine returns: the parquet it wrote and when the data was current."""
+
+    parquet: Path
+    timestamp: datetime
+    label: str
+    feature_count: int
+
 
 PARQUET_CONTRACT = [
     ("feature_id", "VARCHAR"),
