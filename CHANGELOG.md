@@ -64,6 +64,13 @@ and is auto-managed by [commitizen](https://commitizen-tools.github.io/commitize
 
 - **config**: config fix
 
+## v0.4.14 (2026-09-06)
+
+### Fix
+
+- **feat**: add geoparquet support and also external dataset support
+- **osm**: add osm source
+
 ## v0.4.13 (2026-09-03)
 
 ### Fix
