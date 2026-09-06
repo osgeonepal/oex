@@ -3,7 +3,6 @@
 import concurrent.futures
 import itertools
 import json
-import re
 import shutil
 import threading
 import time
@@ -36,6 +35,7 @@ from oex.hdx_publisher import (
 )
 from oex.logging_setup import get_logger
 from oex.metadata import compute_metadata
+from oex.naming import slugify
 from oex.pcodes import (
     PcodeCacheEntry,
     ensure_admin_parquets,
@@ -106,6 +106,8 @@ class BuiltCategory:
     metadata_obj: object | None = None
     source_metadata: SourceMetadata | None = None
     geoparquet_path: Path | None = None
+    publish_geoparquet: bool = False
+    geoparquet_url: str | None = None
     query: SourceQuery | None = None
 
 
@@ -197,7 +199,7 @@ class Exporter:
                 )
             else:
                 already_done = bool(peeked) and all(
-                    self._state.is_uploaded(_slugify(c.name), snapshot_label=peeked)
+                    self._state.is_uploaded(slugify(c.name), snapshot_label=peeked)
                     for c in self._cfg.categories
                 )
             if already_done:
@@ -311,7 +313,7 @@ class Exporter:
         # category publishes on its own and artifacts are kept until then.
         combine = self._cfg.hdx.combine
         cat_start = time.time()
-        slug = _slugify(category.name)
+        slug = slugify(category.name)
         cat_tag = f"[{category.name}/{self._runner.name}]"
         logger.info("%s starting", cat_tag)
 
@@ -342,9 +344,11 @@ class Exporter:
                     error="no output formats configured",
                 )
             )
-        # GeoParquet is a local/S3 deliverable and the combined-tile source; it is
-        # never zipped or attached to the HDX page, so keep it out of the HDX formats.
-        want_geoparquet = "geoparquet" in formats or (combine and self._cfg.output.pmtiles.enabled)
+        # GeoParquet is never zipped: it is published as-is so a client can read it
+        # over HTTP in place. It is also the source the combined tiles are built from,
+        # which is why it can be wanted without being asked for.
+        publish_geoparquet = "geoparquet" in formats
+        want_geoparquet = publish_geoparquet or (combine and self._cfg.output.pmtiles.enabled)
         hdx_formats = [f for f in formats if f != "geoparquet"]
 
         if self._cfg.output.resume and self._state is not None and not combine:
@@ -566,11 +570,18 @@ class Exporter:
             total_mb = sum(p.stat().st_size for p in zip_paths) / (1024 * 1024)
 
             geoparquet_path: Path | None = None
+            geoparquet_url: str | None = None
             if want_geoparquet:
                 geoparquet_path = write_geoparquet(
                     conn, table, out_root / "_layers" / f"{slug}.parquet"
                 )
-                self._stage_layer_parquet(geoparquet_path, slug, cat_tag)
+                geoparquet_url = self._stage_layer_parquet(geoparquet_path, slug, cat_tag)
+                if publish_geoparquet and self._cfg.hdx.push and geoparquet_url is None:
+                    raise ValueError(
+                        "output.formats includes 'geoparquet' and hdx.push is true, but "
+                        "output.s3.enabled is false: the HDX resource points at the staged "
+                        "object, so there is nothing to publish"
+                    )
 
             pmtiles_extra: list[ExtraResource] = []
             pmtiles_path: Path | None = None
@@ -607,7 +618,7 @@ class Exporter:
 
             dataset_name: str | None = None
             if publisher is not None and not combine:
-                logger.info("%s uploading %d zip(s) to HDX...", cat_tag, len(zip_paths))
+                logger.info("%s uploading %d artifact(s) to HDX...", cat_tag, len(zip_paths))
                 t_min, t_max = _temporal_bounds_for_hdx(metadata_obj)
                 ctx = PublishContext(
                     dataset_source=query.dataset_source,
@@ -622,7 +633,12 @@ class Exporter:
                     boundary_bbox=boundary_obj.bbox,
                 )
                 dataset_name = publisher.publish(
-                    self._cfg, category, zip_paths, ctx, extra_resources=pmtiles_extra
+                    self._cfg,
+                    category,
+                    zip_paths,
+                    ctx,
+                    extra_resources=pmtiles_extra,
+                    geoparquet_url=geoparquet_url if publish_geoparquet else None,
                 )
                 if self._state is not None:
                     self._state.mark_uploaded(slug, hdx_dataset=dataset_name)
@@ -636,7 +652,7 @@ class Exporter:
                 self._upload_category_to_s3(zip_paths, slug, cat_tag)
 
             logger.info(
-                "%s done: %s features, %d zip(s), %.0f MB total in %.1fs",
+                "%s done: %s features, %d artifact(s), %.0f MB total in %.1fs",
                 cat_tag,
                 f"{count:,}",
                 len(zip_paths),
@@ -658,6 +674,8 @@ class Exporter:
                 metadata_obj=metadata_obj,
                 source_metadata=source_metadata,
                 geoparquet_path=geoparquet_path,
+                publish_geoparquet=publish_geoparquet,
+                geoparquet_url=geoparquet_url,
                 query=query,
             )
         except Exception as exc:  # noqa: BLE001  per-category boundary; logged + reported
@@ -768,11 +786,12 @@ class Exporter:
         """
         if not self._cfg.output.report.enabled:
             return
-        from oex.report.landing import CategoryPanel, render_landing, source_label
+        from oex.report.landing import CategoryPanel, render_landing
+        from oex.sources.labels import short_label
 
         panels = [
             CategoryPanel(
-                slug=_slugify(b.category.name),
+                slug=slugify(b.category.name),
                 label=category_label(b.category),
                 sources=[b.source_metadata],
             )
@@ -787,7 +806,7 @@ class Exporter:
         hdx_source = HDX_SHORT_SOURCE.get(self._runner.name) or (q0.dataset_source if q0 else "")
         html = render_landing(
             title=combined_title(self._cfg, place, hdx_source),
-            subtitle=f"{len(panels)} layers from {source_label(self._runner.name)} for {place}",
+            subtitle=f"{len(panels)} layers from {short_label(self._runner.name)} for {place}",
             panels=panels,
             pmtiles_url=pmtiles_path.name if pmtiles_path else None,
             pmtiles_layer=pmtiles_path.stem if pmtiles_path else None,
@@ -824,6 +843,7 @@ class Exporter:
                 category=b.category,
                 zip_paths=b.zip_paths,
                 metadata_json_path=b.metadata_json_path,
+                geoparquet_url=b.geoparquet_url if b.publish_geoparquet else None,
             )
             for b in built_ok
         ]
@@ -908,8 +928,8 @@ class Exporter:
         """Merge this run's GeoParquets plus other sources' staged GeoParquets into one tileset."""
         if not self._cfg.output.pmtiles.enabled:
             return None
-        order = {_slugify(c.name): i for i, c in enumerate(self._cfg.categories)}
-        by_slug = {_slugify(c.name): c for c in self._cfg.categories}
+        order = {slugify(c.name): i for i, c in enumerate(self._cfg.categories)}
+        by_slug = {slugify(c.name): c for c in self._cfg.categories}
 
         def tiles_on(slug: str, source: str) -> bool:
             block = getattr(by_slug.get(slug), source, None)
@@ -918,12 +938,12 @@ class Exporter:
         layers = [
             TileLayer(
                 path=str(b.geoparquet_path),
-                category=_slugify(b.category.name),
+                category=slugify(b.category.name),
                 source=self._runner.name,
             )
             for b in built_ok
             if b.geoparquet_path is not None
-            and tiles_on(_slugify(b.category.name), self._runner.name)
+            and tiles_on(slugify(b.category.name), self._runner.name)
         ]
         if self._cfg.output.s3.enabled:
             for source, slug, url in list_layer_urls(
@@ -1018,7 +1038,7 @@ class Exporter:
         """Upload a category's zips straight to S3 when s3 is enabled and HDX is off."""
         s3cfg = self._cfg.output.s3
         bucket, prefix, region, endpoint_url, acl = s3_resolve(s3cfg)
-        logger.info("%s uploading %d zip(s) to S3...", cat_tag, len(zip_paths))
+        logger.info("%s uploading %d artifact(s) to S3...", cat_tag, len(zip_paths))
         for zp in zip_paths:
             key = artifact_key(
                 prefix,
@@ -1036,11 +1056,15 @@ class Exporter:
             _remove_uploaded_outputs(zip_paths, None)
             logger.info("%s removed %d local output(s) after upload", cat_tag, len(zip_paths))
 
-    def _stage_layer_parquet(self, path: Path, slug: str, cat_tag: str) -> None:
-        """Upload a per-layer GeoParquet to the stable S3 key so runs accumulate across sources."""
+    def _stage_layer_parquet(self, path: Path, slug: str, cat_tag: str) -> str | None:
+        """Upload a per-layer GeoParquet to the stable S3 key so runs accumulate across sources.
+
+        Returns the public URL, which is what an HDX GeoParquet resource points at so the
+        object is stored once rather than copied under the category folder as well.
+        """
         s3cfg = self._cfg.output.s3
         if not s3cfg.enabled:
-            return
+            return None
         bucket, prefix, region, endpoint_url, acl = s3_resolve(s3cfg)
         if not bucket:
             raise ValueError(
@@ -1053,6 +1077,7 @@ class Exporter:
             path, bucket=bucket, key=key, region=region, endpoint_url=endpoint_url, acl=acl
         )
         logger.info("%s staged layer geoparquet -> %s", cat_tag, url)
+        return url
 
     def _refresh_empty_category(
         self,
@@ -1094,7 +1119,7 @@ class Exporter:
     ) -> CategoryResult:
         zip_paths = [Path(p) for p in entry.zip_paths]
         metadata_json_path = Path(entry.metadata_json_path) if entry.metadata_json_path else None
-        logger.info("%s uploading %d cached zip(s) to HDX...", cat_tag, len(zip_paths))
+        logger.info("%s uploading %d cached artifact(s) to HDX...", cat_tag, len(zip_paths))
         t_min, t_max = _temporal_bounds_from_metadata_file(metadata_json_path)
         ctx = PublishContext(
             dataset_source=query.dataset_source,
@@ -1177,9 +1202,17 @@ class Exporter:
                     continue
                 s3cfg = self._cfg.output.s3
                 source_seg = f"_{self._runner.name}" if s3cfg.name_include_source else ""
-                zip_path = (
-                    out_root / f"{self._resource_prefix()}_{slug}{geom_seg}{source_seg}_{fmt}.zip"
-                )
+                stem = f"{self._resource_prefix()}_{slug}{geom_seg}{source_seg}"
+                if not self._should_zip(category, fmt):
+                    zip_paths.append(
+                        _publish_unzipped(
+                            files[0],
+                            out_root / f"{stem}.{fmt}",
+                            f"[{category.name}/{self._runner.name}]",
+                        )
+                    )
+                    continue
+                zip_path = out_root / f"{stem}_{fmt}.zip"
                 readme_lines = self._build_readme(
                     fmt=fmt,
                     category=category,
@@ -1203,6 +1236,15 @@ class Exporter:
                 if stage_dir.exists():
                     shutil.rmtree(stage_dir, ignore_errors=True)
         return zip_paths
+
+    def _should_zip(self, category: CategoryConfig, fmt: str) -> bool:
+        """A shapefile is a set of sidecar files, so it is zipped whatever the config says."""
+        if fmt == "shp":
+            return True
+        chosen = category.zip_formats
+        if chosen is None:
+            chosen = self._cfg.output.zip_formats
+        return chosen is None or fmt in chosen
 
     def _geometry_view(self, conn, table: str, label: str, types: list[str]) -> str:
         """A view over one geometry label, so each artifact holds a single type."""
@@ -1257,6 +1299,19 @@ class Exporter:
         ] + ([line for line in query.extra_readme_lines] if query.extra_readme_lines else [])
 
 
+def _publish_unzipped(staged: Path, target: Path, cat_tag: str) -> Path:
+    """Move a single-file format out of the stage dir, which is deleted straight after."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(staged), target)
+    logger.info(
+        "%s published %s unzipped (%.2f MB)",
+        cat_tag,
+        target.name,
+        target.stat().st_size / (1024**2),
+    )
+    return target
+
+
 def _remove_uploaded_outputs(
     zip_paths: list[Path],
     metadata_json_path: Path | None,
@@ -1269,10 +1324,6 @@ def _remove_uploaded_outputs(
         metadata_json_path.unlink(missing_ok=True)
     for path in extra_paths or []:
         path.unlink(missing_ok=True)
-
-
-def _slugify(value: str) -> str:
-    return re.sub(r"[^a-zA-Z0-9]+", "_", value).lower().strip("_")
 
 
 def _wrap_paragraph(text: str, *, indent: str, width: int) -> list[str]:

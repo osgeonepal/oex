@@ -23,12 +23,6 @@ def resolve(cfg: S3Config) -> tuple[str, str, str, str | None, str]:
     return bucket, prefix, region, endpoint_url, cfg.acl
 
 
-def build_key(prefix: str, iso3: str, category_slug: str, filename: str) -> str:
-    parts = [p.strip("/") for p in (prefix, iso3.upper(), category_slug) if p]
-    parts.append(filename)
-    return "/".join(parts)
-
-
 def artifact_key(
     prefix: str,
     iso3: str,
@@ -58,7 +52,7 @@ def build_layer_key(prefix: str, iso3: str, source: str, slug: str, folder: str 
     ``folder`` overrides the iso3 segment, so two configs covering the same country stage
     into separate areas instead of overwriting each other.
     """
-    return build_key(prefix, folder or iso3, f"_layers/{source}", f"{slug}.parquet")
+    return artifact_key(prefix, folder or iso3, f"_layers/{source}", f"{slug}.parquet")
 
 
 def list_layer_urls(

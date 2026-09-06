@@ -89,7 +89,6 @@ def _planet_cfg(tmp_path: Path, *, planet_pbf: Path) -> RootConfig:
         iso3="NPL",
         boundary=BoundaryConfig(
             geom=None,
-            geoboundaries_release="CGAZ",
             geoboundaries_level="ADM0",
             buffer_meters=5000,
         ),

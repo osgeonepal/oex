@@ -62,7 +62,7 @@ flowchart TD
     classDef out fill:#fff7ed,stroke:#f97316,color:#111,stroke-width:1px
 ```
 
-1. **Boundary** - resolves the country polygon from geoBoundaries CGAZ ADM0
+1. **Boundary** - resolves the country polygon from geoBoundaries gbOpen ADM0
    (or a custom GeoJSON) and derives a bounding box for all spatial queries.
 2. **Data** - OSM: downloads the per-country PBF from Geofabrik (or clips
    from a local planet PBF) and converts it to GeoParquet once via QuackOSM.
@@ -78,7 +78,8 @@ flowchart TD
 
 **Query engine.** DuckDB runs embedded in the Python process and reads
 GeoParquet files via memory-mapped columnar scans. Per-category exports are
-DuckDB SQL SELECT statements with a bbox clip and `ST_Within` boundary filter.
+DuckDB SQL SELECT statements with a bbox clip and `ST_Intersects` boundary filter,
+so a feature crossing the boundary is kept whole rather than dropped.
 
 **OSM path: Geofabrik to planet fallback to GeoParquet cache.**
 
@@ -87,8 +88,8 @@ For countries Geofabrik does not publish, oex falls back to a local planet
 PBF:
 
 1. The country boundary polygon is expanded by the configured
-   `buffer_meters`, reprojected to EPSG:3857, buffered, then reprojected
-   back to WGS84.
+   `buffer_meters`, using an azimuthal equidistant projection centred on the
+   boundary so the distance is metres on the ground at that latitude.
 2. `osmium extract --strategy=complete_ways` clips the planet PBF to that
    polygon, producing a country-sized PBF.
 3. [QuackOSM](https://github.com/kraina-ai/quackosm) converts the PBF to

@@ -10,6 +10,7 @@ from oex.metadata import ColumnReport, MetadataReport
 from oex.palette import DEFAULT_PALETTE
 from oex.report.map_block import MAP_CSS, MapEntry, head_scripts, render_map
 from oex.report.quality import layer_quality
+from oex.sources.labels import long_label
 
 _PCODE_PREFIX = "adm"
 _PCODE_SUFFIX = "_pcode"
@@ -197,7 +198,7 @@ def render_report(
     nav = (
         '<div class="tabs">'
         + "".join(
-            f'<label for="tab-{escape(name)}">{escape(_pretty_source_name(name))}</label>'
+            f'<label for="tab-{escape(name)}">{escape(long_label(name))}</label>'
             for name in ordered
         )
         + "</div>"
@@ -450,7 +451,7 @@ def _render_attribute_table(metadata: MetadataReport) -> str:
 
 def _render_footer(source: SourceMetadata) -> str:
     parts = [
-        f"Source: {escape(_pretty_source_name(source.source_name))}",
+        f"Source: {escape(long_label(source.source_name))}",
         f"snapshot {escape(source.snapshot_label)}",
         f"generated {escape(source.generated_utc)}",
     ]
@@ -543,16 +544,8 @@ def _default_source_name(sources: dict[str, SourceMetadata], ordered: list[str])
     return max(ordered, key=lambda name: sources[name].generated_utc)
 
 
-def _pretty_source_name(name: str) -> str:
-    if name == "osm":
-        return "OpenStreetMap"
-    if name == "overture":
-        return "Overture"
-    return name.title()
-
-
 def _map_entry_label(source_name: str, layer_label: str | None) -> str:
-    source = _pretty_source_name(source_name)
+    source = long_label(source_name)
     return f"{layer_label} ({source})" if layer_label else source
 
 

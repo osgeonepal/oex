@@ -16,6 +16,7 @@ from oex.palette import DEFAULT_PALETTE
 from oex.report.html import _CSS, SourceMetadata, _fmt_int
 from oex.report.map_block import MAP_CSS, MapEntry, head_scripts, render_map
 from oex.report.quality import LayerQuality, layer_quality
+from oex.sources.labels import short_label
 
 _LANDING_CSS = """
 .landing-head h1 { font-size: 22px; margin: 0 0 6px; }
@@ -92,7 +93,7 @@ def render_landing(
     # Ordered by name to match how the resources are listed on the dataset.
     flat = sorted(
         ((p, s) for p in panels for s in p.sources),
-        key=lambda pair: (pair[0].label.casefold(), source_label(pair[1].source_name).casefold()),
+        key=lambda pair: (pair[0].label.casefold(), short_label(pair[1].source_name).casefold()),
     )
     rows = [
         _Row(slug=p.slug, label=p.label, color=colors[i % len(colors)], source=s)
@@ -166,7 +167,7 @@ def _render_table(rows: list[_Row]) -> str:
 
 
 def _row_label(row: _Row) -> str:
-    return f"{row.label} ({source_label(row.source.source_name)})"
+    return f"{row.label} ({short_label(row.source.source_name)})"
 
 
 def _render_row(row: _Row) -> str:
@@ -301,11 +302,3 @@ def _overall_bounds(
         max(b[2] for b in boxes),
         max(b[3] for b in boxes),
     )
-
-
-def source_label(name: str) -> str:
-    if name == "osm":
-        return "OSM"
-    if name == "overture":
-        return "Overture"
-    return name.title()

@@ -79,15 +79,6 @@ def test_shp_writer_groups_polygon_and_multipolygon(tmp_path: Path) -> None:
     assert names == ["demo_lines.shp", "demo_polygons.shp"]
 
 
-def test_shp_writer_handles_lowercase_and_uppercase_types(tmp_path: Path) -> None:
-    """Both POINT (modern) and ST_Point (legacy) shapes must be recognised."""
-    from oex.writers import _GEOM_TYPE_TO_LABEL
-
-    assert _GEOM_TYPE_TO_LABEL["POINT"] == "points"
-    assert _GEOM_TYPE_TO_LABEL["MULTIPOLYGON"] == "polygons"
-    assert _GEOM_TYPE_TO_LABEL["ST_Point"] == "points"
-
-
 def test_unknown_format_raises(conn_with_table: duckdb.DuckDBPyConnection, tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         write_format(conn_with_table, "features", "demo", "xyz", tmp_path)

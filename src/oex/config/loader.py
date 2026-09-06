@@ -10,7 +10,7 @@ from omegaconf import DictConfig, ListConfig, OmegaConf
 
 from oex.config.schema import RootConfig
 from oex.osm.engines import ENGINE_NAMES
-from oex.writers import SUPPORTED_FORMATS
+from oex.writers import NEVER_ZIPPED, SUPPORTED_FORMATS
 
 
 class ConfigError(ValueError):
@@ -80,6 +80,7 @@ def load_config(
         raise ConfigError("Merged config did not resolve to RootConfig")
     _validate_osm_engine(container)
     _validate_formats(container)
+    _validate_pcodes(container)
     return container
 
 
@@ -96,6 +97,33 @@ def _validate_formats(cfg: RootConfig) -> None:
                 f"{where}={fmt!r} is not a supported format; "
                 f"must be one of {sorted(SUPPORTED_FORMATS)}"
             )
+
+    zipped = {(None, fmt) for fmt in cfg.output.zip_formats or []}
+    zipped |= {
+        (category.name, fmt) for category in cfg.categories for fmt in (category.zip_formats or [])
+    }
+    for name, fmt in sorted(zipped, key=lambda item: (item[0] or "", item[1])):
+        where = f"categories[{name}].zip_formats" if name else "output.zip_formats"
+        if fmt not in SUPPORTED_FORMATS:
+            raise ConfigError(
+                f"{where}={fmt!r} is not a supported format; "
+                f"must be one of {sorted(SUPPORTED_FORMATS)}"
+            )
+        if fmt in NEVER_ZIPPED:
+            raise ConfigError(
+                f"{where}={fmt!r} has no effect: {fmt} is always published unzipped so it "
+                "can be read in place over HTTP. Remove it from zip_formats."
+            )
+
+
+def _validate_pcodes(cfg: RootConfig) -> None:
+    """Pcode tagging looks up one country's admin boundaries, so it needs that country."""
+    pcodes = cfg.source.get("pcodes")
+    if pcodes is not None and getattr(pcodes, "enabled", False) and not cfg.iso3:
+        raise ConfigError(
+            "source.pcodes.enabled is true but `iso3` is empty; set iso3, or disable "
+            "pcode tagging for a config that has no country code"
+        )
 
 
 def _validate_osm_engine(cfg: RootConfig) -> None:

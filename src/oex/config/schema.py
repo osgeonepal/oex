@@ -60,12 +60,6 @@ class DuckdbConfig:
 
 
 @dataclass
-class LoggingConfig:
-    level: str = "INFO"
-    fmt: str | None = None
-
-
-@dataclass
 class MapAssetsConfig:
     """Where the report map gets its basemap and its JavaScript.
 
@@ -118,6 +112,10 @@ class S3Config:
 class OutputConfig:
     dir: str = "output"
     formats: list[str] = field(default_factory=lambda: ["gpkg", "shp"])
+    # Which formats to zip. None zips every format; a list zips only those named, and
+    # the rest publish as the bare file. Shapefiles are always zipped: they are a set
+    # of sidecar files, not one.
+    zip_formats: list[str] | None = None
     metadata: bool = False
     report: ReportConfig = field(default_factory=ReportConfig)
     pmtiles: PmtilesConfig = field(default_factory=PmtilesConfig)
@@ -138,21 +136,27 @@ class ParallelConfig:
 @dataclass
 class BoundaryConfig:
     geom: str | None = None
-    geoboundaries_release: str = "CGAZ"
     geoboundaries_level: str = "ADM0"
-    # Optional outward buffer applied to the resolved boundary.
-    # The geometry is reprojected to EPSG:3857, buffered by this many metres,
-    # then reprojected back to EPSG:4326. 0 = no buffer.
+    # Outward buffer in metres on the ground. 0 disables it.
     buffer_meters: float = 0.0
 
 
 @dataclass
 class OvertureSourceConfig:
     enabled: bool = True
-    engine: str = "duckdb"
     release: str = "latest"
     s3_region: str = "us-west-2"
     s3_bucket: str = "overturemaps-us-west-2"
+
+
+@dataclass
+class FileSourceConfig:
+    """Defaults for categories read from spatial files."""
+
+    enabled: bool = False
+    path: str = ""
+    crs: str = ""
+    snapshot: str = ""
 
 
 @dataclass
@@ -256,6 +260,23 @@ class CategoryOsm:
 
 
 @dataclass
+class CategoryFile:
+    """A category read from a user-supplied spatial file rather than a mapped source."""
+
+    enabled: bool = True
+    # Local path, https:// or s3://. Overrides source.file.path for this category.
+    path: str = ""
+    # Overrides the CRS the file declares; required when it declares none.
+    crs: str = ""
+    # Required when the file holds more than one layer, which oex will not pick between.
+    layer: str = ""
+    # Output column -> source column. Explicit, so a rename upstream fails loud.
+    select: dict[str, str] = field(default_factory=dict)
+    where: list[str] = field(default_factory=list)
+    tiles: bool = True
+
+
+@dataclass
 class TransliterateRule:
     target: str = ""
     source: str = ""
@@ -274,12 +295,15 @@ class CategoryTemporal:
 class CategoryConfig:
     name: str = ""
     formats: list[str] | None = None
+    # Overrides output.zip_formats for this category. None inherits.
+    zip_formats: list[str] | None = None
     skip_pcodes: bool = False
     # Override source.pcodes.boundary_resolution per category. None inherits.
     boundary_resolution: str | None = None
     hdx: CategoryHdx = field(default_factory=CategoryHdx)
     overture: CategoryOverture = field(default_factory=CategoryOverture)
     osm: CategoryOsm = field(default_factory=CategoryOsm)
+    file: CategoryFile = field(default_factory=CategoryFile)
     transliterate: list[TransliterateRule] = field(default_factory=list)
     temporal: CategoryTemporal = field(default_factory=CategoryTemporal)
 
@@ -296,12 +320,12 @@ class RootConfig:
     output: OutputConfig = field(default_factory=OutputConfig)
     parallel: ParallelConfig = field(default_factory=ParallelConfig)
     duckdb: DuckdbConfig = field(default_factory=DuckdbConfig)
-    logging: LoggingConfig = field(default_factory=LoggingConfig)
     hdx: HdxConfig = field(default_factory=HdxConfig)
     source: dict[str, Any] = field(
         default_factory=lambda: {
             "overture": OvertureSourceConfig(),
             "osm": OsmSourceConfig(),
+            "file": FileSourceConfig(),
             "pcodes": PcodesSourceConfig(),
         }
     )

@@ -61,9 +61,10 @@ null shares, distinct counts, geometry types, and bbox.
   Land Use, Transportation Hubs, Settlements.
 - 12-layer HOT-style HDX schema mirroring `hotosm_<iso3>_*` exports.
 - 15-dataset Overture data package (one per `theme`/`feature_type`).
-- Output formats: `gpkg`, `shp`, `geojson`, `kml`. Default is `[gpkg, shp]`.
-- Two OSM engines: per-country PBF on demand (Geofabrik) or planet PBF
-  cache (for monthly batch runs across many countries).
+- Output formats: `gpkg`, `shp`, `geojson`, `kml`, `fgb`, `geoparquet`. Default is `[gpkg, shp]`.
+- Four OSM engines: a per-country PBF on demand (Geofabrik), a planet PBF
+  cache for batch runs across many countries, and two that query a live OSM
+  database (Postpass, HOT Raw Data API) for event response.
 - **Administrative pcode tagging**: each feature gets `adm0`-`adm4` pcode
   and name columns from fieldmaps.io humanitarian boundaries (opt-in,
   enabled by default in the HOT schema).
@@ -75,7 +76,7 @@ null shares, distinct counts, geometry types, and bbox.
 | Query engine         | [DuckDB](https://duckdb.org/) + spatial extension                                 |
 | OSM parser           | [QuackOSM](https://github.com/kraina-ai/quackosm)                                 |
 | Overture access      | DuckDB httpfs over [s3://overturemaps-us-west-2](https://docs.overturemaps.org/)  |
-| Boundaries (default) | [geoBoundaries CGAZ ADM0](https://www.geoboundaries.org/)                         |
+| Boundaries (default) | [geoBoundaries gbOpen ADM0](https://www.geoboundaries.org/)                         |
 | Package manager      | [uv](https://github.com/astral-sh/uv)                                             |
 | Linter / type-check  | [ruff](https://github.com/astral-sh/ruff) / [ty](https://github.com/astral-sh/ty) |
 

@@ -102,7 +102,7 @@ just osm nepal
 | Query engine         | [DuckDB](https://duckdb.org/) + spatial extension                                 |
 | OSM parser           | [QuackOSM](https://github.com/kraina-ai/quackosm)                                 |
 | Overture access      | DuckDB httpfs over [s3://overturemaps-us-west-2](https://docs.overturemaps.org/)  |
-| Boundaries (default) | [geoBoundaries CGAZ ADM0](https://www.geoboundaries.org/)                         |
+| Boundaries (default) | [geoBoundaries gbOpen ADM0](https://www.geoboundaries.org/)                         |
 | Pcode boundaries     | [fieldmaps.io](https://fieldmaps.io/) humanitarian admin boundaries               |
 | Pcode index          | [H3](https://h3geo.org/) hexagonal cell index at resolution 7                     |
 

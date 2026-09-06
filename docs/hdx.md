@@ -197,7 +197,13 @@ per-category report breaks it down column by column.
 The combined tileset is built from per-layer GeoParquet, which is written locally
 and, with `output.s3.enabled`, staged to `{prefix}/{ISO3}/_layers/{source}/{slug}.parquet`.
 That staged copy is what lets a later run of the other source put both sources on
-one map. Add `geoparquet` to `output.formats` to keep it as a deliverable.
+one map.
+
+Adding `geoparquet` to `output.formats` also publishes each layer as an HDX resource
+pointing at that staged object, unzipped, so a client can range-read it over HTTP.
+It needs `output.s3.enabled`, since the resource links the staged object rather than
+uploading a second copy; a config that asks for it with S3 off and `hdx.push` on is
+refused rather than quietly skipped.
 
 Colours and map assets are configurable under `output.report`: `palette`, and
 `map_assets` (`basemap_tiles`, `maplibre_js`, `pmtiles_js`). The published page

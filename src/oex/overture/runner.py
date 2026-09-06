@@ -17,9 +17,6 @@ from oex.sources.base import CategorySkippedError, SourceQuery, SourceRunner
 logger = get_logger(__name__)
 
 
-_S3_LIST_URL = "https://overturemaps-us-west-2.s3.us-west-2.amazonaws.com/"
-
-
 def resolve_release(release: str, *, bucket: str = "overturemaps-us-west-2") -> str:
     """Return a concrete release version, resolving "latest" via S3 listing."""
     if release and release != "latest":

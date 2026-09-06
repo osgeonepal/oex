@@ -16,7 +16,11 @@ from oex.logging_setup import get_logger
 
 logger = get_logger(__name__)
 
-_GEOBOUNDARIES_TPL = "https://www.geoboundaries.org/api/current/gbOpen/{iso3}/{level}/"
+# The API path segment is the release; oex uses the open one.
+_GEOBOUNDARIES_RELEASE = "gbOpen"
+_GEOBOUNDARIES_TPL = (
+    f"https://www.geoboundaries.org/api/current/{_GEOBOUNDARIES_RELEASE}/{{iso3}}/{{level}}/"
+)
 
 WORLD_GEOJSON: dict[str, Any] = {
     "type": "Polygon",
@@ -68,7 +72,7 @@ def _featurecollection_to_geometry(fc: dict[str, Any]) -> dict[str, Any]:
     return {"type": "GeometryCollection", "geometries": geometries}
 
 
-def _fetch_geoboundaries(iso3: str, release: str, level: str) -> Boundary:
+def _fetch_geoboundaries(iso3: str, level: str) -> Boundary:
     url = _GEOBOUNDARIES_TPL.format(iso3=iso3.upper(), level=level)
     logger.info("Fetching boundary metadata: %s", url)
     meta = requests.get(url, timeout=60)
@@ -88,7 +92,7 @@ def _fetch_geoboundaries(iso3: str, release: str, level: str) -> Boundary:
         iso3=iso3.upper(),
         bbox=bbox,
         geojson=json.dumps(geometry),
-        source=f"geoBoundaries {release} {level}",
+        source=f"geoBoundaries {_GEOBOUNDARIES_RELEASE} {level}",
     )
 
 
@@ -146,7 +150,7 @@ def resolve_boundary(iso3: str, cfg: BoundaryConfig) -> Boundary:
     # one country share an entry and the second exports the first one's area.
     key = (
         iso3.upper(),
-        cfg.geoboundaries_release,
+        _GEOBOUNDARIES_RELEASE,
         cfg.geoboundaries_level,
         f"buf{cfg.buffer_meters:g}",
         hashlib.sha256((cfg.geom or "").encode()).hexdigest(),
@@ -162,7 +166,7 @@ def resolve_boundary(iso3: str, cfg: BoundaryConfig) -> Boundary:
         else:
             boundary = _from_user_geom(iso3, cfg.geom)
     else:
-        boundary = _fetch_geoboundaries(iso3, cfg.geoboundaries_release, cfg.geoboundaries_level)
+        boundary = _fetch_geoboundaries(iso3, cfg.geoboundaries_level)
 
     if cfg.buffer_meters > 0:
         boundary = _buffered(boundary, cfg.buffer_meters)

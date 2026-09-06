@@ -24,14 +24,6 @@ from oex.hdx_publisher import (
 )
 
 
-class _FakeHDXError(Exception):
-    """Mimics hdx.data.hdxobject.HDXError for tests."""
-
-
-def _patch_hdx_error():
-    return patch("oex.hdx_publisher._hdx_publish_with_retry.__globals__")
-
-
 def test_is_transient_recognises_retry_and_429() -> None:
     retry = requests.exceptions.RetryError("max retries")
     assert _is_transient_hdx_error(retry)

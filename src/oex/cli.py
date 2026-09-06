@@ -16,6 +16,7 @@ from oex.exporter import Exporter, ExportResult
 from oex.logging_setup import get_logger, setup_logging
 from oex.osm.runner import OsmRunner
 from oex.overture.runner import OvertureRunner
+from oex.sources.file import FileRunner
 
 app = typer.Typer(
     add_completion=False,
@@ -138,7 +139,7 @@ def _summarise(results: list[ExportResult]) -> int:
     return 0 if total_fail == 0 else 1
 
 
-_RUNNERS = {"osm": OsmRunner, "overture": OvertureRunner}
+_RUNNERS = {"osm": OsmRunner, "overture": OvertureRunner, "file": FileRunner}
 _SOURCE_ORDER = ("osm", "overture")
 
 
@@ -333,6 +334,41 @@ def cmd_osm(
     raise typer.Exit(code=_summarise(results))
 
 
+@app.command("file")
+def cmd_file(
+    configs_dir: Path | None = typer.Option(None, "--configs-dir"),
+    config: Path | None = typer.Option(None, "--config", "-c"),
+    iso3: str | None = typer.Option(
+        None, "--iso3", help="ISO3 country code; required when pcode tagging is enabled."
+    ),
+    dataset_name: str | None = typer.Option(None, "--dataset-name"),
+    output_dir: Path | None = typer.Option(None, "--output-dir", "-o"),
+    hdx_push: bool | None = typer.Option(None, "--hdx-push/--no-hdx-push"),
+    hdx_combine: bool | None = typer.Option(None, "--hdx-combine/--no-hdx-combine"),
+    pmtiles: bool | None = typer.Option(None, "--pmtiles/--no-pmtiles"),
+    s3: bool | None = typer.Option(None, "--s3/--no-s3"),
+) -> None:
+    """Export categories read from spatial data files.
+
+    Each category names a file and maps its columns, and the export then follows the same
+    path as any other source: clipped to the boundary, pcode tagged, written to every
+    configured format, and published with the metadata the config carries.
+    """
+    yamls = _resolve_config(iso3, configs_dir, config)
+    overrides = _build_overrides(
+        None,
+        hdx_push,
+        output_dir,
+        iso3=iso3,
+        dataset_name=dataset_name,
+        hdx_combine=hdx_combine,
+        pmtiles=pmtiles,
+        s3=s3,
+    )
+    results = [_run_one(y, overrides, None, FileRunner) for y in yamls]
+    raise typer.Exit(code=_summarise(results))
+
+
 @app.command("all")
 def cmd_all(
     iso3_or_yaml: str | None = typer.Argument(
@@ -500,9 +536,5 @@ def cmd_osm_build_cache(
     )
 
 
-def main() -> None:
-    app()
-
-
 if __name__ == "__main__":
-    main()
+    app()

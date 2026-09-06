@@ -189,7 +189,22 @@ def test_an_unsupported_per_category_format_is_rejected(tmp_path: Path) -> None:
         load_config(path)
 
 
-def test_geoparquet_is_accepted_although_it_has_no_ogr_driver(tmp_path: Path) -> None:
+def test_pcode_tagging_without_iso3_is_refused(tmp_path: Path) -> None:
+    """It looks up one country's admin boundaries, so it cannot run without the country."""
     path = tmp_path / "c.yaml"
-    path.write_text("iso3: NPL\noutput:\n  formats: [geoparquet]\n", encoding="utf-8")
-    assert load_config(path).output.formats == ["geoparquet"]
+    path.write_text("source:\n  pcodes:\n    enabled: true\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="iso3"):
+        load_config(path)
+
+
+def test_pcode_tagging_with_iso3_is_accepted(tmp_path: Path) -> None:
+    path = tmp_path / "c.yaml"
+    path.write_text("iso3: NPL\nsource:\n  pcodes:\n    enabled: true\n", encoding="utf-8")
+    assert load_config(path).iso3 == "NPL"
+
+
+def test_a_config_without_iso3_is_fine_when_pcodes_are_off(tmp_path: Path) -> None:
+    """Sub-national exports identify by output.s3.folder and have no country code."""
+    path = tmp_path / "c.yaml"
+    path.write_text("key: t\n", encoding="utf-8")
+    assert load_config(path).iso3 == ""

@@ -12,17 +12,6 @@ import pytest
 from oex.osm.country_parquet import write_country_parquet
 
 
-def _schema(path: Path) -> list[tuple[str, str]]:
-    conn = duckdb.connect()
-    conn.execute("INSTALL spatial; LOAD spatial;")
-    return [
-        (name, dtype)
-        for name, dtype, *_ in conn.execute(
-            f"DESCRIBE SELECT * FROM read_parquet('{path}')"
-        ).fetchall()
-    ]
-
-
 def test_tags_round_trip_as_a_map(tmp_path: Path) -> None:
     out = tmp_path / "country.parquet"
     write_country_parquet(

@@ -12,7 +12,6 @@ frequency: yearly
 
 boundary:
   geom: null
-  geoboundaries_release: CGAZ
   geoboundaries_level: ADM0
 
 output:
@@ -57,9 +56,6 @@ duckdb:
   http_timeout_s: 120
   temp_dir: /var/tmp/duckdb_temp
 
-logging:
-  level: INFO
-  fmt: null
 
 hdx:
   push: false
@@ -88,7 +84,6 @@ hdx:
 source:
   overture:
     enabled: true
-    engine: duckdb
     release: latest
     s3_region: us-west-2
     s3_bucket: overturemaps-us-west-2

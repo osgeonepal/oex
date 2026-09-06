@@ -37,9 +37,6 @@ overture *ARGS:
 osm *ARGS:
     uv run oex-cli osm {{ARGS}}
 
-# Build the OSM PBF -> Hilbert-sorted GeoParquet cache.
-# Examples:
-#   just osm-build-cache --planet
-#   just osm-build-cache --pbf /path/to/nepal.osm.pbf
+# Download the planet PBF into the configured cache dir.
 osm-build-cache *ARGS:
     uv run oex-cli osm-build-cache {{ARGS}}

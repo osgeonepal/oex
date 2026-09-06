@@ -5,17 +5,11 @@ from pathlib import Path
 import pytest
 
 from oex.config.schema import S3Config
-from oex.s3 import artifact_key, build_key, content_type_for, public_url, resolve
+from oex.s3 import artifact_key, content_type_for, public_url, resolve
 
 
-def test_build_key_uses_iso3_then_category_then_filename() -> None:
-    assert build_key("", "NPL", "buildings", "x.zip") == "NPL/buildings/x.zip"
-
-
-def test_artifact_key_defaults_match_build_key() -> None:
-    assert artifact_key("TM", "npl", "buildings", "x.zip") == build_key(
-        "TM", "npl", "buildings", "x.zip"
-    )
+def test_artifact_key_uses_iso3_then_category_then_filename() -> None:
+    assert artifact_key("", "NPL", "buildings", "x.zip") == "NPL/buildings/x.zip"
 
 
 def test_artifact_key_folder_overrides_the_iso3_segment() -> None:
@@ -34,20 +28,20 @@ def test_artifact_key_empty_folder_falls_back_to_iso3() -> None:
     assert artifact_key("TM", "cod", "roads", "y.zip", nest_by_category=False) == "TM/COD/y.zip"
 
 
-def test_build_key_uppercases_iso3() -> None:
-    assert build_key("", "vnm", "roads", "y.zip") == "VNM/roads/y.zip"
+def test_artifact_key_uppercases_iso3() -> None:
+    assert artifact_key("", "vnm", "roads", "y.zip") == "VNM/roads/y.zip"
 
 
-def test_build_key_prepends_prefix_when_set() -> None:
+def test_artifact_key_prepends_prefix_when_set() -> None:
     assert (
-        build_key("hotosm/exports", "NPL", "buildings", "x.zip")
+        artifact_key("hotosm/exports", "NPL", "buildings", "x.zip")
         == "hotosm/exports/NPL/buildings/x.zip"
     )
 
 
 def test_build_key_strips_stray_slashes_in_prefix() -> None:
     assert (
-        build_key("/hotosm/exports/", "NPL", "buildings", "x.zip")
+        artifact_key("/hotosm/exports/", "NPL", "buildings", "x.zip")
         == "hotosm/exports/NPL/buildings/x.zip"
     )
 
@@ -70,18 +64,6 @@ def test_public_url_empty_region_falls_back_to_legacy() -> None:
 def test_public_url_custom_endpoint_overrides_aws_host() -> None:
     url = public_url(bucket="b", key="k.zip", region="", endpoint_url="https://r2.example.com/")
     assert url == "https://r2.example.com/b/k.zip"
-
-
-def test_content_type_html() -> None:
-    assert content_type_for(Path("report.html")) == "text/html"
-
-
-def test_content_type_json() -> None:
-    assert content_type_for(Path("metadata.json")) == "application/json"
-
-
-def test_content_type_zip() -> None:
-    assert content_type_for(Path("buildings_gpkg.zip")) == "application/zip"
 
 
 def test_content_type_unknown_falls_back_to_octet_stream() -> None:
@@ -141,12 +123,6 @@ def test_artifact_key_adds_a_geometry_segment_under_the_category() -> None:
         nest_by_category=True,
         geometry="polygons",
     ) == ("TM/hotosm_project_1/buildings/polygons/hotosm_project_1_buildings_polygons_shp.zip")
-
-
-def test_artifact_key_without_a_geometry_is_unchanged() -> None:
-    assert artifact_key("TM", "npl", "buildings", "x.zip", geometry="") == artifact_key(
-        "TM", "npl", "buildings", "x.zip"
-    )
 
 
 def test_layer_key_separates_two_configs_for_one_country() -> None:

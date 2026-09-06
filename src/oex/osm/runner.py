@@ -103,7 +103,6 @@ def _parquet_fingerprint(cfg: RootConfig, *, clip: bool) -> str:
     if clip:
         clip_key = {
             "geom": boundary.geom,
-            "release": boundary.geoboundaries_release,
             "level": boundary.geoboundaries_level,
             "buffer": boundary.buffer_meters,
         }
@@ -304,7 +303,7 @@ class OsmRunner(SourceRunner):
             dataset_source="OpenStreetMap (Postpass {label})",
             source_description=(
                 "Features are queried from Geofabrik's Postpass database, which tracks "
-                "OpenStreetMap continuously, one SQL query per category."
+                "OpenStreetMap continuously."
             ),
         )
 

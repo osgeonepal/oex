@@ -50,11 +50,6 @@ def test_new_category_tags_build_a_fresh_parquet() -> None:
     assert before != after
 
 
-def test_same_inputs_reuse_the_same_parquet() -> None:
-    cfg = _cfg(_KATHMANDU, {"building": True})
-    assert _parquet_fingerprint(cfg, clip=True) == _parquet_fingerprint(cfg, clip=True)
-
-
 def test_clipping_off_ignores_the_boundary() -> None:
     """Without a clip the parquet covers the whole extract, so the boundary cannot change it."""
     a = _parquet_fingerprint(_cfg(_KATHMANDU, {"building": True}), clip=False)

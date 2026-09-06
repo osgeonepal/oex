@@ -31,17 +31,16 @@ already names a partitioned subset, so `where` is the only filter.
 ```yaml
 boundary:
   geom: null                       # optional inline GeoJSON (string)
-  geoboundaries_release: CGAZ
   geoboundaries_level: ADM0
   buffer_meters: 0                 # outward buffer in metres (0 = off)
 ```
 
 If `geom` is set (a GeoJSON string), it overrides the geoBoundaries lookup;
-otherwise the boundary comes from geoBoundaries CGAZ ADM0 for the ISO3.
+otherwise the boundary comes from geoBoundaries gbOpen ADM0 for the ISO3.
 
 `buffer_meters` is an outward buffer applied to whatever boundary you end up
-with. The geometry is reprojected from EPSG:4326 to EPSG:3857, buffered by
-the given metre value, then reprojected back. 0 disables it. Use this for
+with, measured in metres on the ground: the geometry is buffered in an
+azimuthal equidistant projection centred on it. 0 disables it. Use this for
 coastal countries or for cross-border features whose centroid sits a few
 hundred metres outside the legal boundary (jetties, bridges, airfields).
 
@@ -249,6 +248,86 @@ Each category needs `name`, plus any of:
 `kml`, `fgb` and `geoparquet`. An unrecognised name fails at config load rather
 than part way through a run.
 
+### Zipping
+
+Every format is zipped by default. `output.zip_formats` names the formats to zip, and
+the rest publish as the bare file:
+
+```yaml
+output:
+  formats: [gpkg, geojson, shp]
+  zip_formats: [gpkg]      # geojson publishes as .geojson, gpkg and shp as .zip
+```
+
+A category may override it with its own `zip_formats`, so a large layer can stay
+compressed while a small one publishes raw.
+
+Two formats ignore the setting. Shapefiles are always zipped, because a shapefile is a
+set of sidecar files rather than one file. GeoParquet is never zipped, because it is
+published to be read in place over HTTP, and naming it in `zip_formats` is rejected at
+config load rather than quietly doing nothing.
+
+A bare file can be read straight from its URL, which is what a web client or a
+`read_parquet` style query wants. Two things to weigh against that: the `README.txt`
+and the config snapshot ride inside the zip and do not travel with a bare file (the
+layer metadata is published as its own JSON resource either way), and text formats
+compress well, so a GeoJSON is several times larger unzipped.
+
+## File source
+
+A category can come from a spatial data file rather than a mapped source. Anything
+GDAL opens works (shapefile, GeoPackage, GeoJSON, FlatGeobuf), from a local path,
+an `https://` URL or `s3://`.
+
+```yaml
+source:
+  file:
+    enabled: true
+    snapshot: ""        # empty takes the file's own modification time
+categories:
+  - name: bridge_damage
+    file:
+      enabled: true
+      path: data/bridges.shp
+      crs: EPSG:32645   # overrides the file's own CRS; required when it declares none
+      layer: bridges    # required when the file holds more than one layer
+      select:
+        name: Bridge_Nm
+        status: Condition
+      where: ["Condition IS NOT NULL"]
+    hdx:
+      title: Bridge Damage
+      summary: Road bridges and their condition after the flood.
+      license: hdx-odc-odbl
+```
+
+Run it with `oex-cli file --config <path>`.
+
+`select` maps an output column to a column in the file, and is required. Naming the
+columns explicitly means a rename upstream fails loudly instead of publishing a layer
+with a missing field.
+
+Coordinates are reprojected to `OGC:CRS84` when the file declares a different CRS,
+because the boundary clip and the bbox filter work in longitude and latitude. The
+transform ignores the authority's axis order, so a latitude-first CRS such as
+`EPSG:4258` is read the way the file stores it rather than coming out swapped. A file
+that declares no CRS at all is refused unless `crs` says what its coordinates are in:
+guessing would place the data somewhere else in the world.
+
+A file holding more than one layer is refused unless `layer` names the one to export,
+since reading only the first would silently drop the rest.
+
+The snapshot date becomes the HDX time period. It comes from the file's modification
+time for a local path and from `Last-Modified` for an URL. S3 objects and files whose
+server sends no `Last-Modified` need `source.file.snapshot` set explicitly.
+
+Everything after reading is the same as any other source: the boundary clip, pcode
+tagging, every configured output format, the zip and its README, S3 upload, and the
+HDX title, description, licence and tags the config carries.
+
+Pcode tagging needs `iso3`, since it looks up one country's admin boundaries. A config
+with `source.pcodes.enabled` and no `iso3` is refused.
+
 ## OSM source: engines
 
 ```yaml
@@ -278,14 +357,16 @@ to reach today's export. All four write the same
 change the output schema.
 
 `geofabrik` (default): no pre-build. First run per country downloads the
-country PBF from Geofabrik and runs quackosm once per category. Cache layout:
-`<cache_dir>/geofabrik/<iso3>/<snapshot>/<category-slug>.parquet`.
+country PBF from Geofabrik and runs quackosm once with the union of all category
+tag filters. Per-category extraction is a tag predicate at query time. Cache
+layout: `<cache_dir>/geofabrik/<iso3>/<snapshot>/country-<fingerprint>.parquet`,
+where the fingerprint covers the boundary and the filter set.
 
 `planet`: clips a country PBF out of a local planet PBF using
 `osmium extract --strategy=complete_ways`, then runs quackosm once with
 the union of all category tag filters and `keep_all_tags=True`. Per-category
 extraction at query time is a tag-predicate WHERE on the resulting
-`<cache_dir>/planet/<iso3>/<snapshot>/country.parquet`. Requires the
+`<cache_dir>/planet/<iso3>/<snapshot>/country-<fingerprint>.parquet`. Requires the
 `osmium-tool` binary on PATH (one-time `dnf install osmium-tool` /
 `apt install osmium-tool` / `brew install osmium-tool`).
 
@@ -294,9 +375,9 @@ switches to the planet path when Geofabrik does not publish the country
 (e.g. some small territories). Other Geofabrik failures (network errors,
 rate limits) are not swallowed.
 
-`postpass`: sends one SQL query per category to Geofabrik's Postpass API,
+`postpass`: sends one SQL query per OSM table, three per run, to Geofabrik's Postpass API,
 which serves a minutely-updated OSM database, and writes the rows to
-`<cache_dir>/postpass/<iso3>/<snapshot>/country.parquet`. No download and no
+`<cache_dir>/postpass/<iso3>/country-<fingerprint>.parquet`. No download and no
 local PBF. Postpass caps how much area one query may cover, so
 `postpass_max_area_sq_km` (default 2000) fails the run before submitting a
 boundary that is too large rather than waiting for the server to refuse it.
@@ -304,7 +385,7 @@ Suited to event-sized areas, not to whole countries.
 
 `rawdata`: submits one job per run to the HOT Raw Data API, polls it to
 completion, and reads the returned GeoJSON into
-`<cache_dir>/rawdata/<iso3>/<snapshot>/country.parquet`. The snapshot label
+`<cache_dir>/rawdata/<iso3>/country-<fingerprint>.parquet`. The snapshot label
 is the mirror's own `lastUpdated` time, so it records when the data was
 current rather than when the run happened. Slower than Postpass because the
 work is queued, but it takes the same filters and has no area cap.
@@ -360,7 +441,7 @@ Resolution rules:
   highest `YYYY-MM-DD.N`.
 - **OSM `snapshot` for `planet`**: defaults to the planet PBF's mtime as
   an ISO date. An explicit value pins the cache directory name; subsequent
-  runs reuse `<cache>/planet/<iso3>/<snapshot>/country.parquet` without
+  runs reuse `<cache>/planet/<iso3>/<snapshot>/country-<fingerprint>.parquet` without
   reclipping the planet.
 - **OSM `snapshot` for `geofabrik`**: this is a label for the per-country
   cache dir. Geofabrik only publishes `*-latest.osm.pbf` URLs (no historical

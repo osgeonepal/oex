@@ -7,8 +7,8 @@ oex-cli overture <iso3> [theme]
 oex-cli overture --configs-dir <dir>
 oex-cli osm <iso3> [theme]
 oex-cli osm --configs-dir <dir>
-oex-cli osm-build-cache --pbf <path>
-oex-cli osm-build-cache --planet
+oex-cli file --config <path>
+oex-cli osm-build-cache --config <path>
 oex-cli metadata --iso3 <iso3>
 oex-cli metadata --configs-dir <dir>
 ```

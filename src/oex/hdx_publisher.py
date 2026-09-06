@@ -5,6 +5,7 @@ import os
 import re
 import time
 import urllib.parse
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -14,9 +15,11 @@ import requests
 
 from oex.config.schema import CategoryConfig, HdxConfig, RootConfig, S3Config
 from oex.logging_setup import get_logger
+from oex.naming import slugify
 from oex.s3 import artifact_key
 from oex.s3 import resolve as s3_resolve
 from oex.s3 import upload as s3_upload
+from oex.sources.labels import SOURCE_LABELS
 
 if TYPE_CHECKING:
     from oex.report import SourceMetadata
@@ -32,11 +35,11 @@ _HDX_SITE_URLS = {
     "stage": "https://stage.data-humdata-org.ahconu.org",
 }
 
-HDX_SHORT_SOURCE = {"osm": "OpenStreetMap", "overture": "Overture"}
+HDX_SHORT_SOURCE = {name: long for name, (_short, long) in SOURCE_LABELS.items()}
 # Resource names are what people scan on the dataset page, so they read as a layer
 # and a source rather than a filename. Format is part of the name because
 # ResourceMatcher collapses same-named resources that differ only by format.
-RESOURCE_SOURCE = {"osm": "OSM", "overture": "Overture"}
+RESOURCE_SOURCE = {name: short for name, (short, _long) in SOURCE_LABELS.items()}
 
 _SUMMARY_CHARS = 240
 
@@ -50,6 +53,7 @@ FORMAT_LABEL = {
     "kml": "KML",
     "fgb": "FlatGeobuf",
     "pmtiles": "PMTiles",
+    "geoparquet": "GeoParquet",
     "json": "JSON",
     "html": "HTML",
 }
@@ -195,6 +199,7 @@ class CombinedCategory:
     category: CategoryConfig
     zip_paths: list[Path]
     metadata_json_path: Path | None = None
+    geoparquet_url: str | None = None
 
 
 class HdxPublisher:
@@ -230,8 +235,9 @@ class HdxPublisher:
         zip_paths: list[Path],
         ctx: PublishContext,
         extra_resources: list[ExtraResource] | None = None,
+        geoparquet_url: str | None = None,
     ) -> str:
-        category_slug = _slugify(category.name)
+        category_slug = slugify(category.name)
         dt_name = f"{cfg.key}_{cfg.iso3.lower()}_{category_slug}"
         dataset = self._build_dataset_object(cfg, category, dt_name, ctx)
 
@@ -241,6 +247,11 @@ class HdxPublisher:
         for zip_path in sorted_zips:
             res = self._make_resource_for_zip(zip_path, category, ctx, cfg.iso3, category_slug)
             dataset.add_update_resource(res)
+
+        if geoparquet_url:
+            dataset.add_update_resource(
+                self._make_resource_for_geoparquet(category, geoparquet_url, ctx)
+            )
 
         for extra in extra_resources or []:
             res = self._make_resource_for_path(
@@ -296,7 +307,7 @@ class HdxPublisher:
         """
         from hdx.data.dataset import Dataset
 
-        category_slug = _slugify(category.name)
+        category_slug = slugify(category.name)
         dt_name = f"{cfg.key}_{cfg.iso3.lower()}_{category_slug}"
         existing = Dataset.read_from_hdx(dt_name)
         if existing is None:
@@ -439,11 +450,15 @@ class HdxPublisher:
             )
 
         for entry in entries:
-            slug = _slugify(entry.category.name)
+            slug = slugify(entry.category.name)
             sorted_zips = sorted(entry.zip_paths, key=lambda p: p.stat().st_size, reverse=True)
             for zip_path in sorted_zips:
                 res = self._make_resource_for_zip(zip_path, entry.category, ctx, cfg.iso3, slug)
                 dataset.add_update_resource(res)
+            if entry.geoparquet_url:
+                dataset.add_update_resource(
+                    self._make_resource_for_geoparquet(entry.category, entry.geoparquet_url, ctx)
+                )
 
         # One dataset-level metadata resource covering every layer.
         if metadata_path is not None:
@@ -506,11 +521,11 @@ class HdxPublisher:
             dataset.add_tags(list(cfg.hdx.combined.tags))
         dataset.set_expected_update_frequency(cfg.frequency)
 
-        by_slug = {_slugify(c.name): c for c in cfg.categories}
+        by_slug = {slugify(c.name): c for c in cfg.categories}
         changed = 0
         pruned = 0
         for resource in list(dataset.get_resources() or []):
-            layer = _resource_slug(resource, dt_name)
+            layer = _resource_slug(resource, dt_name, by_slug)
             if prune and layer is not None and _is_dropped(layer, by_slug):
                 logger.info("%s: removing %s, no longer in the config", dt_name, resource["name"])
                 pruned += 1
@@ -541,6 +556,19 @@ class HdxPublisher:
         self._sort_resources_by_name(dataset, dt_name)
         logger.info("%s: metadata updated, %d resource(s) changed", dt_name, changed)
         return dt_name, changed, pruned
+
+    def _make_resource_for_geoparquet(
+        self,
+        category: CategoryConfig,
+        url: str,
+        ctx: PublishContext,
+    ):  # noqa: ANN202 - hdx-python-api Resource
+        """Point at the layer GeoParquet already staged on S3, unzipped and read in place."""
+        from hdx.data.resource import Resource
+
+        resource = Resource(geoparquet_resource_payload(category, url, ctx.source_name))
+        resource.mark_data_updated()
+        return resource
 
     def _build_combined_dataset_object(
         self,
@@ -663,7 +691,8 @@ class HdxPublisher:
         pmtiles_layer: str | None,
         ctx: PublishContext,
     ) -> None:
-        from oex.report.landing import CategoryPanel, render_landing, source_label
+        from oex.report.landing import CategoryPanel, render_landing
+        from oex.sources.labels import short_label
 
         dataset = self._read_dataset(dt_name, "landing")
         resources = dataset.get_resources() or []
@@ -684,7 +713,7 @@ class HdxPublisher:
 
         panels: list[CategoryPanel] = []
         for category in cfg.categories:
-            slug = _slugify(category.name)
+            slug = slugify(category.name)
             sources = by_slug.get(slug)
             if not sources:
                 continue
@@ -702,7 +731,7 @@ class HdxPublisher:
             {s.source_name for p in panels for s in p.sources},
             key=lambda n: SOURCE_RANK.get(n, 99),
         )
-        sources_label = " and ".join(source_label(n) for n in present)
+        sources_label = " and ".join(short_label(n) for n in present)
         html = render_landing(
             title=combined_title(cfg, place, hdx_source),
             subtitle=f"{layer_count} layers from {sources_label} for {place}",
@@ -813,7 +842,7 @@ class HdxPublisher:
         iso3: str,
         category_slug: str,
     ):  # noqa: ANN202 - hdx-python-api Resource
-        _, source, fmt = _split_artifact_stem(zip_path.stem)
+        _, source, fmt = _split_artifact_filename(zip_path.name)
         label = category_label(category)
         fmt_label = FORMAT_LABEL.get(fmt, fmt.upper())
         summary = _category_summary(category)
@@ -1007,12 +1036,6 @@ def _download_json(url: str, *, timeout: float = 60.0) -> dict:
     return resp.json()
 
 
-def _slugify(value: str) -> str:
-    import re
-
-    return re.sub(r"[^a-zA-Z0-9]+", "_", value).lower().strip("_")
-
-
 def _resource_url(resources: list, filename: str) -> str | None:  # noqa: ANN001 - hdx Resource
     """Look up by uploaded filename: resource names are human-readable titles."""
     resource = next((r for r in resources if _resource_filename(r) == filename), None)
@@ -1037,25 +1060,54 @@ def _category_tilesets(resources: list) -> dict[str, tuple[str, str]]:  # noqa: 
     return tilesets
 
 
-def _split_artifact_stem(stem: str) -> tuple[str, str, str]:
-    """(slug, source, format) from an artifact stem.
+def _split_artifact_filename(
+    filename: str, known_slugs: Iterable[str] = ()
+) -> tuple[str, str, str]:
+    """(slug, source, format) from an artifact filename, with the dataset prefix removed.
 
-    The source token is optional (`output.s3.name_include_source`) and the slug may carry
-    a geometry segment, so the source is recognised by name rather than by position.
+    A zipped artifact carries its format in the stem (`buildings_osm_gpkg.zip`); an
+    unzipped one carries it as the extension (`buildings_osm.geojson`). The source token
+    is optional (`output.s3.name_include_source`) and the slug may carry a geometry
+    segment, so the source is recognised by name rather than by position.
+
+    A category named like a source (`roads_osm`) is ambiguous once the source token is
+    dropped, so `known_slugs` settles it: a whole-name match wins over splitting a source
+    off the end.
     """
-    slug, _, fmt = stem.rpartition("_")
-    head, _, maybe_source = slug.rpartition("_")
+    if filename.endswith(".zip"):
+        rest, _, fmt = filename[: -len(".zip")].rpartition("_")
+    else:
+        rest, _, fmt = filename.rpartition(".")
+    if rest in set(known_slugs):
+        return rest, "", fmt
+    head, _, maybe_source = rest.rpartition("_")
     if maybe_source in RESOURCE_SOURCE:
         return head, maybe_source, fmt
-    return slug, "", fmt
+    return rest, "", fmt
 
 
-def _resource_slug(resource, dt_name: str) -> tuple[str, str] | None:  # noqa: ANN001
+def _layer_parquet_slug(resource) -> tuple[str, str] | None:  # noqa: ANN001
+    """(slug, source) for a staged GeoParquet, whose key carries no dataset prefix."""
+    url = resource.get("url") or ""
+    match = re.search(r"/_layers/([^/]+)/([^/]+)\.parquet$", urllib.parse.unquote(url))
+    if match and match.group(1) in RESOURCE_SOURCE:
+        return match.group(2), match.group(1)
+    return None
+
+
+def _resource_slug(
+    resource,  # noqa: ANN001
+    dt_name: str,
+    known_slugs: Iterable[str] = (),
+) -> tuple[str, str] | None:
     """(category slug, source) a layer resource belongs to, or None when it is not a layer."""
-    stem = _resource_filename(resource).rsplit(".", 1)[0]
-    if not stem.startswith(f"{dt_name}_"):
+    layer_parquet = _layer_parquet_slug(resource)
+    if layer_parquet is not None:
+        return layer_parquet
+    filename = _resource_filename(resource)
+    if not filename.startswith(f"{dt_name}_"):
         return None
-    slug, source, _ = _split_artifact_stem(stem[len(dt_name) + 1 :])
+    slug, source, _ = _split_artifact_filename(filename[len(dt_name) + 1 :], known_slugs)
     if not slug or not source:
         return None
     return slug, source
@@ -1071,13 +1123,37 @@ def _is_dropped(layer: tuple[str, str], by_slug: dict) -> bool:
     return block is not None and not block.enabled
 
 
+def geoparquet_resource_payload(category: CategoryConfig, url: str, source_name: str) -> dict:
+    """Resource fields for a layer GeoParquet, which is published unzipped at its staged URL."""
+    label = category_label(category)
+    source = RESOURCE_SOURCE.get(source_name, source_name)
+    return {
+        "name": f"{label} ({source}), GeoParquet",
+        "description": (
+            f"{label} as GeoParquet, served unzipped so a client can range-read it over "
+            "HTTP instead of downloading the whole file."
+        ),
+        "format": "geoparquet",
+        "url": url,
+    }
+
+
 def _resource_text(resource, dt_name: str, by_slug: dict) -> tuple[str, str] | None:  # noqa: ANN001
     """Name and description for a layer resource, keyed off the filename rather than
     the display name, which is not an identifier."""
-    stem = _resource_filename(resource).rsplit(".", 1)[0]
-    if not stem.startswith(f"{dt_name}_"):
+    layer_parquet = _layer_parquet_slug(resource)
+    if layer_parquet is not None:
+        slug, source = layer_parquet
+        category = by_slug.get(slug)
+        if category is None:
+            return None
+        payload = geoparquet_resource_payload(category, resource["url"], source)
+        return payload["name"], payload["description"]
+
+    filename = _resource_filename(resource)
+    if not filename.startswith(f"{dt_name}_"):
         return None
-    slug, source, fmt = _split_artifact_stem(stem[len(dt_name) + 1 :])
+    slug, source, fmt = _split_artifact_filename(filename[len(dt_name) + 1 :], by_slug)
     category = by_slug.get(slug)
     if category is None or not source:
         return None
@@ -1148,7 +1224,7 @@ def _slug_from_metadata_name(
     if not name.startswith(prefix):
         return None
     for category in categories:
-        slug = _slugify(category.name)
+        slug = slugify(category.name)
         if name.startswith(f"{prefix}{slug}_"):
             return slug
     return None
