@@ -149,8 +149,8 @@ country PBFs to land on disk.
 
 - `engine: geofabrik` (default). Downloads the per-country PBF from
   Geofabrik's mirror (~30 to 200 MB depending on country). One run per
-  country pays a small download. Snapshot date is whatever Geofabrik
-  publishes that day.
+  country pays a small download. The snapshot date is the date Geofabrik
+  last rebuilt the extract.
 
 - `engine: planet`. Clips the country PBF out of a local planet PBF
   (~87 GB) using `osmium extract --strategy=complete_ways`, then runs

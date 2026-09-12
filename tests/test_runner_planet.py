@@ -25,6 +25,15 @@ from oex.osm.geofabrik import GeofabrikUnavailableError
 from oex.osm.runner import OsmRunner, _ensure_local_pbf, _parquet_fingerprint
 
 
+class _StubHead:
+    """Geofabrik dates a snapshot by Last-Modified on the PBF; stub it to stay offline."""
+
+    headers = {"Last-Modified": "Sun, 06 Sep 2026 23:09:31 GMT"}
+
+    def raise_for_status(self) -> None:
+        return None
+
+
 def test_ensure_local_pbf_keeps_a_local_path(tmp_path: Path) -> None:
     local = tmp_path / "planet.osm.pbf"
     local.write_bytes(b"pbf")
@@ -358,6 +367,7 @@ def test_geofabrik_engine_runs_strategy_b_pipeline(tmp_path: Path) -> None:
 
     with (
         patch("oex.osm.runner.lookup_country", side_effect=fake_lookup_country),
+        patch("oex.osm.runner.requests.head", return_value=_StubHead()),
         patch("oex.osm.runner.download_pbf", side_effect=fake_download),
         patch(
             "oex.osm.runner.resolve_boundary",
@@ -518,6 +528,7 @@ def test_geofabrik_download_retries_twice_before_giving_up(tmp_path: Path) -> No
 
     with (
         patch("oex.osm.runner.lookup_country", side_effect=fake_lookup_country),
+        patch("oex.osm.runner.requests.head", return_value=_StubHead()),
         patch("oex.osm.runner.download_pbf", side_effect=always_fails),
         # zero out backoff so the test stays fast
         patch("oex.osm.runner._GEOFABRIK_RETRY_BACKOFF_SECONDS", 0),

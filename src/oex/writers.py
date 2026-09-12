@@ -1,4 +1,4 @@
-"""GIS format writers (gpkg, shp, geojson) over materialised DuckDB tables."""
+"""GIS format writers over materialised DuckDB tables."""
 
 import time
 from dataclasses import dataclass
@@ -88,10 +88,9 @@ def _write_single(
     layer_options = _LAYER_CREATION_OPTIONS.get(fmt, _DEFAULT_LAYER_CREATION_OPTIONS)
     target = out_dir / f"{category_slug}.{fmt}"
     start = time.time()
-    srs = "OGC:CRS84" if fmt == "kml" else "EPSG:4326"
     conn.execute(
         f"COPY {table_name} TO '{target}' "
-        f"WITH (FORMAT GDAL, SRS '{srs}', DRIVER '{driver}', "
+        f"WITH (FORMAT GDAL, SRS 'EPSG:4326', DRIVER '{driver}', "
         f"LAYER_CREATION_OPTIONS '{layer_options}')"
     )
     size_mb = target.stat().st_size / (1024 * 1024)

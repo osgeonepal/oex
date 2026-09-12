@@ -34,6 +34,9 @@ def connect(
     for stmt in (
         "INSTALL spatial",
         "LOAD spatial",
+        # Ignore CRS authority axis order across this session: GEOMETRY holds
+        # longitude,latitude, and GDAL would otherwise write EPSG:4326 latitude-first.
+        "SET geometry_always_xy=true",
         "INSTALL h3 FROM community",
         "LOAD h3",
         "INSTALL httpfs",

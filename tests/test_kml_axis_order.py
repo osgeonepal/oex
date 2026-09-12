@@ -1,8 +1,9 @@
-"""KML is longitude,latitude. Declaring EPSG:4326 makes GDAL write it the other way."""
+"""GEOMETRY is longitude,latitude; the session's `geometry_always_xy` keeps GDAL writing it so."""
 
 import duckdb
 import pytest
 
+from oex.duckdb_session import connect
 from oex.writers import write_format
 
 HAITI = (-72.3, 18.5)
@@ -10,10 +11,10 @@ LAOS = (102.6, 17.9)
 
 
 @pytest.fixture
-def conn():
-    c = duckdb.connect()
-    c.execute("INSTALL spatial; LOAD spatial;")
-    return c
+def conn(tmp_path):
+    session = connect(path=tmp_path / "session.duckdb", temp_dir=tmp_path / "tmp")
+    yield session
+    session.close()
 
 
 @pytest.mark.parametrize(("lon", "lat"), [HAITI, LAOS])
@@ -25,7 +26,7 @@ def test_kml_coordinates_survive_a_round_trip(conn, tmp_path, lon, lat):
     assert got[1] == pytest.approx(lat, abs=0.01)
 
 
-def test_geopackage_still_declares_epsg_4326(conn, tmp_path):
+def test_geopackage_declares_epsg_4326(conn, tmp_path):
     """OGC:CRS84 writes srs_id 100000 with organization NONE, which consumers do not expect."""
     conn.execute("CREATE OR REPLACE TABLE layer1 AS SELECT ST_Point(-72.3, 18.5) AS geom")
     written = write_format(conn, "layer1", "layer1", "gpkg", tmp_path / "gpkg")

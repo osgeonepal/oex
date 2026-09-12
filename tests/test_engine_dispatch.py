@@ -210,3 +210,50 @@ def test_the_fallback_does_not_cover_a_defect_in_the_data(
     with pytest.raises(RuntimeError, match="cannot read"):
         OsmRunner().prepare(cfg)
     assert called == ["postpass"]
+
+
+class _DatelessHead:
+    headers: dict[str, str] = {}
+
+    def raise_for_status(self) -> None:
+        return None
+
+
+def test_an_extract_geofabrik_will_not_date_falls_back_like_any_other_outage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An undatable extract is an outage: recovering from it must not depend on the shape."""
+    yaml = tmp_path / "c.yaml"
+    yaml.write_text(
+        f"""
+iso3: NPL
+key: t
+source:
+  osm:
+    engine: geofabrik
+    fallback_engine: rawdata
+    planet_fallback: false
+    cache_dir: {tmp_path / "osm"}
+categories:
+  - name: buildings
+    osm:
+      enabled: true
+      filter:
+        building: true
+""",
+        encoding="utf-8",
+    )
+    cfg = load_config(yaml)
+    called: list[str] = []
+
+    monkeypatch.setattr(
+        "oex.osm.runner.lookup_country",
+        lambda *a, **k: type("E", (), {"pbf_url": "https://example.com/npl.osm.pbf"})(),
+    )
+    monkeypatch.setattr("oex.osm.runner.requests.head", lambda *a, **k: _DatelessHead())
+    monkeypatch.setattr(
+        OsmRunner, "_prepare_rawdata", lambda self, cfg_, src: called.append("rawdata")
+    )
+
+    OsmRunner().prepare(cfg)
+    assert called == ["rawdata"]

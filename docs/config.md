@@ -444,10 +444,13 @@ Resolution rules:
   runs reuse `<cache>/planet/<iso3>/<snapshot>/country-<fingerprint>.parquet` without
   reclipping the planet.
 - **OSM `snapshot` for `geofabrik`**: this is a label for the per-country
-  cache dir. Geofabrik only publishes `*-latest.osm.pbf` URLs (no historical
-  archive), so a fresh build always pulls today's PBF regardless of the
-  label. To truly pin an OSM date, use `engine: planet` with a planet PBF
-  downloaded on the date you want.
+  cache dir. With `latest`, the label is the date Geofabrik last rebuilt the
+  extract, read from the `Last-Modified` header on the PBF URL; a run that
+  cannot read that header falls over to `planet_fallback` or
+  `fallback_engine`. Geofabrik only publishes `*-latest.osm.pbf` URLs (no
+  historical archive), so a fresh build always pulls today's PBF regardless
+  of the label. To truly pin an OSM date, use `engine: planet` with a planet
+  PBF downloaded on the date you want.
 
 The resolved version is logged before any per-category work, e.g.:
 

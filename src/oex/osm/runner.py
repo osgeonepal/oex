@@ -60,7 +60,11 @@ logger = get_logger(__name__)
 
 _GEOFABRIK_DOWNLOAD_ATTEMPTS = 2
 _GEOFABRIK_RETRY_BACKOFF_SECONDS = 5
-_GeofabrikFallbackError = (GeofabrikUnavailableError, requests.RequestException)
+_GeofabrikFallbackError = (
+    GeofabrikUnavailableError,
+    OsmEngineUnavailableError,
+    requests.RequestException,
+)
 
 
 def _ensure_local_pbf(pbf_path: str, cache_dir: Path) -> Path:
@@ -164,9 +168,10 @@ class OsmRunner(SourceRunner):
                 return None
             try:
                 extract = lookup_country(cfg.iso3, index_url=src.geofabrik_index_url)
-            except (GeofabrikUnavailableError, requests.RequestException):
+                return self._resolve_geofabrik_snapshot(src.snapshot, extract.pbf_url)
+            except _GeofabrikFallbackError as exc:
+                logger.debug("Cannot peek the %s snapshot (%s); will run it", cfg.iso3, exc)
                 return None
-            return self._resolve_geofabrik_snapshot(country_root, src.snapshot, extract.pbf_url)
         if engine == "planet":
             if not src.pbf_path:
                 return None
@@ -471,7 +476,7 @@ class OsmRunner(SourceRunner):
         country_root.mkdir(parents=True, exist_ok=True)
 
         extract = lookup_country(cfg.iso3, index_url=src.geofabrik_index_url)
-        snapshot = self._resolve_geofabrik_snapshot(country_root, src.snapshot, extract.pbf_url)
+        snapshot = self._resolve_geofabrik_snapshot(src.snapshot, extract.pbf_url)
         snapshot_dir = country_root / snapshot
         snapshot_dir.mkdir(parents=True, exist_ok=True)
         fingerprint = _parquet_fingerprint(cfg, clip=src.geofabrik_clip_to_boundary)
@@ -563,35 +568,15 @@ class OsmRunner(SourceRunner):
         raise last_exc
 
     @staticmethod
-    def _resolve_or_create_snapshot(country_root: Path, requested: str) -> str:
+    def _resolve_geofabrik_snapshot(requested: str, pbf_url: str) -> str:
+        """The date Geofabrik last rebuilt the extract, so `latest` tracks upstream."""
         if requested and requested != "latest":
             return requested
-        existing = sorted(p.name for p in country_root.iterdir() if p.is_dir() and p.name != "_pbf")
-        if existing:
-            return existing[-1]
-        return datetime.now(UTC).date().isoformat()
-
-    @staticmethod
-    def _resolve_geofabrik_snapshot(country_root: Path, requested: str, pbf_url: str) -> str:
-        """The date Geofabrik last rebuilt the extract, so `latest` tracks upstream.
-
-        Resolving from the cache directory instead would pin a country to the first
-        snapshot ever exported: the parquet is keyed by that label, so it is found,
-        nothing is re-downloaded, and the export republishes the same data forever.
-        """
-        if requested and requested != "latest":
-            return requested
-        try:
-            head = requests.head(pbf_url, allow_redirects=True, timeout=60)
-            head.raise_for_status()
-            last_modified = head.headers["Last-Modified"]
-        except (requests.RequestException, KeyError) as exc:
-            logger.warning(
-                "Could not read Last-Modified for %s (%s); falling back to the cached snapshot",
-                pbf_url,
-                exc,
-            )
-            return OsmRunner._resolve_or_create_snapshot(country_root, requested)
+        head = requests.head(pbf_url, allow_redirects=True, timeout=60)
+        head.raise_for_status()
+        last_modified = head.headers.get("Last-Modified")
+        if not last_modified:
+            raise OsmEngineUnavailableError(f"Geofabrik sent no Last-Modified for {pbf_url}")
         return parsedate_to_datetime(last_modified).astimezone(UTC).date().isoformat()
 
     def _country_source_expr(self) -> str:
