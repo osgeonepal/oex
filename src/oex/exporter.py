@@ -3,6 +3,7 @@
 import concurrent.futures
 import itertools
 import json
+import os
 import shutil
 import threading
 import time
@@ -413,7 +414,7 @@ class Exporter:
         d = self._cfg.duckdb
         _parallel_workers = max(1, self._cfg.parallel.threads or self._adaptive_workers)
         _duckdb_threads = max(2, cpu_count() // _parallel_workers)
-        table = f"{slug}_{int(time.time() * 1000)}"
+        table = f"{slug}_{os.getpid()}_{int(time.time() * 1000)}"
         db_path = Path(d.temp_dir) / f"{table}.duckdb"
         conn = connect(
             path=db_path,

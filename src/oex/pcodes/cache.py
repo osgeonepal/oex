@@ -37,8 +37,13 @@ def _load_local_meta(meta_path: Path) -> dict[str, Any]:
 
 
 def _write_local_meta(meta_path: Path, payload: dict[str, Any]) -> None:
+    """Replace atomically: concurrent exports share this file and interleave otherwise."""
     meta_path.parent.mkdir(parents=True, exist_ok=True)
-    meta_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{meta_path.name}.", dir=str(meta_path.parent))
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(tmp_path, meta_path)
 
 
 def _fetch_manifest(manifest_url: str, *, timeout: float = 60.0) -> list[dict[str, Any]]:

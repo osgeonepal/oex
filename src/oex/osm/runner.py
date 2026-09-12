@@ -162,7 +162,11 @@ class OsmRunner(SourceRunner):
             country_root = Path(src.cache_dir) / "geofabrik" / cfg.iso3.lower()
             if not country_root.exists():
                 return None
-            return self._resolve_or_create_snapshot(country_root, src.snapshot)
+            try:
+                extract = lookup_country(cfg.iso3, index_url=src.geofabrik_index_url)
+            except (GeofabrikUnavailableError, requests.RequestException):
+                return None
+            return self._resolve_geofabrik_snapshot(country_root, src.snapshot, extract.pbf_url)
         if engine == "planet":
             if not src.pbf_path:
                 return None
