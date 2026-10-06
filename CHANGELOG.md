@@ -64,6 +64,12 @@ and is auto-managed by [commitizen](https://commitizen-tools.github.io/commitize
 
 - **config**: config fix
 
+## v0.4.16 (2026-10-06)
+
+### Feat
+
+- **theme**: add theme section , add report with map and data enabled ,add also support for the fileformats
+
 ## v0.4.15 (2026-09-12)
 
 ### Fix
