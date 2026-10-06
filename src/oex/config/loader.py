@@ -1,6 +1,7 @@
 """Layered YAML config: bundled defaults < user YAML < dotlist overrides."""
 
 import os
+import re
 from collections.abc import Iterator
 from importlib import resources
 from pathlib import Path
@@ -10,6 +11,7 @@ from omegaconf import DictConfig, ListConfig, OmegaConf
 
 from oex.config.schema import RootConfig
 from oex.osm.engines import ENGINE_NAMES
+from oex.palette import MIN_CONTRAST_RATIO, contrast_ratio
 from oex.writers import NEVER_ZIPPED, SUPPORTED_FORMATS
 
 
@@ -81,7 +83,39 @@ def load_config(
     _validate_osm_engine(container)
     _validate_formats(container)
     _validate_pcodes(container)
+    _validate_theme(container)
+    _validate_pmtiles(container)
     return container
+
+
+_HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _validate_theme(cfg: RootConfig) -> None:
+    """A theme colour is checked here because the pages are published unattended, and an
+    unreadable button would otherwise only show up to whoever opened the dataset."""
+    theme = cfg.output.report.theme
+    for name, value in vars(theme).items():
+        if not _HEX_COLOR.match(value):
+            raise ConfigError(f"output.report.theme.{name} must be a #rrggbb colour, got {value!r}")
+    on_white = {
+        "accent_color": "the download button draws white text on it",
+        "map_popup_color": "the map popup draws its heading in it on white",
+    }
+    for name, use in on_white.items():
+        value = getattr(theme, name)
+        ratio = contrast_ratio(value)
+        if ratio < MIN_CONTRAST_RATIO:
+            raise ConfigError(
+                f"output.report.theme.{name} {value} gives {ratio:.2f}:1 against white, below "
+                f"the {MIN_CONTRAST_RATIO}:1 WCAG AA minimum; {use}"
+            )
+
+
+def _validate_pmtiles(cfg: RootConfig) -> None:
+    extra = cfg.output.pmtiles.max_extra_zooms
+    if extra < 0:
+        raise ConfigError(f"output.pmtiles.max_extra_zooms must be 0 or more, got {extra}")
 
 
 def _validate_formats(cfg: RootConfig) -> None:

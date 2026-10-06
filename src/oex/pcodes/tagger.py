@@ -1,7 +1,6 @@
-"""Pcode tagging via H3 integer hash join at resolution 7. Boundary residuals (~1-5% of
-features whose centroid H3 cell isn't owned by any admin) are resolved by either a 1-ring
-H3 neighbour hash lookup (default, memory-bounded) or a GEOS ST_Contains spatial join
-(precise but can OOM on large countries)."""
+"""Pcode tagging by H3 hash join at resolution 7. Features on admin borders fall back to
+a 1-ring H3 lookup, which bounds memory, or an exact GEOS join, which can exhaust it.
+"""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -425,7 +424,6 @@ def _replace_table_with_tagged(
     table: str,
     tagged_table: str,
 ) -> None:
-    # Atomic swap: if either statement fails the transaction rolls back.
     conn.execute("BEGIN TRANSACTION")
     try:
         conn.execute(f"DROP TABLE {table}")

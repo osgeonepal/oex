@@ -87,3 +87,17 @@ def test_category_dataset_source_falls_back_to_runner_default() -> None:
 
     src_line = _find_source_line(readme)
     assert "Geofabrik NPL" in src_line
+
+
+def test_the_readme_names_the_licence_rather_than_its_hdx_id() -> None:
+    exporter = Exporter(RootConfig(iso3="NPL", key="hotosm"), _StubRunner())
+    category = CategoryConfig(name="buildings", hdx=CategoryHdx(license="hdx-odc-odbl"))
+    readme = exporter._build_readme(
+        fmt="gpkg",
+        category=category,
+        query=_make_query("OpenStreetMap"),
+        boundary=_make_boundary(),
+        feature_count=1,
+    )
+    licence = next(line for line in readme if line.startswith("License:"))
+    assert licence.endswith("Open Database License (ODC-ODbL)")

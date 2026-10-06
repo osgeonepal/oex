@@ -48,7 +48,7 @@ flowchart TD
 
     subgraph OUTPUT["Output"]
         direction LR
-        ZIP["Zip bundle<br/>README + metadata.json + report.html"]:::out
+        ZIP["Zip bundle<br/>README + metadata.json"]:::out
         DEST["HDX / S3"]:::out
         ZIP --> DEST
     end

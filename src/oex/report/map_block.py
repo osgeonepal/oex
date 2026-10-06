@@ -1,9 +1,5 @@
-"""Shared PMTiles map for the report pages.
-
-Both report pages draw the same map. They differ only in how their tiles are
-packaged: the combined landing page has one merged tileset whose features carry
-`category` and `source`, while a per-category dataset has one tileset per source.
-A MapEntry names its own tileset, so both shapes render through this one path.
+"""The PMTiles map on the dataset page. A MapEntry names its own tileset, so one merged
+tileset and one tileset per source render through the same path.
 """
 
 import json
@@ -12,9 +8,8 @@ from html import escape
 
 from shapely.geometry import mapping, shape
 
-from oex.config.schema import MapAssetsConfig
+from oex.config.schema import MapAssetsConfig, ThemeConfig
 
-AOI_COLOR = "#e11d48"
 AOI_LABEL = "Area of interest"
 
 # A full-resolution country boundary runs to megabytes. The outline only has to read
@@ -24,23 +19,43 @@ _AOI_INLINE_LIMIT_BYTES = 200_000
 MAP_CSS = """
 span.sw { display: inline-block; width: 11px; height: 11px; border-radius: 2px;
           margin-right: 8px; vertical-align: -1px; }
-#map { width: 100%; height: 520px; border: 1px solid var(--line); border-radius: 3px;
-       margin: 6px 0 0; background: #eef1f4; }
+#map { width: 100%; height: calc(100vh - 210px); min-height: 380px;
+       border: 1px solid var(--line); border-radius: 3px; background: #eef1f4; }
 .map-wrap { position: relative; }
-.legend { position: absolute; left: 10px; bottom: 10px; margin: 0; padding: 8px 11px;
-          list-style: none; background: rgba(255, 255, 255, 0.92);
-          border: 1px solid var(--line); border-radius: 3px; font-size: 12px;
-          line-height: 1.7; }
+.legend { position: absolute; left: 10px; bottom: 10px; margin: 0; padding: 0;
+          background: rgba(255, 255, 255, 0.95); border: 1px solid var(--line);
+          border-radius: 3px; font-size: 12px; max-height: calc(100% - 20px);
+          display: flex; flex-direction: column; }
+.legend summary { list-style: none; cursor: pointer; padding: 8px 11px; font-weight: 600;
+                  display: flex; align-items: center; gap: 8px; }
+.legend summary::-webkit-details-marker { display: none; }
+.legend summary::after { content: "\\25be"; margin-left: auto; color: var(--muted); }
+.legend[open] summary::after { content: "\\25b4"; }
+.legend-actions { display: flex; gap: 6px; padding: 0 11px 8px; }
+.legend-actions button { font: inherit; font-size: 11px; padding: 4px 9px; cursor: pointer;
+          border: 1px solid var(--line); border-radius: 3px; background: var(--bg);
+          color: var(--fg); }
+.legend-actions button:hover { border-color: var(--accent); color: var(--accent); }
+.legend-actions button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.legend ul { list-style: none; margin: 0; padding: 0 11px 9px; overflow-y: auto;
+             line-height: 1.75; }
 .legend li { white-space: nowrap; }
 .legend label { display: flex; align-items: center; cursor: pointer; }
-.legend input { margin: 0 7px 0 0; cursor: pointer; }
-.legend-count { margin-left: 7px; color: var(--muted); font-family: var(--mono);
+.legend input { margin: 0 7px 0 0; cursor: pointer; accent-color: var(--accent); }
+.legend-count { margin-left: 7px; color: var(--muted); font-variant-numeric: tabular-nums;
                 font-size: 11px; }
+.maplibregl-popup-content { border-top: 3px solid var(--popup); padding: 10px 12px; }
+.maplibregl-popup-content b { color: var(--popup); }
 table.popup { border-collapse: collapse; margin-top: 6px; font-size: 12px; }
 table.popup th { text-align: left; color: var(--muted); font-weight: 400;
                  padding: 2px 10px 2px 0; white-space: nowrap; }
-table.popup td { font-family: var(--mono); padding: 2px 0; }
-.legend .sw.outline { background: transparent; border: 2px solid #e11d48; }
+table.popup td { font-family: var(--mono); padding: 2px 0; word-break: break-word; }
+.legend .sw.outline { background: transparent; border: 2px solid var(--boundary); }
+.hovercard { position: absolute; pointer-events: none; z-index: 5; display: none;
+             background: rgba(26, 26, 26, 0.92); color: #fff; font-size: 12px;
+             padding: 5px 9px; border-radius: 3px; max-width: 240px; }
+.hovercard .hc-layer { display: block; font-size: 10px; text-transform: uppercase;
+             letter-spacing: 0.05em; opacity: 0.75; }
 """
 
 
@@ -56,8 +71,6 @@ class MapEntry:
     # Restricts this entry to part of a shared tileset, as `category|source`.
     # None when the entry owns its whole tileset.
     match_key: str | None = None
-    # Shown beside the legend swatch, so the map carries the same headline count
-    # the quality table does.
     feature_count: int | None = None
 
 
@@ -76,16 +89,19 @@ def render_map(
     assets: MapAssetsConfig | None = None,
     *,
     boundary_geojson: str | None = None,
+    theme: ThemeConfig | None = None,
 ) -> str:
-    """Render the map section: heading, canvas, legend with a checkbox per entry."""
+    """The canvas, a hover card, and a legend that toggles each entry."""
     if not entries:
         return ""
     outline = _display_boundary(boundary_geojson) if boundary_geojson else None
-    script = _map_script(entries, boundary_bbox, assets or MapAssetsConfig(), outline)
+    script = _map_script(
+        entries, boundary_bbox, assets or MapAssetsConfig(), theme or ThemeConfig(), outline
+    )
     return (
-        "<h2>Map preview</h2>\n"
         '<div class="map-wrap">'
         '<div id="map"></div>'
+        '<div class="hovercard" id="hovercard"></div>'
         f"{_render_legend(entries, show_aoi=outline is not None)}"
         "</div>\n"
         f"<script>{script}</script>\n"
@@ -106,6 +122,7 @@ def _map_script(
     entries: list[MapEntry],
     boundary_bbox: tuple[float, float, float, float] | None,
     assets: MapAssetsConfig,
+    theme: ThemeConfig,
     boundary_geojson: str | None = None,
 ) -> str:
     tilesets = {e.tileset_url for e in entries}
@@ -121,7 +138,7 @@ def _map_script(
         # Drawn after the data layers so the outline stays readable over them.
         layer_defs += (
             ",\n      { id: 'aoi-line', type: 'line', source: 'aoi',"
-            f" paint: {{ 'line-color': '{AOI_COLOR}', 'line-width': 2 }} }}"
+            f" paint: {{ 'line-color': '{theme.boundary_outline_color}', 'line-width': 2 }} }}"
         )
 
     labels = json.dumps(
@@ -166,30 +183,74 @@ const toggles = document.querySelectorAll('.legend input');
 
 function applyToggle(toggle) {{
   const visibility = toggle.checked ? 'visible' : 'none';
+  if (toggle.dataset.key === 'aoi') {{
+    if (map.getLayer('aoi-line')) map.setLayoutProperty('aoi-line', 'visibility', visibility);
+    return;
+  }}
   for (const suffix of suffixes) {{
     const id = `${{toggle.dataset.key}}-${{suffix}}`;
     if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', visibility);
   }}
 }}
 toggles.forEach((t) => t.addEventListener('change', () => applyToggle(t)));
+document.querySelectorAll('.legend-actions button').forEach((button) => {{
+  button.addEventListener('click', () => {{
+    const on = button.dataset.all === 'on';
+    toggles.forEach((t) => {{ t.checked = on; applyToggle(t); }});
+  }});
+}});
 
 // Inspecting a feature is how you check the attribute coverage the table reports.
 const labelOfLayer = {labels};
 const layerIds = Object.keys(labelOfLayer);
+const hovercard = document.getElementById('hovercard');
+
+// Hovering names the feature; clicking opens everything it carries.
+map.on('mousemove', layerIds, (event) => {{
+  const hit = event.features && event.features[0];
+  if (!hit) return;
+  map.getCanvas().style.cursor = 'pointer';
+  const name = hit.properties.name || '(no name)';
+  hovercard.textContent = '';
+  const layerName = document.createElement('span');
+  layerName.className = 'hc-layer';
+  layerName.textContent = labelOfLayer[hit.layer.id];
+  const label = document.createElement('b');
+  label.textContent = name;
+  hovercard.append(layerName, label);
+  hovercard.style.display = 'block';
+  hovercard.style.left = (event.point.x + 14) + 'px';
+  hovercard.style.top = (event.point.y + 14) + 'px';
+}});
+map.on('mouseleave', layerIds, () => {{
+  map.getCanvas().style.cursor = '';
+  hovercard.style.display = 'none';
+}});
+
 map.on('click', (event) => {{
   const hit = map.queryRenderedFeatures(event.point, {{ layers: layerIds }})[0];
   if (!hit) return;
-  const rows = Object.entries(hit.properties)
+  // Tag values are editable by anyone, so they are written as text, never as markup.
+  const content = document.createElement('div');
+  const title = document.createElement('b');
+  title.textContent = labelOfLayer[hit.layer.id];
+  const table = document.createElement('table');
+  table.className = 'popup';
+  Object.entries(hit.properties)
     .filter(([, value]) => value !== null && value !== '')
-    .map(([key, value]) => `<tr><th>${{key}}</th><td>${{value}}</td></tr>`)
-    .join('');
+    .forEach(([key, value]) => {{
+      const row = table.insertRow();
+      const header = document.createElement('th');
+      header.textContent = key;
+      row.append(header);
+      row.insertCell().textContent = value;
+    }});
+  content.append(title, table);
   new maplibregl.Popup({{ maxWidth: '320px' }})
     .setLngLat(event.lngLat)
-    .setHTML(`<b>${{labelOfLayer[hit.layer.id]}}</b><table class="popup">${{rows}}</table>`)
+    .setDOMContent(content)
     .addTo(map);
 }});
-map.on('mouseenter', layerIds, () => {{ map.getCanvas().style.cursor = 'pointer'; }});
-map.on('mouseleave', layerIds, () => {{ map.getCanvas().style.cursor = ''; }});
 
 map.on('load', () => {{ {fit} toggles.forEach(applyToggle); }});
 """
@@ -223,6 +284,7 @@ def _filter(entry: MapEntry, geometry: str) -> str:
 
 
 def _render_legend(entries: list[MapEntry], *, show_aoi: bool = False) -> str:
+    """Collapsible, because on a phone it would otherwise cover the map it explains."""
     aoi_item = (
         "<li><label>"
         '<input type="checkbox" checked data-key="aoi">'
@@ -239,7 +301,16 @@ def _render_legend(entries: list[MapEntry], *, show_aoi: bool = False) -> str:
         "</label></li>"
         for e in entries
     )
-    return f'<ul class="legend">{items}</ul>'
+    return (
+        '<details class="legend" open>'
+        f"<summary>Layers ({len(entries)})</summary>"
+        '<div class="legend-actions">'
+        '<button type="button" data-all="on">Select all</button>'
+        '<button type="button" data-all="off">Clear all</button>'
+        "</div>"
+        f"<ul>{items}</ul>"
+        "</details>"
+    )
 
 
 def _count_label(feature_count: int | None) -> str:

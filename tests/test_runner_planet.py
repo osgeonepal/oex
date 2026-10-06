@@ -1,8 +1,5 @@
-"""Unit tests for the planet engine path in OsmRunner.
-
-osmium and quackosm are mocked. Tests exercise: the build pipeline calls,
-caching/idempotency, the engine-aware query_for, and geofabrik->planet
-fallback wiring.
+"""The planet engine path in OsmRunner with osmium and quackosm mocked: build calls,
+caching, the engine-aware query_for and the Geofabrik to planet fallback.
 """
 
 import json

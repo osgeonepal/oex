@@ -1,9 +1,5 @@
-"""osmium-tool subprocess wrappers for polygon-based PBF extraction.
-
-The planet engine uses osmium-tool's `extract` command to clip a country
-PBF out of a planet PBF using a 5km-buffered admin polygon. We shell out
-because pyosmium does not expose `extract --strategy=complete_ways` and
-reimplementing the multi-pass strategy in Python is out of scope.
+"""osmium-tool wrappers for clipping a country out of a planet PBF. pyosmium does not
+expose `extract --strategy=complete_ways`, so this shells out.
 """
 
 import json
@@ -41,11 +37,8 @@ def osmium_polygon_extract(
     *,
     strategy: ExtractStrategy = "complete_ways",
 ) -> None:
-    """Clip `pbf_path` to `polygon_geojson`, write to `out_pbf`.
-
-    Polygon vertex count is engineered away by osmium's banded algorithm,
-    so we pass the full-precision boundary (no simplification needed).
-    """
+    """osmium's banded algorithm makes vertex count cheap, so the boundary goes in at full
+    precision."""
     osmium = shutil.which("osmium")
     if osmium is None:
         platform = sys.platform if sys.platform in _INSTALL_HINTS else "linux"

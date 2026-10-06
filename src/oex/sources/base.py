@@ -37,10 +37,6 @@ class SourceRunner(ABC):
     def query_for(self, cfg: RootConfig, category: CategoryConfig) -> SourceQuery: ...
 
     def peek_snapshot_label(self, cfg: RootConfig) -> str | None:
-        """Best-effort snapshot label without doing network work or running prepare.
-
-        Returns the label the runner would adopt in prepare(), or None if it can't
-        be determined cheaply. Used by the exporter to short-circuit the run when
-        every category is already uploaded for that label.
-        """
+        """The label prepare() would adopt, found without network work, or None; lets the run
+        stop early when every category is already uploaded for it."""
         return None

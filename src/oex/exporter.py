@@ -12,9 +12,12 @@ from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
+import pystac
 from hdx.data.hdxobject import HDXError
 
 from oex.boundary import resolve_boundary
+from oex.catalog import S3CatalogStore, link_collections
+from oex.catalog import layout as catalog_layout
 from oex.config.schema import (
     CategoryConfig,
     PcodesSourceConfig,
@@ -30,13 +33,25 @@ from oex.hdx_publisher import (
     ExtraResource,
     HdxPublisher,
     PublishContext,
-    category_label,
     combined_title,
     country_name,
+    dataset_title,
+    hdx_dataset_url,
+    links_related_datasets,
+    related_dataset_links,
 )
 from oex.logging_setup import get_logger
 from oex.metadata import compute_metadata
-from oex.naming import slugify
+from oex.naming import (
+    COMBINED_SLUG,
+    category_dataset_name,
+    category_label,
+    combined_dataset_name,
+    layer_dataset_name,
+    resource_prefix,
+    slugify,
+)
+from oex.palette import DEFAULT_PALETTE
 from oex.pcodes import (
     PcodeCacheEntry,
     ensure_admin_parquets,
@@ -44,13 +59,28 @@ from oex.pcodes import (
     tag_table,
 )
 from oex.pcodes.tagger import parse_boundary_resolution
-from oex.preflight import check_writable_paths
-from oex.report import SourceMetadata, render_report
+from oex.preflight import check_tile_builder, check_writable_paths
+from oex.report import SourceMetadata
+from oex.report.page import PageLayer, downloads_from_assets, render_dataset_page
 from oex.s3 import artifact_key, build_layer_key, list_layer_urls
 from oex.s3 import resolve as s3_resolve
 from oex.s3 import upload as s3_upload
 from oex.sources.base import CategorySkippedError, SourceQuery, SourceRunner
 from oex.sql import build_select_clause, build_where_clause, materialise
+from oex.stac import (
+    LayerAssets,
+    asset_href,
+    asset_key,
+    build_collection,
+    build_item,
+    collection_filename,
+    href_or_filename,
+    item_filename,
+    item_href,
+    license_href,
+    to_payload,
+    write_json,
+)
 from oex.state import StateStore
 from oex.system import adaptive_parallel_resources, cpu_count
 from oex.translit import transliterate_table
@@ -104,6 +134,7 @@ class BuiltCategory:
     category: CategoryConfig
     zip_paths: list[Path] = field(default_factory=list)
     metadata_json_path: Path | None = None
+    item_path: Path | None = None
     metadata_obj: object | None = None
     source_metadata: SourceMetadata | None = None
     geoparquet_path: Path | None = None
@@ -147,14 +178,25 @@ class Exporter:
         # prevent concurrent peaks from exhausting machine RAM.
         self._pcode_tag_semaphore = threading.Semaphore(1)
         self._adaptive_workers, self._adaptive_mem_gb = adaptive_parallel_resources()
+        self._staged_collections: list[tuple[str, str]] = []
 
     def run(self) -> ExportResult:
         if not dataset_identity(self._cfg):
             raise ValueError("config.iso3 or config.output.s3.folder is required")
         if not self._cfg.categories:
             raise ValueError("config.categories is empty")
+        if self._want_metadata():
+            for category in self._cfg.categories:
+                license_href(category.hdx.license, category.hdx.license_url)
+        if self._cfg.hdx.push and self._want_metadata() and not self._cfg.output.s3.enabled:
+            raise ValueError(
+                "hdx.push is true and layer metadata is on, but output.s3.enabled is false: "
+                "the Collection links each layer's Item by URL and the Items are published "
+                "to the bucket, so without S3 every link would be a 404"
+            )
 
         check_writable_paths(self._cfg)
+        check_tile_builder(self._cfg)
 
         iso = self._cfg.iso3.upper() or dataset_identity(self._cfg)
         cat_names = [c.name for c in self._cfg.categories]
@@ -290,6 +332,15 @@ class Exporter:
                 boundary_geojson=boundary.geojson,
             )
 
+        if self._staged_collections and (where := catalog_layout(self._cfg)):
+            link_collections(
+                where,
+                self._cfg.output.stac,
+                S3CatalogStore(self._cfg),
+                self._staged_collections,
+                area_title=self._area_title(),
+            )
+
         result.total_duration_s = time.time() - start
         logger.info(
             "[%s] %s done in %.1fs: %d ok, %d empty, %d skipped, %d failed",
@@ -345,9 +396,8 @@ class Exporter:
                     error="no output formats configured",
                 )
             )
-        # GeoParquet is never zipped: it is published as-is so a client can read it
-        # over HTTP in place. It is also the source the combined tiles are built from,
-        # which is why it can be wanted without being asked for.
+        # Never zipped, so a client reads it in place over HTTP; it also feeds the
+        # combined tiles, so it can be wanted without being requested.
         publish_geoparquet = "geoparquet" in formats
         want_geoparquet = publish_geoparquet or (combine and self._cfg.output.pmtiles.enabled)
         hdx_formats = [f for f in formats if f != "geoparquet"]
@@ -497,7 +547,7 @@ class Exporter:
                     time.time() - translit_start,
                 )
 
-            need_metadata = self._cfg.output.metadata or self._cfg.output.report.enabled
+            need_metadata = self._want_metadata()
             metadata_obj = None
             metadata_dict = None
             if need_metadata:
@@ -507,12 +557,13 @@ class Exporter:
                     table,
                     temporal_column=category.temporal.column,
                 )
-                metadata_dict = metadata_obj.to_dict()
 
-            dt_name = f"{self._cfg.key}_{self._cfg.iso3.lower()}_{slug}"
+            dt_name = layer_dataset_name(self._cfg, category)
             metadata_json_path: Path | None = None
+            item_path: Path | None = None
+            want_item = False
             source_metadata: SourceMetadata | None = None
-            if self._cfg.output.report.enabled and metadata_obj is not None:
+            if metadata_obj is not None:
                 source_metadata = SourceMetadata(
                     source_name=self._runner.name,
                     snapshot_label=query.snapshot_label,
@@ -529,13 +580,23 @@ class Exporter:
                     boundary=boundary_obj.source,
                     metadata=metadata_obj,
                 )
-                metadata_json_path = out_root / f"{dt_name}_{self._runner.name}_metadata.json"
-                metadata_json_path.write_text(
-                    json.dumps(source_metadata.to_payload(), indent=2),
-                    encoding="utf-8",
+                want_item = True
+                if not combine:
+                    # A combined dataset is covered by one Collection over every layer.
+                    metadata_json_path = out_root / collection_filename(dt_name, self._runner.name)
+                # Named before the artifacts exist, so the archived copy lists none.
+                metadata_dict = to_payload(
+                    build_item(
+                        LayerAssets(
+                            category=category,
+                            title=dataset_title(self._cfg, category),
+                            source_metadata=source_metadata,
+                            dataset_name=dt_name,
+                        ),
+                        self._cfg,
+                    )
                 )
 
-            conn.execute("PRAGMA memory_limit='2GB'")
             logger.info("%s writing %d format(s): %s", cat_tag, len(hdx_formats), hdx_formats)
             zip_paths = self._materialise_outputs(
                 conn=conn,
@@ -551,9 +612,8 @@ class Exporter:
             )
 
             if not zip_paths and not want_geoparquet:
-                # Every requested format failed (corrupt OSM coords, OOM, etc).
-                # Don't try to publish nothing; mark the category as skipped so
-                # the country doesn't go red if other categories are healthy.
+                # Every format failed; skipping rather than failing keeps one bad category
+                # from turning the whole country red.
                 logger.warning(
                     "%s no formats succeeded; skipping HDX upload for this category",
                     cat_tag,
@@ -589,20 +649,47 @@ class Exporter:
             if self._cfg.output.pmtiles.enabled and not combine:
                 pm = self._cfg.output.pmtiles
                 pmtiles_path = out_root / f"{dt_name}_{self._runner.name}.pmtiles"
-                write_pmtiles(conn, table, pmtiles_path, min_zoom=pm.min_zoom, max_zoom=pm.max_zoom)
+                # Named for the category, so one map style serves every country's tiles.
+                write_pmtiles(
+                    conn,
+                    table,
+                    pmtiles_path,
+                    layer=slug,
+                    min_zoom=pm.min_zoom,
+                    max_zoom=pm.max_zoom,
+                    max_extra_zooms=pm.max_extra_zooms,
+                )
                 pmtiles_extra.append(
                     ExtraResource(
                         path=pmtiles_path,
                         fmt="pmtiles",
-                        description=f"{category.name} vector tiles (PMTiles)",
+                        description=(
+                            f"Vector tiles of {category_label(category)} for web maps (PMTiles)."
+                        ),
                     )
                 )
 
-            if source_metadata is not None:
+            if want_item and source_metadata is not None:
+                # After the artifacts exist, so the layer can name every one as an asset.
+                layer = LayerAssets(
+                    category=category,
+                    title=dataset_title(self._cfg, category),
+                    source_metadata=source_metadata,
+                    dataset_name=dt_name,
+                    artifacts=zip_paths,
+                    geoparquet_url=geoparquet_url,
+                    geoparquet_path=geoparquet_path,
+                    pmtiles_url=self._artifact_url(pmtiles_path, slug),
+                    pmtiles_path=pmtiles_path,
+                )
+                item_path = self._write_layer_metadata(layer, out_root, metadata_json_path)
+
+            if source_metadata is not None and self._cfg.output.report.enabled:
                 self._write_local_report(
                     category=category,
                     source_metadata=source_metadata,
                     report_path=out_root / f"{dt_name}_{self._runner.name}_report.html",
+                    zip_paths=zip_paths,
                     pmtiles_path=pmtiles_path,
                     boundary_bbox=boundary_obj.bbox,
                     boundary_geojson=boundary_obj.geojson,
@@ -640,11 +727,14 @@ class Exporter:
                     ctx,
                     extra_resources=pmtiles_extra,
                     geoparquet_url=geoparquet_url if publish_geoparquet else None,
+                    geoparquet_path=geoparquet_path,
                 )
                 if self._state is not None:
                     self._state.mark_uploaded(slug, hdx_dataset=dataset_name)
                 if self._cfg.output.remove_after_upload:
                     extra_paths = [e.path for e in pmtiles_extra]
+                    if item_path is not None:
+                        extra_paths.append(item_path)
                     _remove_uploaded_outputs(zip_paths, metadata_json_path, extra_paths)
                     logger.info(
                         "%s removed %d local output(s) after upload", cat_tag, len(zip_paths)
@@ -672,6 +762,7 @@ class Exporter:
                 category=category,
                 zip_paths=zip_paths,
                 metadata_json_path=metadata_json_path,
+                item_path=item_path,
                 metadata_obj=metadata_obj,
                 source_metadata=source_metadata,
                 geoparquet_path=geoparquet_path,
@@ -693,33 +784,66 @@ class Exporter:
             conn.close()
             db_path.unlink(missing_ok=True)
 
+    def _page_layer(
+        self,
+        category: CategoryConfig,
+        source_metadata: SourceMetadata,
+        zip_paths: list[Path],
+        pmtiles_path: Path | None,
+        *,
+        tileset: tuple[str, str] | None = None,
+    ) -> PageLayer:
+        """A layer as the page shows it. Hrefs are filenames, so the page works under
+        any host serving the output directory."""
+        slug = slugify(category.name)
+        assets = {
+            asset_key(path.name, slug): {"href": path.name, "file:size": path.stat().st_size}
+            for path in zip_paths
+        }
+        geoparquet = Path("_layers") / f"{slug}.parquet"
+        if zip_paths and (zip_paths[0].parent / geoparquet).exists():
+            size = (zip_paths[0].parent / geoparquet).stat().st_size
+            assets["geoparquet"] = {"href": str(geoparquet), "file:size": size}
+        item = item_filename(layer_dataset_name(self._cfg, category), self._runner.name)
+        downloads = downloads_from_assets(assets)
+        own_tiles = (pmtiles_path.name, slug) if pmtiles_path else None
+        index = [slugify(c.name) for c in self._cfg.categories].index(slug)
+        palette = self._cfg.output.report.palette or DEFAULT_PALETTE
+        return PageLayer(
+            key=f"{slug}-{self._runner.name}",
+            label=category_label(category),
+            color=palette[index % len(palette)],
+            source=source_metadata,
+            downloads=downloads,
+            tileset=tileset or own_tiles,
+            match_key=f"{slug}|{self._runner.name}" if tileset else None,
+            metadata_href=item if self._want_metadata() else None,
+        )
+
     def _write_local_report(
         self,
         *,
         category: CategoryConfig,
         source_metadata: SourceMetadata,
         report_path: Path,
+        zip_paths: list[Path],
         pmtiles_path: Path | None,
         boundary_bbox: tuple[float, float, float, float],
         cat_tag: str,
         boundary_geojson: str | None = None,
     ) -> None:
         """Write this source's report next to its outputs, mapping the local tileset."""
-        # A relative URL keeps the page working under any host serving the output directory.
-        tilesets = (
-            {self._runner.name: (pmtiles_path.name, pmtiles_path.stem)}
-            if pmtiles_path is not None
-            else None
-        )
+        layer = self._page_layer(category, source_metadata, zip_paths, pmtiles_path)
         report_path.write_text(
-            render_report(
-                {self._runner.name: source_metadata},
-                tilesets,
-                boundary_bbox,
-                category_label(category),
-                self._cfg.output.report.palette,
-                self._cfg.output.report.map_assets,
+            render_dataset_page(
+                title=dataset_title(self._cfg, category),
+                layers=[layer],
+                theme=self._cfg.output.report.theme,
+                boundary_bbox=boundary_bbox,
                 boundary_geojson=boundary_geojson,
+                map_assets=self._cfg.output.report.map_assets,
+                dataset_url=self._hdx_url(self._published_dataset_name(category)),
+                related=related_dataset_links(self._cfg, category),
             ),
             encoding="utf-8",
         )
@@ -745,11 +869,13 @@ class Exporter:
         order = {c.name: i for i, c in enumerate(self._cfg.categories)}
         built_ok.sort(key=lambda b: order.get(b.category.name, len(order)))
 
-        dt_name = self._cfg.hdx.combined.name or f"{self._cfg.key}_{self._cfg.iso3.lower()}"
+        dt_name = combined_dataset_name(self._cfg)
         pmtiles_path = self._build_combined_tiles(built_ok, out_root, dt_name)
 
         if publisher is None:
-            self._write_local_landing(
+            # Written locally too, so the output directory reads as a catalog on its own.
+            self._write_combined_metadata(built_ok, out_root, dt_name, pmtiles_path)
+            self._write_local_page(
                 built_ok,
                 out_root,
                 dt_name=dt_name,
@@ -770,7 +896,7 @@ class Exporter:
             boundary_geojson=boundary_geojson,
         )
 
-    def _write_local_landing(
+    def _write_local_page(
         self,
         built_ok: list[BuiltCategory],
         out_root: Path,
@@ -780,50 +906,39 @@ class Exporter:
         boundary_bbox: tuple[float, float, float, float],
         boundary_geojson: str | None = None,
     ) -> None:
-        """Render the combined overview from this run's own layers, with no HDX round-trip.
-
-        The published page also covers layers an earlier run of the other source
-        left on the dataset; only HDX knows about those.
-        """
+        """The dataset page from this run's own layers. The published page also covers layers an
+        earlier run of another source left on the dataset, which only HDX knows about."""
         if not self._cfg.output.report.enabled:
             return
-        from oex.report.landing import CategoryPanel, render_landing
-        from oex.sources.labels import short_label
-
-        panels = [
-            CategoryPanel(
-                slug=slugify(b.category.name),
-                label=category_label(b.category),
-                sources=[b.source_metadata],
-            )
+        tileset = (pmtiles_path.name, pmtiles_path.stem) if pmtiles_path else None
+        layers = [
+            self._page_layer(b.category, b.source_metadata, b.zip_paths, None, tileset=tileset)
             for b in built_ok
             if b.source_metadata is not None
         ]
-        if not panels:
+        if not layers:
             return
 
         place = country_name(self._cfg.iso3, dataset_name=self._cfg.dataset_name)
         q0 = built_ok[0].query
         hdx_source = HDX_SHORT_SOURCE.get(self._runner.name) or (q0.dataset_source if q0 else "")
-        html = render_landing(
+        html = render_dataset_page(
             title=combined_title(self._cfg, place, hdx_source),
-            subtitle=f"{len(panels)} layers from {short_label(self._runner.name)} for {place}",
-            panels=panels,
-            pmtiles_url=pmtiles_path.name if pmtiles_path else None,
-            pmtiles_layer=pmtiles_path.stem if pmtiles_path else None,
+            layers=layers,
+            theme=self._cfg.output.report.theme,
             boundary_bbox=boundary_bbox,
             boundary_geojson=boundary_geojson,
-            palette=self._cfg.output.report.palette,
             map_assets=self._cfg.output.report.map_assets,
+            dataset_url=self._hdx_url(dt_name),
         )
-        landing_path = out_root / f"{dt_name}_overview.html"
-        landing_path.write_text(html, encoding="utf-8")
+        page_path = out_root / f"{dt_name}_overview.html"
+        page_path.write_text(html, encoding="utf-8")
         logger.info(
             "[%s/%s] combine: wrote local overview (%d layers) -> %s",
             self._cfg.iso3.upper(),
             self._runner.name,
-            len(panels),
-            landing_path,
+            len(layers),
+            page_path,
         )
 
     def _publish_combined(
@@ -845,10 +960,11 @@ class Exporter:
                 zip_paths=b.zip_paths,
                 metadata_json_path=b.metadata_json_path,
                 geoparquet_url=b.geoparquet_url if b.publish_geoparquet else None,
+                geoparquet_path=b.geoparquet_path,
             )
             for b in built_ok
         ]
-        metadata_path = self._write_combined_metadata(built_ok, out_root, dt_name)
+        metadata_path = self._write_combined_metadata(built_ok, out_root, dt_name, pmtiles_path)
         t_min, t_max = _combined_temporal_bounds([b.metadata_obj for b in built_ok])
         q0 = built_ok[0].query
         assert q0 is not None
@@ -876,7 +992,7 @@ class Exporter:
             ctx,
             pmtiles_path=pmtiles_path,
             metadata_path=metadata_path,
-            landing_enabled=self._cfg.output.report.enabled,
+            page_enabled=self._cfg.output.report.enabled,
         )
 
         if self._state is not None:
@@ -893,7 +1009,8 @@ class Exporter:
             # Keep the per-layer GeoParquets: they are a deliverable and the
             # source of truth for future combined-tile rebuilds.
             for b in built_ok:
-                _remove_uploaded_outputs(b.zip_paths, b.metadata_json_path, None)
+                items = [b.item_path] if b.item_path else None
+                _remove_uploaded_outputs(b.zip_paths, b.metadata_json_path, items)
             if pmtiles_path is not None:
                 pmtiles_path.unlink(missing_ok=True)
             if metadata_path is not None:
@@ -903,25 +1020,180 @@ class Exporter:
             )
 
     def _write_combined_metadata(
-        self, built_ok: list[BuiltCategory], out_root: Path, dt_name: str
+        self,
+        built_ok: list[BuiltCategory],
+        out_root: Path,
+        dt_name: str,
+        pmtiles_path: Path | None = None,
     ) -> Path | None:
-        """One metadata file covering every layer this source built.
-
-        Named per source so a combined dataset keeps one resource per source rather
-        than each run overwriting the last, which would drop the other's layers.
-        """
+        """One Collection over every layer this source built, named per source so a second
+        source's run does not overwrite the first's."""
         layers = [
-            {"category": b.category.name, **b.source_metadata.to_payload()}
+            LayerAssets(
+                category=b.category,
+                title=dataset_title(self._cfg, b.category),
+                source_metadata=metadata,
+                dataset_name=layer_dataset_name(self._cfg, b.category),
+                artifacts=b.zip_paths,
+                geoparquet_url=b.geoparquet_url,
+            )
             for b in built_ok
-            if b.source_metadata is not None
+            if (metadata := b.source_metadata) is not None
         ]
-        if not layers:
+        if not layers or not self._want_metadata():
             return None
-        path = out_root / f"{dt_name}_{self._runner.name}_metadata.json"
-        path.write_text(
-            json.dumps({"dataset": dt_name, "layers": layers}, indent=2), encoding="utf-8"
+        path = out_root / collection_filename(dt_name, self._runner.name)
+        write_json(
+            self._collection_for(layers, dt_name, COMBINED_SLUG, pmtiles_path=pmtiles_path), path
+        )
+        self._stage_metadata(path, COMBINED_SLUG)
+        self._staged_collections.append(
+            (self._collection_title(layers), href_or_filename(self._cfg, COMBINED_SLUG, path.name))
         )
         return path
+
+    def _artifact_url(self, path: Path | None, category_slug: str) -> str | None:
+        return asset_href(self._cfg, category_slug, path.name) if path else None
+
+    def _want_metadata(self) -> bool:
+        """The report is rendered from the layer metadata, so asking for it asks for both."""
+        return self._cfg.output.metadata or self._cfg.output.report.enabled
+
+    def _write_layer_metadata(
+        self, layer: LayerAssets, out_root: Path, collection_path: Path | None
+    ) -> Path:
+        """The layer's Item file, and its Collection when the layer is its own dataset. The
+        filename is derived here so the staged key and the `rel="item"` href cannot drift."""
+        item_path = out_root / item_filename(layer.dataset_name, self._runner.name)
+        combined = self._cfg.hdx.combine
+        collection_id = combined_dataset_name(self._cfg) if combined else layer.dataset_name
+        collection_slug = COMBINED_SLUG if combined else slugify(layer.category.name)
+        collection_href = href_or_filename(
+            self._cfg, collection_slug, collection_filename(collection_id, self._runner.name)
+        )
+        item = build_item(
+            layer,
+            self._cfg,
+            self_href=item_href(self._cfg, layer),
+            collection_id=collection_id,
+            collection_href=collection_href,
+            hdx_url=self._hdx_url(self._published_dataset_name(layer.category)),
+            page_url=self._page_url(layer.category),
+        )
+        write_json(item, item_path)
+        self._stage_metadata(item_path, slugify(layer.category.name))
+        if collection_path is not None:
+            write_json(
+                self._collection_for([layer], collection_id, collection_slug), collection_path
+            )
+            self._stage_metadata(collection_path, collection_slug)
+            self._staged_collections.append((self._collection_title([layer]), collection_href))
+        return item_path
+
+    def _area_title(self) -> str:
+        cfg = self._cfg
+        if not cfg.iso3:
+            return cfg.dataset_name or cfg.output.s3.folder
+        place = country_name(cfg.iso3, dataset_name=cfg.dataset_name)
+        return (
+            combined_title(cfg, place, "") if cfg.hdx.combine and cfg.hdx.combined.title else place
+        )
+
+    def _published_dataset_name(self, category: CategoryConfig) -> str:
+        """The HDX dataset a category's layer is published to, which an S3 folder does not
+        change, unlike the names of the files themselves."""
+        if self._cfg.hdx.combine:
+            return combined_dataset_name(self._cfg)
+        return category_dataset_name(self._cfg, category)
+
+    def _hdx_url(self, dataset_name: str) -> str | None:
+        """The HDX page a published dataset lives on; None when nothing goes to HDX."""
+        return hdx_dataset_url(self._cfg.hdx.site, dataset_name) if self._cfg.hdx.push else None
+
+    def _collection_for(
+        self,
+        layers: list[LayerAssets],
+        dataset_name: str,
+        category_slug: str,
+        *,
+        pmtiles_path: Path | None = None,
+    ) -> pystac.Collection:
+        filename = collection_filename(dataset_name, self._runner.name)
+        return build_collection(
+            dataset_name=dataset_name,
+            title=self._collection_title(layers),
+            description=self._collection_description(layers),
+            layers=layers,
+            cfg=self._cfg,
+            self_href=href_or_filename(self._cfg, category_slug, filename),
+            pmtiles_url=self._artifact_url(pmtiles_path, category_slug),
+            pmtiles_path=pmtiles_path,
+            hdx_url=self._hdx_url(self._published_dataset_name(layers[0].category)),
+            related=self._related_collections(layers[0].category),
+            page_url=self._page_url(layers[0].category),
+        )
+
+    def _page_url(self, category: CategoryConfig) -> str | None:
+        """Where the publisher puts the dataset's page, which only a run publishing to HDX builds."""
+        cfg = self._cfg
+        if not (cfg.hdx.push and cfg.output.report.enabled):
+            return None
+        name = self._published_dataset_name(category)
+        if cfg.hdx.combine:
+            return asset_href(cfg, "overview", f"{name}_overview.html")
+        return asset_href(cfg, slugify(category.name), f"{name}_report.html")
+
+    def _related_collections(self, category: CategoryConfig) -> list[tuple[str, str]]:
+        """The area's other category Collections, which a run publishing to HDX uploads."""
+        if not links_related_datasets(self._cfg):
+            return []
+        return [
+            (
+                category_label(other),
+                href_or_filename(
+                    self._cfg,
+                    slugify(other.name),
+                    collection_filename(layer_dataset_name(self._cfg, other), self._runner.name),
+                ),
+            )
+            for other in self._cfg.categories
+            if other.name != category.name
+        ]
+
+    def _collection_title(self, layers: list[LayerAssets]) -> str:
+        """The same title the dataset carries on HDX, so the two do not diverge."""
+        if not self._cfg.hdx.combine:
+            return dataset_title(self._cfg, layers[0].category)
+        place = country_name(self._cfg.iso3, dataset_name=self._cfg.dataset_name)
+        return combined_title(
+            self._cfg, place, HDX_SHORT_SOURCE.get(self._runner.name, self._runner.name)
+        )
+
+    def _collection_description(self, layers: list[LayerAssets]) -> str:
+        if not self._cfg.hdx.combine:
+            return layers[0].category.hdx.notes
+        return self._cfg.hdx.combined.notes or self._collection_title(layers)
+
+    def _stage_metadata(self, path: Path, category_slug: str) -> None:
+        """Items are linked from the Collection rather than listed on HDX, so they go
+        straight to the bucket the Collection points at."""
+        s3cfg = self._cfg.output.s3
+        if not s3cfg.enabled:
+            return
+        bucket, prefix, region, endpoint_url, acl = s3_resolve(s3cfg)
+        if not bucket:
+            raise ValueError(
+                "output.s3.enabled is true but no bucket given via output.s3.bucket or OEX_S3_BUCKET"
+            )
+        key = artifact_key(
+            prefix,
+            self._cfg.iso3,
+            category_slug,
+            path.name,
+            folder=s3cfg.folder,
+            nest_by_category=s3cfg.nest_by_category,
+        )
+        s3_upload(path, bucket=bucket, key=key, region=region, endpoint_url=endpoint_url, acl=acl)
 
     def _build_combined_tiles(
         self, built_ok: list[BuiltCategory], out_root: Path, dt_name: str
@@ -997,7 +1269,12 @@ class Exporter:
         )
         try:
             build_combined_pmtiles(
-                conn, layers, pmtiles_path, min_zoom=pm.min_zoom, max_zoom=pm.max_zoom
+                conn,
+                layers,
+                pmtiles_path,
+                min_zoom=pm.min_zoom,
+                max_zoom=pm.max_zoom,
+                max_extra_zooms=pm.max_extra_zooms,
             )
             sources = sorted({ly.source for ly in layers})
             logger.info(
@@ -1014,13 +1291,7 @@ class Exporter:
         return pmtiles_path
 
     def _resource_prefix(self) -> str:
-        """Root for resource filenames: the combined dataset name when combining,
-        otherwise the per-category ``{key}_{iso3}`` (or the S3 folder id)."""
-        if self._cfg.hdx.combine:
-            return self._cfg.hdx.combined.name or f"{self._cfg.key}_{self._cfg.iso3.lower()}"
-        ident = self._cfg.output.s3.folder or self._cfg.iso3.lower()
-        # An empty key means the folder id is already the whole prefix (hotosm_project_1).
-        return f"{self._cfg.key}_{ident}" if self._cfg.key else ident
+        return resource_prefix(self._cfg)
 
     def _artifact_geometry(self, zip_path: Path) -> str:
         """The geometry label this artifact holds, read back off the name we wrote."""
@@ -1058,11 +1329,8 @@ class Exporter:
             logger.info("%s removed %d local output(s) after upload", cat_tag, len(zip_paths))
 
     def _stage_layer_parquet(self, path: Path, slug: str, cat_tag: str) -> str | None:
-        """Upload a per-layer GeoParquet to the stable S3 key so runs accumulate across sources.
-
-        Returns the public URL, which is what an HDX GeoParquet resource points at so the
-        object is stored once rather than copied under the category folder as well.
-        """
+        """Upload a layer's GeoParquet to its stable key, which every source's runs share and
+        the HDX GeoParquet resource links to rather than copying."""
         s3cfg = self._cfg.output.s3
         if not s3cfg.enabled:
             return None
@@ -1087,11 +1355,8 @@ class Exporter:
         publisher: HdxPublisher,
         cat_tag: str,
     ) -> None:
-        """Restate the snapshot date on an empty category's dataset.
-
-        HDXError leaves the older date in place, which costs nothing an empty category
-        was going to publish, so it is logged instead of failing the export.
-        """
+        """Restate the snapshot date on an empty category's dataset. An HDXError only leaves the
+        older date in place, so it is logged rather than failing the export."""
         try:
             publisher.refresh_metadata(
                 self._cfg,
@@ -1120,8 +1385,11 @@ class Exporter:
     ) -> CategoryResult:
         zip_paths = [Path(p) for p in entry.zip_paths]
         metadata_json_path = Path(entry.metadata_json_path) if entry.metadata_json_path else None
+        item_path = out_root / item_filename(
+            layer_dataset_name(self._cfg, category), self._runner.name
+        )
         logger.info("%s uploading %d cached artifact(s) to HDX...", cat_tag, len(zip_paths))
-        t_min, t_max = _temporal_bounds_from_metadata_file(metadata_json_path)
+        t_min, t_max = _temporal_bounds_from_item_file(item_path)
         ctx = PublishContext(
             dataset_source=query.dataset_source,
             snapshot_date=query.snapshot_date,
@@ -1137,7 +1405,7 @@ class Exporter:
         if self._state is not None:
             self._state.mark_uploaded(slug, hdx_dataset=dataset_name)
         if self._cfg.output.remove_after_upload:
-            _remove_uploaded_outputs(zip_paths, metadata_json_path)
+            _remove_uploaded_outputs(zip_paths, metadata_json_path, [item_path])
             logger.info("%s removed %d local output(s) after upload", cat_tag, len(zip_paths))
         return CategoryResult(
             name=category.name,
@@ -1182,10 +1450,8 @@ class Exporter:
                 try:
                     files = write_format(conn, source_table, slug, fmt, stage_dir)
                 except Exception as exc:  # noqa: BLE001 - per-format boundary
-                    # GDAL's COPY can fail mid-write on bogus OSM coords or
-                    # blow past memory_limit on huge tables. Skip this format
-                    # rather than killing the whole category; the others may
-                    # still succeed.
+                    # GDAL can fail mid-write on corrupt OSM coordinates or run out of memory,
+                    # and the category's other formats may still succeed.
                     logger.warning(
                         "%s [%s] format write failed (%s); skipping this format",
                         f"[{category.name}/{self._runner.name}]",
@@ -1195,10 +1461,8 @@ class Exporter:
                     continue
                 if not files:
                     continue
-                # HDX's filestore does not recognise FlatGeobuf, so we skip
-                # zipping and publishing it. The format stays usable for any
-                # downstream consumer that reads the raw file off disk before
-                # the stage dir is cleaned.
+                # HDX's filestore does not recognise FlatGeobuf, so it is neither zipped nor
+                # published.
                 if fmt == "fgb":
                     continue
                 s3cfg = self._cfg.output.s3
@@ -1289,7 +1553,7 @@ class Exporter:
             f"Source:           {category.hdx.dataset_source or query.dataset_source}",
             f"Source URL:       {query.source_url}",
             f"Snapshot:         {query.snapshot_label}",
-            f"License:          {category.hdx.license}",
+            f"License:          {license_label(category.hdx.license)}",
             f"License URL:      {license_url}",
             "",
             "About the source",
@@ -1369,13 +1633,13 @@ def _combined_temporal_bounds(
     return (min(mins) if mins else None, max(maxs) if maxs else None)
 
 
-def _temporal_bounds_from_metadata_file(
+def _temporal_bounds_from_item_file(
     path: Path | None,
 ) -> tuple[datetime | None, datetime | None]:
+    """The data's own time range, which dates the HDX dataset ahead of the snapshot."""
     if path is None or not path.exists():
         return (None, None)
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    temporal = payload.get("metadata", {}).get("temporal")
+    temporal = json.loads(path.read_text(encoding="utf-8"))["properties"].get("oex:temporal")
     if not temporal:
         return (None, None)
     return (_parse_temporal(temporal.get("min")), _parse_temporal(temporal.get("max")))

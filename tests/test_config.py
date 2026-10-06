@@ -208,3 +208,51 @@ def test_a_config_without_iso3_is_fine_when_pcodes_are_off(tmp_path: Path) -> No
     path = tmp_path / "c.yaml"
     path.write_text("key: t\n", encoding="utf-8")
     assert load_config(path).iso3 == ""
+
+
+_THEMED = """
+iso3: NPL
+key: t
+output:
+  report:
+    enabled: true
+    theme:
+      accent_color: "{accent}"
+"""
+
+
+def test_a_theme_colour_too_faint_for_white_text_is_refused() -> None:
+    """The pages publish unattended, so an unreadable button would first be seen by
+    whoever opened the dataset. #d73f3f misses WCAG AA by 0.01."""
+    with pytest.raises(ConfigError, match="below the 4.5:1 WCAG AA minimum"):
+        load_config(_THEMED.format(accent="#d73f3f"))
+
+    assert load_config(_THEMED.format(accent="#cc2936")).output.report.theme.accent_color == (
+        "#cc2936"
+    )
+
+
+def test_a_theme_colour_that_is_not_a_hex_triple_is_refused() -> None:
+    """CSS would accept `red`, so the page would render and only the check catches it."""
+    with pytest.raises(ConfigError, match="must be a #rrggbb colour"):
+        load_config(_THEMED.format(accent="red"))
+
+
+def test_a_negative_zoom_allowance_is_refused() -> None:
+    """A negative count of zooms has no meaning, so it is a typo."""
+    config = "iso3: NPL\nkey: t\noutput:\n  pmtiles:\n    max_extra_zooms: {extra}\n"
+    with pytest.raises(ConfigError, match="max_extra_zooms must be 0 or more"):
+        load_config(config.format(extra=-1))
+    assert load_config(config.format(extra=0)).output.pmtiles.max_extra_zooms == 0
+
+
+def test_a_popup_colour_too_faint_to_read_on_white_is_refused() -> None:
+    config = (
+        "iso3: NPL\nkey: t\noutput:\n  report:\n    enabled: true\n    theme:\n"
+        '      map_popup_color: "{popup}"\n'
+    )
+    with pytest.raises(ConfigError, match="map_popup_color #d73f3f gives 4.49:1"):
+        load_config(config.format(popup="#d73f3f"))
+    assert load_config(config.format(popup="#cc2936")).output.report.theme.map_popup_color == (
+        "#cc2936"
+    )

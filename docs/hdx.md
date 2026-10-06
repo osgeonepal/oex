@@ -176,23 +176,36 @@ order, so the accumulation above happens from a single invocation. Running the
 ```yaml
 output:
   report:
-    enabled: true                  # the map lives on the report page
+    enabled: true
   pmtiles:
     enabled: true
-    max_zoom: 14                   # sharper when zoomed in, larger archive
+    max_zoom: 14
+    max_extra_zooms: 4
   s3:
-    enabled: true                  # required for the map to render (see below)
+    enabled: true
 ```
 
-Both report pages then carry a map below their table, with a checkbox per layer,
-feature counts in the legend, and a popup on click. Per-category datasets get one
-tileset per source; `hdx.combine` merges every layer into one tileset carrying
-`category` and `source`.
+The map lives on the report page, and it needs S3 to render, for the reason given
+below. Tilesets are built with [tippecanoe](https://github.com/felt/tippecanoe) 2.31
+or later, which has to be on `PATH`. Debian bookworm-backports, Debian trixie and
+Ubuntu 24.04 package it as `tippecanoe`. A run with PMTiles enabled checks for it
+before exporting anything. Every feature, however small, is kept at the top zoom,
+and tippecanoe adds zooms past `max_zoom` until one holds every feature, up to
+`max_extra_zooms` (default 4) more, and 0 turns this off. Each added zoom makes the
+archive larger. Past that limit tippecanoe drops the densest features from the top zoom. A category's
+tileset has one layer named for the category, such as `buildings`, so one map style serves
+every country's tiles.
 
-Both pages measure quality the same way: how many of a layer's attribute columns
-carry data (green at 50% of rows or more, amber partial, red rare under 25%) plus
-the share of features named. The combined table shows one bar per layer; the
-per-category report breaks it down column by column.
+The page carries a Data view, one panel per layer with its columns broken down one
+by one, and, when a tileset exists, a Map view behind the same switcher. The map has
+a checkbox per layer, select all and clear all, feature counts in the legend, a hover
+card naming the feature under the pointer and a popup of its attributes on click.
+Per-category datasets get one tileset per source; `hdx.combine` merges every layer
+into one tileset carrying `category` and `source`.
+
+Attribute quality is measured as how many of a layer's columns carry data (green at
+50% of rows or more, amber partial, red rare under 25%) plus the share of features
+named.
 
 The combined tileset is built from per-layer GeoParquet, which is written locally
 and, with `output.s3.enabled`, staged to `{prefix}/{ISO3}/_layers/{source}/{slug}.parquet`.
@@ -205,10 +218,38 @@ It needs `output.s3.enabled`, since the resource links the staged object rather 
 uploading a second copy; a config that asks for it with S3 off and `hdx.push` on is
 refused rather than quietly skipped.
 
-Colours and map assets are configurable under `output.report`: `palette`, and
-`map_assets` (`basemap_tiles`, `maplibre_js`, `pmtiles_js`). The published page
-fetches those at view time, so repoint them to pin a version or to serve them from
-your own host.
+Each file is GeoParquet 1.1 with a `bbox` covering column, and its features are
+ordered along a Hilbert curve over the layer's own extent. Each row group therefore
+covers a small area, and its bbox statistics tell a reader which groups a query can
+skip. The number of row groups follows the layer size, so a layer of three features
+and one of three million both split sensibly. The `bbox` column is storage, not an
+attribute: it is left out of the tilesets and of the column list in the layer
+metadata.
+
+Colours and map assets are configurable under `output.report`. `theme` sets
+`accent_color` (buttons, bars, the selected layer), `map_popup_color` and
+`boundary_outline_color`. `accent_color` and `map_popup_color` are refused if either
+falls below 4.5:1 against white: the download button draws white text on the accent,
+and the map popup draws its heading in the popup colour on white. `palette` colours the
+layers themselves, and `map_assets` (`basemap_tiles`, `maplibre_js`, `pmtiles_js`)
+is fetched at view time, so repoint it to pin a version or serve it from your own
+host.
+
+`related_datasets: true` adds a line under the title of each per-category page linking the
+area's other category datasets on HDX. It needs `hdx.push`, since without it no dataset page
+is published to link to. The About section of every page links the HDX dataset the layer is
+published to, and each layer's STAC Item carries the same link as `rel="via"`. With
+`related_datasets` on, each per-category STAC Collection also links the area's other category
+Collections as `rel="related"`.
+
+`output.stac.catalog: true` keeps a STAC catalog tree on S3 up to date. Each run links the
+Collections it published into an area catalog at `{prefix}/{folder or ISO3}/catalog.json` and
+links that area into a root catalog at `{prefix}/catalog.json`, creating either when missing.
+`output.stac.id`, `title` and `description` name the root. `output.stac.group`, such as
+`activations`, puts a catalog of that name between the root and the area, so related areas
+are listed together; `group_title` names it. Writes are conditional, so runs
+updating the same catalog at once keep each other's links. Links are added or refreshed,
+never removed.
 
 ### The map needs S3 and a bucket CORS policy
 
@@ -226,8 +267,7 @@ The object ACL says who may read; CORS is separate and is set per bucket, not pe
 object. Both are needed.
 
 Overture stays readable even when AWS credentials are present, so an S3-enabled
-Overture run uploads to your bucket and still reads Overture anonymously. PMTiles
-come from the GDAL build inside duckdb, so no extra tools are needed.
+Overture run uploads to your bucket and still reads Overture anonymously.
 
 CLI flags mirror the config: `--hdx-combine/--no-hdx-combine`,
 `--pmtiles/--no-pmtiles`, and `--s3/--no-s3`.
@@ -251,12 +291,87 @@ plus pycountry. Examples:
 Per-category YAML can still pin or override a language by including
 `tags['name:<lang>'] AS name_<lang>` explicitly in `osm.select`.
 
+## Layer metadata
+
+The layer metadata resource is a STAC Collection. It names every layer with a
+`rel="item"` link, and each Item is its own document beside it, carrying the layer's
+footprint, its snapshot time, and the row count and column schema through the
+[Table extension](https://stac-extensions.github.io/table/), plus every artifact the
+layer publishes as an asset:
+
+```json
+{
+  "type": "Collection",
+  "id": "hot_flood_npl",
+  "links": [
+    {"rel": "self", "href": "https://.../combined/hot_flood_npl_osm_metadata.json"},
+    {"rel": "via", "href": "https://data.humdata.org/dataset/hot_flood_npl"},
+    {"rel": "item", "href": "https://.../buildings/hot_flood_npl_buildings_osm_item.json"}
+  ],
+  "item_assets": {
+    "gpkg": {"title": "GeoPackage", "type": "application/zip", "roles": ["data"]}
+  }
+}
+```
+
+```json
+{
+  "type": "Feature",
+  "id": "hot_flood_npl_buildings-osm",
+  "collection": "hot_flood_npl",
+  "properties": {
+    "title": "Buildings",
+    "license": "ODbL-1.0",
+    "proj:code": "EPSG:4326",
+    "table:row_count": 20403,
+    "table:columns": [{"name": "id", "type": "VARCHAR"}],
+    "oex:snapshot": "2026-09-18T03:55:55Z"
+  },
+  "assets": {
+    "gpkg": {
+      "href": "https://.../hot_flood_npl_buildings_osm_gpkg.zip",
+      "file:size": 2079637
+    }
+  }
+}
+```
+
+An Item id is its layer's own dataset name and the source that built it, so
+`hotosm_npl_buildings-osm` whether or not that layer is published on a combined
+dataset. Asset hrefs come from the S3 key layout, so ids
+and addresses hold from run to run and two datasets compare layer by layer. With
+`output.split_by_geometry`, the key carries the partition: `polygons_shp`, `lines_shp`.
+
+Item files are uploaded beside their layer's artifacts and are not listed as HDX
+resources, so a dataset gains one metadata resource. Every
+dataset shape produces the same pair, including a country export that carries a single
+layer, so one dataset link always resolves to one Collection.
+
+`table:columns` gives each column its native type. Statistics that STAC has no field
+for, such as null counts and top values, sit beside them under `oex:` keys, and are
+what oex's own report reads back. Treat them as internal: the layer's GeoParquet is
+the source to query for statistics.
+
+The Collection points at its own published address with `rel="self"` and back at the
+HDX dataset page with `rel="via"`. Under `hdx.combine` the merged tileset is a
+Collection asset; otherwise each layer's tiles are an Item asset.
+
+Without S3 the hrefs stay relative, so the output directory is a catalog that can be
+served from anywhere. A self link needs an absolute address, so a local run writes
+none.
+
+Set `output.metadata: true` to write the Collection and its Items. Turning
+`output.report.enabled` on implies it, because the report is rendered from them.
+Publishing them needs `output.s3.enabled`, since the Collection links each Item by
+URL and the Items are uploaded to the bucket; a config that asks for both with S3 off
+and `hdx.push` on is refused before the run starts.
+
 ## Running without HDX
 
 Every artifact is written to `output/<iso3>/<source>/` whether or not you push.
 With `hdx.push: false` you still get the format zips, the per-layer GeoParquet,
-each layer's `metadata.json` and report page, the tilesets, and, under
-`hdx.combine`, the merged tileset plus the `_overview.html` landing page.
+each layer's `_item.json`, the Collection in `_metadata.json`, the tilesets, and,
+under `hdx.combine`, the merged tileset plus the `_overview.html` page.
 
 ```bash
 oex-cli osm VEN --config examples/hot-eq-ven.yaml --no-hdx-push --no-s3

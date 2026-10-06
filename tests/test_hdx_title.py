@@ -1,7 +1,8 @@
 """Title-resolution helpers for HDX dataset publication."""
 
 from oex.config.schema import CategoryConfig, CategoryHdx, HdxConfig, RootConfig
-from oex.hdx_publisher import _resolve_title, _title_case_category, country_name
+from oex.hdx_publisher import country_name, dataset_title
+from oex.naming import _title_case_category
 
 
 def test_title_case_capitalises_simple_categories() -> None:
@@ -36,9 +37,8 @@ def test_country_name_prefers_common_name_over_iso_inversion() -> None:
 
 
 def test_country_name_uses_dataset_name_when_provided() -> None:
-    # dataset_name wins over both pycountry common_name and ISO inversion.
-    # This is the configurable knob users set in YAML or via CLI to handle
-    # countries pycountry mangles (DRC, etc.) and sub-national exports.
+    # dataset_name wins over pycountry, which is how users fix names it mangles (DRC) and
+    # name sub-national exports.
     assert (
         country_name("COD", dataset_name="Democratic Republic of the Congo")
         == "Democratic Republic of the Congo"
@@ -61,19 +61,19 @@ def _cfg(*, iso3: str, template: str = "", dataset_name: str | None = None) -> R
 def test_resolve_title_uses_template_when_set() -> None:
     cfg = _cfg(iso3="NPL", template="{country} {category} (OpenStreetMap Export)")
     cat = CategoryConfig(name="buildings", hdx=CategoryHdx(title=None))
-    assert _resolve_title(cfg, cat) == "Nepal Buildings (OpenStreetMap Export)"
+    assert dataset_title(cfg, cat) == "Nepal Buildings (OpenStreetMap Export)"
 
 
 def test_resolve_title_template_lowercases_filler_in_category() -> None:
     cfg = _cfg(iso3="NPL", template="{country} {category} (OpenStreetMap Export)")
     cat = CategoryConfig(name="points_of_interest")
-    assert _resolve_title(cfg, cat) == "Nepal Points of Interest (OpenStreetMap Export)"
+    assert dataset_title(cfg, cat) == "Nepal Points of Interest (OpenStreetMap Export)"
 
 
 def test_resolve_title_falls_back_to_legacy_format_when_no_template() -> None:
     cfg = _cfg(iso3="NPL", dataset_name="Nepal")
     cat = CategoryConfig(name="Buildings")
-    assert _resolve_title(cfg, cat) == "Buildings of Nepal"
+    assert dataset_title(cfg, cat) == "Buildings of Nepal"
 
 
 def test_resolve_title_legacy_uses_pycountry_when_dataset_name_unset() -> None:
@@ -81,13 +81,13 @@ def test_resolve_title_legacy_uses_pycountry_when_dataset_name_unset() -> None:
     # the pycountry-derived country name, not raw iso3. Cleaner default.
     cfg = _cfg(iso3="NPL")
     cat = CategoryConfig(name="Buildings")
-    assert _resolve_title(cfg, cat) == "Buildings of Nepal"
+    assert dataset_title(cfg, cat) == "Buildings of Nepal"
 
 
 def test_resolve_title_legacy_uses_iso3_when_pycountry_has_no_record() -> None:
     cfg = _cfg(iso3="ZZZ")
     cat = CategoryConfig(name="Buildings")
-    assert _resolve_title(cfg, cat) == "Buildings of ZZZ"
+    assert dataset_title(cfg, cat) == "Buildings of ZZZ"
 
 
 def test_resolve_title_uses_category_title_override_in_template() -> None:
@@ -96,7 +96,7 @@ def test_resolve_title_uses_category_title_override_in_template() -> None:
         name="health_facilities",
         hdx=CategoryHdx(title="Hospitals and Clinics"),
     )
-    assert _resolve_title(cfg, cat) == "Nepal Hospitals and Clinics (OpenStreetMap Export)"
+    assert dataset_title(cfg, cat) == "Nepal Hospitals and Clinics (OpenStreetMap Export)"
 
 
 def test_resolve_title_uses_category_title_override_in_legacy_fallback() -> None:
@@ -105,7 +105,7 @@ def test_resolve_title_uses_category_title_override_in_legacy_fallback() -> None
         name="health_facilities",
         hdx=CategoryHdx(title="Hospitals and Clinics"),
     )
-    assert _resolve_title(cfg, cat) == "Hospitals and Clinics of Nepal"
+    assert dataset_title(cfg, cat) == "Hospitals and Clinics of Nepal"
 
 
 def test_resolve_title_uses_dataset_name_for_drc() -> None:
@@ -118,7 +118,7 @@ def test_resolve_title_uses_dataset_name_for_drc() -> None:
     )
     cat = CategoryConfig(name="waterways")
     assert (
-        _resolve_title(cfg, cat)
+        dataset_title(cfg, cat)
         == "Democratic Republic of the Congo Waterways (OpenStreetMap Export)"
     )
 
@@ -132,4 +132,4 @@ def test_resolve_title_dataset_name_supports_subnational_exports() -> None:
         dataset_name="Pokhara",
     )
     cat = CategoryConfig(name="health_facilities")
-    assert _resolve_title(cfg, cat) == "Pokhara Health Facilities (OpenStreetMap Export)"
+    assert dataset_title(cfg, cat) == "Pokhara Health Facilities (OpenStreetMap Export)"

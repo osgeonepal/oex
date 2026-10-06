@@ -16,7 +16,6 @@ from oex.logging_setup import get_logger
 
 logger = get_logger(__name__)
 
-# The API path segment is the release; oex uses the open one.
 _GEOBOUNDARIES_RELEASE = "gbOpen"
 _GEOBOUNDARIES_TPL = (
     f"https://www.geoboundaries.org/api/current/{_GEOBOUNDARIES_RELEASE}/{{iso3}}/{{level}}/"
@@ -118,10 +117,8 @@ def _from_user_geom(iso3: str, geom_str: str) -> Boundary:
 
 
 def _buffered(boundary: Boundary, buffer_meters: float) -> Boundary:
-    # shapely.buffer works in the geometry's own units, and a metre in EPSG:3857 is
-    # inflated by 1/cos(latitude), so buffering there falls short of the distance the
-    # config asks for. An azimuthal equidistant projection centred on the boundary
-    # keeps the buffer true to the ground at any latitude.
+    # A metre in EPSG:3857 is inflated by 1/cos(latitude); an azimuthal equidistant
+    # projection centred on the boundary keeps the buffer true at any latitude.
     geom = shape(json.loads(boundary.geojson))
     centre = geom.centroid
     local = CRS.from_proj4(

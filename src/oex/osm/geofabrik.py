@@ -13,9 +13,8 @@ logger = get_logger(__name__)
 
 DEFAULT_INDEX_URL = "https://download.geofabrik.de/index-v1.json"
 
-# Country-level extracts sit directly under a continent in Geofabrik's tree;
-# anything deeper (e.g. a US state) shares a country's alpha2 and would
-# otherwise match by accident.
+# Only a continent's direct children are countries; anything deeper, such as a
+# US state, shares a country's alpha2 and would match by accident.
 _CONTINENT_PARENTS = frozenset(
     {
         "africa",
@@ -49,11 +48,8 @@ class GeofabrikLookupError(LookupError):
 
 
 class GeofabrikUnavailableError(GeofabrikLookupError):
-    """Geofabrik does not publish a country-level PBF for this ISO3.
-
-    Distinct subclass so callers can catch precisely (e.g. for planet_fallback)
-    without swallowing other Geofabrik errors like network failures.
-    """
+    """Geofabrik publishes no country-level PBF for this ISO3; a subclass so planet_fallback
+    can catch it without swallowing network failures."""
 
 
 def _iso3_to_iso2(iso3: str) -> str:

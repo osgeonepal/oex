@@ -48,12 +48,11 @@ produces its own zip:
 
 ```python
 from oex import Exporter
-from oex.config import apply_overrides, load_config, select_categories
+from oex.config import load_config, select_categories
 from oex.osm.runner import OsmRunner
 from oex.overture.runner import OvertureRunner
 
-cfg = load_config("configs/nepal.yaml")
-cfg = apply_overrides(cfg, {"iso3": "NPL", "hdx.push": False})
+cfg = load_config("configs/nepal.yaml", ["iso3=NPL", "hdx.push=false"])
 
 result = Exporter(cfg, OvertureRunner()).run()
 
@@ -82,5 +81,6 @@ Each zip contains:
 - the GIS file(s)
 - `README.txt`: country, source, snapshot, bbox
 - `config.yaml`: snapshot of the category that produced this dataset
-- `metadata.json` (when `output.metadata: true`): feature count, geometry
-  types, bbox, per-column null share, distinct count, top values
+- `metadata.json` (when `output.metadata` or `output.report.enabled` is on): the
+  layer as a STAC Item, carrying feature count, geometry types, bbox, and
+  per-column null share, distinct count and top values

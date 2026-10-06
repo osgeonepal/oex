@@ -1,8 +1,5 @@
-"""File source: a user-supplied spatial file read through DuckDB's ST_Read.
-
-Anything GDAL opens works (shapefile, GeoPackage, GeoJSON, FlatGeobuf), from a local
-path, an https URL or s3://. Coordinates are reprojected to OGC:CRS84 when the file
-declares a different CRS, because oex clips and filters in lon/lat.
+"""A user-supplied spatial file read through DuckDB's ST_Read, reprojected to OGC:CRS84
+when it declares another CRS, since oex clips and filters in lon/lat.
 """
 
 from datetime import UTC, datetime
@@ -54,11 +51,8 @@ def resolve_layer(available: list[str], configured: str) -> str:
 
 
 def read_expr(path: str, source_crs: str, layer: str = "") -> str:
-    """Subquery that opens the file and exposes exactly one `geometry` column in lon/lat.
-
-    The rest of the pipeline renames `geometry` to `geom` itself, so the file's own
-    geometry column is dropped here to avoid a second one reaching the writer.
-    """
+    """Exactly one `geometry` column in lon/lat; the file's own geometry column is dropped so
+    a second one cannot reach the writer."""
     layer_arg = f", layer='{_quote(layer)}'" if layer else ""
     return (
         f"(SELECT * EXCLUDE (geom), {geometry_expr(source_crs)} AS geometry "
@@ -78,11 +72,8 @@ def declared_crs(conn: duckdb.DuckDBPyConnection, path: str) -> str | None:
 
 
 def resolve_crs(declared: str | None, configured: str) -> str:
-    """The CRS to transform from.
-
-    A file with no CRS is ambiguous, and assuming lon/lat would silently place the data
-    in the wrong part of the world, so the config has to say.
-    """
+    """A file with no CRS is ambiguous, and assuming lon/lat would misplace the data, so the
+    config has to say."""
     if configured:
         return configured
     if declared:
@@ -94,12 +85,8 @@ def resolve_crs(declared: str | None, configured: str) -> str:
 
 
 def geometry_expr(source_crs: str) -> str:
-    """Geometry in OGC:CRS84, transforming only when the source is something else.
-
-    `always_xy` is required: ST_Transform otherwise honours the authority's axis order,
-    while ST_Read always hands back x/y, so a latitude-first CRS such as EPSG:4258 comes
-    out with its coordinates swapped and EPSG:3035 lands in the wrong country.
-    """
+    """`always_xy` is required: ST_Transform otherwise honours authority axis order, so a
+    latitude-first CRS such as EPSG:4258 would come out swapped."""
     if source_crs.upper() in _LONLAT_CRS:
         return "geom"
     return f"ST_Transform(geom, '{_quote(source_crs)}', 'OGC:CRS84', always_xy := true)"

@@ -1,9 +1,5 @@
-"""Smoke tests for the bundled example schemas in `configs/examples/`.
-
-We only verify that the schemas load cleanly and produce the expected
-category shape, not that they query data successfully (that's the job of
-the integration tests).
-"""
+"""The bundled example schemas load and produce the expected categories; querying data
+is not tested here."""
 
 from pathlib import Path
 

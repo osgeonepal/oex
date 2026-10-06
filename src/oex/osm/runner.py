@@ -1,22 +1,5 @@
-"""OSM source runner.
-
-Two engines, one unified pipeline. Both produce a single
-``country.parquet`` per (iso3, snapshot) by running quackosm once with the
-union of all category tag filters and ``keep_all_tags=True``. Per-category
-extraction is a tag-predicate ``WHERE`` at query time, no per-category PBF
-reparse.
-
-- ``geofabrik``: download per-country PBF from Geofabrik, then build the
-  country parquet. Cache:
-  ``<cache>/geofabrik/<iso3>/<snapshot>/country-<fingerprint>.parquet``.
-
-- ``planet``: clip a country PBF out of a local planet PBF via osmium-tool,
-  then build the country parquet. Cache:
-  ``<cache>/planet/<iso3>/<snapshot>/country-<fingerprint>.parquet``.
-
-The fingerprint covers the boundary and the category tag filters, so changing
-either builds a fresh parquet instead of silently reusing one that was clipped
-to a different area or filtered to different tags.
+"""OSM source runner: one quackosm pass per country over every category's tags, after
+which each category is a WHERE over the resulting country.parquet.
 """
 
 import hashlib
@@ -93,15 +76,8 @@ def _row_group_size(memory_gb: int) -> int:
 
 
 def _parquet_fingerprint(cfg: RootConfig, *, clip: bool) -> str:
-    """Identify the parquet by everything that shapes its contents.
-
-    The cached parquet is clipped to the boundary and holds only the union of the
-    categories' tag filters. Keying on (iso3, snapshot) alone would reuse it after
-    either changes, silently dropping features the new config asks for.
-
-    The boundary *config* is hashed rather than the resolved geometry, so deciding
-    whether a local parquet can be reused never has to hit the network.
-    """
+    """Keyed on the boundary config and tag filters too, or changing either would reuse a stale
+    parquet; the config is hashed rather than the geometry so reuse never needs the network."""
     boundary = cfg.boundary
     clip_key: object = "noclip"
     if clip:
@@ -240,11 +216,8 @@ class OsmRunner(SourceRunner):
         dataset_source: str,
         source_description: str,
     ) -> None:
-        """Shared path for the engines that query a live OSM database.
-
-        Always refetches: freshness is the reason to use one, so a cached parquet
-        from an earlier run would defeat the point.
-        """
+        """Shared path for the live engines. Always refetches, since freshness is the reason to
+        use one."""
         if not cfg.iso3:
             raise ValueError(f"osm.engine={engine} requires `iso3` in the config")
 
@@ -580,11 +553,8 @@ class OsmRunner(SourceRunner):
         return parsedate_to_datetime(last_modified).astimezone(UTC).date().isoformat()
 
     def _country_source_expr(self) -> str:
-        """Read expression for the country parquet.
-
-        An empty extract makes quackosm omit the tags column that category
-        selects reference, so inject an empty one when it is missing.
-        """
+        """An empty extract makes quackosm omit the tags column that category selects reference,
+        so one is injected when missing."""
         parquet = str(self._country_parquet)
         if self._tags_present is None:
             import duckdb

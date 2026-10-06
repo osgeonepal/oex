@@ -1,8 +1,4 @@
-"""Tests for fieldmaps admin parquet caching.
-
-Network calls are intercepted with a fake `requests` shim so the suite
-stays offline.
-"""
+"""Fieldmaps admin parquet caching, offline through a fake `requests`."""
 
 import json
 from collections.abc import Iterator

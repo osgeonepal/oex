@@ -1,5 +1,6 @@
 """Per-dataset metadata report (feature counts, geom types, bbox, column stats)."""
 
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -9,7 +10,14 @@ from oex.logging_setup import get_logger
 
 logger = get_logger(__name__)
 
-_GEOMETRY_COL = "geom"
+GEOMETRY_COL = "geom"
+ID_COL = "id"
+_GEOMETRY_WORDS = {
+    "LINESTRING": "line",
+    "MULTILINESTRING": "multiline",
+    "GEOMETRYCOLLECTION": "geometry collection",
+}
+ADMIN_COLUMN_RE = re.compile(r"^(adm\d+)_(pcode|name)$")
 _TOP_VALUES_LIMIT = 5
 _TOP_VALUES_MAX_COL_DISTINCT = 1000
 
@@ -52,8 +60,8 @@ def compute_metadata(
     temporal_column: str | None = None,
 ) -> MetadataReport:
     feature_count = _count_rows(conn, table_name)
-    geometry_types = _geometry_breakdown(conn, table_name)
-    bbox = _bbox(conn, table_name) if feature_count else None
+    geometry_types = geometry_breakdown(conn, table_name)
+    bbox = bounding_box(conn, table_name) if feature_count else None
     columns = _column_reports(conn, table_name, feature_count)
     summary = _summary(feature_count, geometry_types, columns)
     temporal = (
@@ -76,18 +84,18 @@ def _count_rows(conn: duckdb.DuckDBPyConnection, table: str) -> int:
     return int(row[0]) if row else 0
 
 
-def _geometry_breakdown(conn: duckdb.DuckDBPyConnection, table: str) -> dict[str, int]:
+def geometry_breakdown(conn: duckdb.DuckDBPyConnection, table: str) -> dict[str, int]:
     rows = conn.execute(
-        f"SELECT ST_GeometryType({_GEOMETRY_COL}) AS gt, COUNT(*) "
+        f"SELECT ST_GeometryType({GEOMETRY_COL}) AS gt, COUNT(*) "
         f"FROM {table} GROUP BY gt ORDER BY 2 DESC"
     ).fetchall()
     return {str(r[0]): int(r[1]) for r in rows}
 
 
-def _bbox(conn: duckdb.DuckDBPyConnection, table: str) -> tuple[float, float, float, float]:
+def bounding_box(conn: duckdb.DuckDBPyConnection, table: str) -> tuple[float, float, float, float]:
     row = conn.execute(
-        f"SELECT MIN(ST_XMin({_GEOMETRY_COL})), MIN(ST_YMin({_GEOMETRY_COL})), "
-        f"MAX(ST_XMax({_GEOMETRY_COL})), MAX(ST_YMax({_GEOMETRY_COL})) FROM {table}"
+        f"SELECT MIN(ST_XMin({GEOMETRY_COL})), MIN(ST_YMin({GEOMETRY_COL})), "
+        f"MAX(ST_XMax({GEOMETRY_COL})), MAX(ST_YMax({GEOMETRY_COL})) FROM {table}"
     ).fetchone()
     if not row or row[0] is None:
         return (0.0, 0.0, 0.0, 0.0)
@@ -104,7 +112,7 @@ def _column_reports(
     for row in schema:
         name = row[0]
         col_type = row[1]
-        if name == _GEOMETRY_COL:
+        if name == GEOMETRY_COL:
             continue
         null_count, distinct_count = _null_and_distinct(conn, table, name)
         null_percent = (null_count / feature_count * 100.0) if feature_count else 0.0
@@ -149,25 +157,41 @@ def _top_values(
     return [{"value": _stringify(r[0]), "count": int(r[1])} for r in rows]
 
 
+def is_source_attribute(name: str) -> bool:
+    """oex fills `id` and the admin columns itself, so they say nothing about the source."""
+    return name != ID_COL and ADMIN_COLUMN_RE.match(name) is None
+
+
 def _summary(
     feature_count: int,
     geometry_types: dict[str, int],
     columns: list[ColumnReport],
 ) -> str:
+    """One readable line for the STAC description; per-column detail is in `table:columns`."""
     if feature_count == 0:
-        return "Empty dataset."
-    parts = [f"{feature_count:,} features"]
-    if geometry_types:
-        gt_summary = ", ".join(f"{n:,} {gt}" for gt, n in geometry_types.items())
-        parts.append(f"geometry types: {gt_summary}")
-    sparse = [c.name for c in columns if c.null_percent >= 50.0]
-    if sparse:
-        parts.append(
-            f"{len(sparse)} of {len(columns)} columns are >=50% null ({', '.join(sparse)})"
-        )
-    else:
-        parts.append(f"all {len(columns)} attribute columns have <50% null share")
-    return ". ".join(parts) + "."
+        return "No features."
+    shapes = sorted(geometry_types.items(), key=lambda kv: kv[1], reverse=True)
+    counts = ", ".join(f"{n:,} {_geometry_word(g, n)}" for g, n in shapes)
+    head = f"{feature_count:,} {_plural('feature', feature_count)}" + (
+        f": {counts}." if counts else "."
+    )
+    attributes = [c for c in columns if is_source_attribute(c.name)]
+    if not attributes:
+        return head
+    filled = sum(1 for c in attributes if c.null_percent < 50.0)
+    verb = "is" if len(attributes) == 1 else "are"
+    return (
+        f"{head} {filled} of {len(attributes)} {_plural('attribute', len(attributes))} {verb} "
+        f"filled for at least half of the {_plural('feature', feature_count)}."
+    )
+
+
+def _geometry_word(geometry_type: str, count: int) -> str:
+    return _plural(_GEOMETRY_WORDS.get(geometry_type, geometry_type.lower()), count)
+
+
+def _plural(word: str, count: int) -> str:
+    return word if count == 1 else f"{word}s"
 
 
 def _temporal_bounds(

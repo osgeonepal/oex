@@ -33,9 +33,8 @@ def artifact_key(
     nest_by_category: bool = True,
     geometry: str = "",
 ) -> str:
-    """S3 key for a category artifact. ``folder`` overrides the iso3 segment
-    (empty falls back to iso3); a false ``nest_by_category`` flattens the path.
-    ``geometry`` adds a points/lines/polygons segment under the category."""
+    """``folder`` overrides the iso3 segment, a false ``nest_by_category`` flattens the path,
+    and ``geometry`` adds a points/lines/polygons segment."""
     segments = [prefix, folder or iso3.upper()]
     if nest_by_category:
         segments.append(category_slug)
@@ -47,11 +46,8 @@ def artifact_key(
 
 
 def build_layer_key(prefix: str, iso3: str, source: str, slug: str, folder: str = "") -> str:
-    """Stable, globbable key for a per-layer GeoParquet so runs accumulate across sources.
-
-    ``folder`` overrides the iso3 segment, so two configs covering the same country stage
-    into separate areas instead of overwriting each other.
-    """
+    """Stable key for a layer's GeoParquet, so runs accumulate across sources; ``folder`` keeps
+    two configs for the same country from overwriting each other."""
     return artifact_key(prefix, folder or iso3, f"_layers/{source}", f"{slug}.parquet")
 
 

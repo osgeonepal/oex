@@ -1,13 +1,5 @@
-"""Per-(country, source) resume state, atomic-write JSON.
-
-A run keeps a single ``.state.json`` per (output_dir, iso3, source) recording,
-for each category, when the local build finished and when the HDX upload
-completed. With ``output.resume`` enabled the exporter consults this to
-skip already-finished work after a partial run, and HDX rate-limit storms
-become recoverable without rebuilding zips.
-
-State is keyed by category slug. A snapshot label mismatch (different PBF)
-is treated as a miss so a fresh snapshot always rebuilds.
+"""Per country and source resume state, so a partial run skips finished categories and an
+HDX rate-limit storm does not mean rebuilding zips. A new snapshot always rebuilds.
 """
 
 import json

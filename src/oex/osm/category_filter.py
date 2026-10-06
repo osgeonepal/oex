@@ -1,12 +1,3 @@
-"""Translate oex CategoryConfig.osm.filter into quackosm filters and SQL.
-
-Two consumers:
-- planet engine prep: build a single union OsmTagsFilter from N categories
-  for the one-pass quackosm call.
-- planet engine query_for: build the per-category SQL WHERE predicate that
-  picks just one category's features from the unified country.parquet.
-"""
-
 from collections.abc import Iterable
 
 from oex.config.schema import CategoryConfig
@@ -16,12 +7,8 @@ OsmTagsFilter = dict[str, OsmTagValue]
 
 
 def union_tag_filter(categories: Iterable[CategoryConfig]) -> OsmTagsFilter:
-    """Merge N category osm.filter blocks into one quackosm OsmTagsFilter.
-
-    Rules:
-    - Any True wins for a key (any-value match).
-    - list+list -> sorted union; list+str -> list with str added; str+str -> list of both.
-    """
+    """Merge category osm.filter blocks into one quackosm filter: True wins for a key, and
+    values from both sides are unioned."""
     merged: OsmTagsFilter = {}
     for cat in categories:
         if not cat.osm.enabled:
@@ -41,11 +28,8 @@ def union_tag_filter(categories: Iterable[CategoryConfig]) -> OsmTagsFilter:
 
 
 def category_where_predicate(category: CategoryConfig) -> str:
-    """SQL WHERE clause matching this category's osm.filter on `tags MAP`.
-
-    Returns a parenthesised expression suitable for AND'ing into a larger
-    WHERE. Empty filter -> "TRUE" (matches all).
-    """
+    """This category's osm.filter as a parenthesised predicate on `tags`, "TRUE" when the
+    filter is empty."""
     if not category.osm.filter:
         return "TRUE"
 

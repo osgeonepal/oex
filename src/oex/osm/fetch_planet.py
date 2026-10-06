@@ -36,29 +36,30 @@ def download_pbf(
 
     name = filename or url.rsplit("/", 1)[-1]
     target = dest_root / name
+    # Written under another name until verified, so an existing target is always complete.
+    partial = dest_root / f"{name}.part"
 
     head = requests.head(url, allow_redirects=True, timeout=60)
     head.raise_for_status()
     total = int(head.headers.get("Content-Length") or 0)
     last_modified = head.headers.get("Last-Modified", "unknown")
 
+    if target.exists() and total and target.stat().st_size == total:
+        logger.info("PBF already complete: %s (%d bytes)", target, total)
+        md5_ok = _verify_md5(target, md5_url) if md5_url else False
+        return DownloadResult(target, total, md5_ok, last_modified)
+
     start_byte = 0
-    if target.exists():
-        existing = target.stat().st_size
-        if total and existing == total:
-            logger.info("PBF already complete: %s (%d bytes)", target, existing)
-            md5_ok = _verify_md5(target, md5_url) if md5_url else False
-            return DownloadResult(target, existing, md5_ok, last_modified)
-        if total and existing < total:
-            logger.info("Resuming PBF download from byte %d / %d", existing, total)
-            start_byte = existing
+    if partial.exists() and total and partial.stat().st_size < total:
+        start_byte = partial.stat().st_size
+        logger.info("Resuming PBF download from byte %d / %d", start_byte, total)
 
     headers = {"Range": f"bytes={start_byte}-"} if start_byte else {}
     mode = "ab" if start_byte else "wb"
     with requests.get(url, headers=headers, stream=True, timeout=300) as resp:
         resp.raise_for_status()
         with (
-            target.open(mode) as fh,
+            partial.open(mode) as fh,
             tqdm(
                 total=total or None,
                 initial=start_byte,
@@ -73,7 +74,13 @@ def download_pbf(
                 fh.write(chunk)
                 bar.update(len(chunk))
 
-    md5_ok = _verify_md5(target, md5_url) if md5_url else False
+    try:
+        md5_ok = _verify_md5(partial, md5_url) if md5_url else False
+    except RuntimeError:
+        # A resume can join two versions of the extract; start over on the next run.
+        partial.unlink()
+        raise
+    partial.replace(target)
     return DownloadResult(target, target.stat().st_size, md5_ok, last_modified)
 
 

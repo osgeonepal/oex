@@ -28,8 +28,9 @@ jobs:
         with:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tippecanoe
       - run: uv sync --all-groups
-      - run: uv run pytest -m "not integration" --cov-report=xml
+      - run: uv run pytest --cov-report=xml
 
   pre-commit:
     name: pre-commit
@@ -39,5 +40,6 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tippecanoe
       - run: uv sync --all-groups
       - uses: pre-commit/action@v3.0.1

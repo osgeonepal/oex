@@ -1,7 +1,5 @@
-"""Unit tests for pcode tagging.
-
-These exercise tagger SQL with hand-built admin parquets that mimic the
-fieldmaps.io edge-matched schema. No network access.
+"""Pcode tagging SQL against hand-built admin parquets shaped like fieldmaps.io's
+edge-matched schema, with no network.
 """
 
 from collections.abc import Iterator
@@ -21,11 +19,8 @@ def _write_admin_parquet(
     level: int,
     rows: list[dict[str, object]],
 ) -> Path:
-    """Write a minimal fieldmaps-shaped admin parquet to `target`.
-
-    Only the columns the tagger actually reads are populated:
-    iso_3, adm{level}_src, adm{level}_name, adm0_src, adm0_name, geometry.
-    """
+    """A minimal fieldmaps-shaped admin parquet holding only what the tagger reads: iso_3,
+    adm{level}_src and _name, adm0_src and _name, and geometry."""
     table = f"_tmp_adm{level}"
     conn.execute(
         f"""
@@ -69,16 +64,8 @@ def conn() -> Iterator[duckdb.DuckDBPyConnection]:
 
 @pytest.fixture
 def admin_cache(tmp_path: Path, conn: duckdb.DuckDBPyConnection) -> dict[int, PcodeCacheEntry]:
-    """Two-level admin cache covering a square country split into NW/SE adm1
-    polygons, each of which has one adm2 quadrant.
-
-    Layout (lon, lat):
-        adm1 'NP01' covers x in [0,5], y in [5,10]      (NW)
-        adm1 'NP02' covers x in [5,10], y in [0,5]      (SE)
-        adm2 'NP0101' covers x in [0,5], y in [7,10]    (NW upper)
-        adm2 'NP0102' covers x in [0,5], y in [5,7]     (NW lower)
-        adm2 'NP0201' covers x in [5,10], y in [0,5]    (SE)
-    """
+    """Square country: adm1 NP01 is the NW quarter (x 0-5, y 5-10), split into NP0101 (y 7-10)
+    and NP0102 (y 5-7); adm1 NP02 is the SE quarter (x 5-10, y 0-5), all of it NP0201."""
     adm1_path = tmp_path / "adm1_polygons.parquet"
     _write_admin_parquet(
         conn,
@@ -283,11 +270,8 @@ def test_tag_table_handles_country_with_no_admin_data(
     conn: duckdb.DuckDBPyConnection,
     admin_cache: dict[int, PcodeCacheEntry],
 ) -> None:
-    """No-data ISO3 still gets schema-stable null pcode columns.
-
-    Per-row nulls for unmappable countries keep downstream writers happy
-    across a 200-country sweep.
-    """
+    """A country with no admin data still gets null pcode columns, so every country in a sweep
+    writes the same schema."""
     _make_features_table(conn, "features")
 
     report = tag_table(

@@ -77,17 +77,8 @@ def default_memory_limit_gb() -> int:
 
 
 def adaptive_parallel_resources() -> tuple[int, int]:
-    """Compute (parallel_workers, memory_gb_per_worker) scaled to available RAM.
-
-    Always returns 1 worker. DuckDB's intra-query pipeline engine parallelises
-    every operation (joins, scans, aggregations) across all CPU cores within one
-    session. Concurrent sessions split the RAM budget with zero cross-session
-    coordination and OOM-kill each other on large countries (BRA, IND, CHN).
-
-    Memory: 60% of available RAM, DuckDB's recommended safe fraction for a single
-    session. Leaves headroom for GDAL write allocations, string heaps, and spatial
-    index structures that bypass the buffer manager.
-    """
+    """One worker, because DuckDB already uses every core inside a session and concurrent
+    sessions OOM each other on large countries; memory is 60% of what is available."""
     total_gb = total_memory_gb()
     memory_gb = max(1, int(total_gb * 0.60))
     return 1, memory_gb

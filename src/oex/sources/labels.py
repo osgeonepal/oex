@@ -1,7 +1,7 @@
 """How each source is named in output, so the four places that show it agree."""
 
-# (short, long) per source. Short names go where space is tight (resource names,
-# report tabs); long names go where the reader needs the full provenance.
+# (short, long) per source. Short names go where space is tight, such as resource and
+# layer names; long names go where the reader needs the full provenance.
 SOURCE_LABELS = {
     "osm": ("OSM", "OpenStreetMap"),
     "overture": ("Overture", "Overture"),

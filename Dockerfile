@@ -35,8 +35,12 @@ RUN apt-get update \
 
 FROM python:3.13-slim-bookworm AS runtime
 
-RUN apt-get update \
+# tippecanoe builds the PMTiles; bookworm carries it only in backports, at 2.52.
+RUN echo "deb http://deb.debian.org/debian bookworm-backports main" \
+        > /etc/apt/sources.list.d/backports.list \
+    && apt-get update \
     && apt-get install -y --no-install-recommends osmium-tool \
+    && apt-get install -y --no-install-recommends -t bookworm-backports tippecanoe \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --create-home --uid 1000 app

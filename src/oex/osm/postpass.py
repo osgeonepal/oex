@@ -1,8 +1,5 @@
-"""Postpass source engine: live OSM through Geofabrik's PostGIS SQL API.
-
-Postpass mirrors the planet in PostGIS and refreshes every five minutes, so a
-small area comes back far fresher than a daily country PBF. The fetch writes the
-same country.parquet contract quackosm produces: feature_id, tags, geometry.
+"""Live OSM through Geofabrik's Postpass PostGIS API, written as the same country.parquet
+the PBF engines produce.
 """
 
 import json

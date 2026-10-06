@@ -1,7 +1,5 @@
-"""Raw Data API engine tests: filter translation, polling, and row extraction.
-
-Network calls are stubbed. The parquet contract itself is covered by
-tests/test_country_parquet.py, which both live engines share.
+"""Raw Data API engine: filter translation, polling and row extraction, with the network
+stubbed.
 """
 
 import json

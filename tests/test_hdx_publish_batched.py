@@ -18,6 +18,7 @@ from oex.config.schema import (
     S3Config,
 )
 from oex.hdx_publisher import (
+    ExtraResource,
     PublishContext,
     _hdx_publish_with_retry,
     _is_transient_hdx_error,
@@ -122,9 +123,13 @@ def test_retry_gives_up_after_max_attempts(monkeypatch: pytest.MonkeyPatch) -> N
     assert attempts["n"] == 3
 
 
-def test_publish_attaches_resources_via_dataset_not_per_resource(tmp_path: Path) -> None:
-    """publish() should call dataset.create_in_hdx ONCE, not Resource.create_in_hdx per zip."""
-
+def _publish_buildings(
+    tmp_path: Path,
+    *,
+    extra_resources: list[ExtraResource] | None = None,
+    metadata_json_path: Path | None = None,
+) -> tuple[list[MagicMock], list[dict]]:
+    """Publish a buildings layer against a stubbed HDX, returning the resources and creates."""
     cfg = RootConfig(
         iso3="NPL",
         key="hotosm",
@@ -151,7 +156,7 @@ def test_publish_attaches_resources_via_dataset_not_per_resource(tmp_path: Path)
 
     fake_dataset = MagicMock(name="dataset")
     fake_dataset.get_resources.return_value = []
-    fake_resources_added: list[object] = []
+    fake_resources_added: list[MagicMock] = []
     fake_dataset.add_update_resource.side_effect = lambda r: fake_resources_added.append(r)
 
     fake_resource_class = MagicMock(name="Resource")
@@ -191,13 +196,41 @@ def test_publish_attaches_resources_via_dataset_not_per_resource(tmp_path: Path)
             snapshot_date=datetime.now(UTC),
             source_name="osm",
             s3=cfg.output.s3,
+            metadata_json_path=metadata_json_path,
         )
-        publisher.publish(cfg, cfg.categories[0], [zip1, zip2], ctx)
+        publisher.publish(
+            cfg, cfg.categories[0], [zip1, zip2], ctx, extra_resources=extra_resources
+        )
+    return fake_resources_added, create_calls
+
+
+def test_publish_attaches_resources_via_dataset_not_per_resource(tmp_path: Path) -> None:
+    """publish() should call dataset.create_in_hdx ONCE, not Resource.create_in_hdx per zip."""
+    fake_resources_added, create_calls = _publish_buildings(tmp_path)
 
     assert len(fake_resources_added) == 2, "expected one add_update_resource per zip"
     assert len(create_calls) == 1, "expected exactly ONE batched create_in_hdx call"
     assert create_calls[0]["allow_no_resources"] is False
     assert create_calls[0]["hxl_update"] is False
+
+
+def test_every_resource_on_a_category_dataset_has_a_readable_title(tmp_path: Path) -> None:
+    """HDX lists resources by name, and a filename tells a reader nothing about the file."""
+    tiles = tmp_path / "hotosm_npl_buildings_osm.pmtiles"
+    tiles.write_bytes(b"t")
+    metadata = tmp_path / "hotosm_npl_buildings_osm_metadata.json"
+    metadata.write_text("{}", encoding="utf-8")
+    added, _ = _publish_buildings(
+        tmp_path,
+        extra_resources=[ExtraResource(path=tiles, fmt="pmtiles", description="tiles")],
+        metadata_json_path=metadata,
+    )
+    assert [r.data["name"] for r in added] == [
+        "Buildings (OSM), Shapefile",
+        "Buildings (OSM), GeoPackage",
+        "Buildings (OSM), Vector Tiles (PMTiles)",
+        "Buildings (OSM), STAC Collection",
+    ]
 
 
 def _build_combined_dataset(cfg: RootConfig) -> MagicMock:
@@ -267,11 +300,8 @@ def test_combined_dataset_metadata_falls_back_when_unset() -> None:
 def test_per_category_update_preserves_other_sources_resources_unless_purging(
     tmp_path: Path, purge: bool, expected: bool
 ) -> None:
-    """A category's dataset holds every source, so an OSM run must not wipe Overture's.
-
-    The report's source tabs and its map both read the other source's resources
-    straight off the dataset.
-    """
+    """A category's dataset holds every source, so an OSM run must not wipe Overture's: the page
+    and its map read the other source's resources straight off the dataset."""
     from oex.hdx_publisher import HdxPublisher
 
     cfg = RootConfig(
@@ -358,27 +388,75 @@ def test_combined_update_preserves_other_sources_resources_unless_purging(
                 snapshot_date=datetime.now(UTC),
                 source_name="overture",
             ),
-            landing_enabled=False,
+            page_enabled=False,
         )
 
     assert len(update_calls) == 1
     assert update_calls[0]["remove_additional_resources"] is expected
 
 
-def test_landing_describes_every_layer_on_the_dataset_not_just_this_run() -> None:
-    """An Overture run must still describe the OSM layers already on the dataset.
+def _catalog(cfg, source: str, categories: list[str]) -> dict:
+    """One source's Collection and per-layer Items, keyed by the URL a reader fetches each from."""
+    from oex.metadata import ColumnReport, MetadataReport
+    from oex.report import SourceMetadata
+    from oex.stac import LayerAssets, build_collection, build_item, item_href, to_payload
 
-    The tileset is merged from every staged layer across sources, so a landing
-    built from only the current run's categories would leave the other source's
-    layers unlabelled and filtered off the map.
-    """
+    by_name = {c.name: c for c in cfg.categories}
+    layers = [
+        LayerAssets(
+            category=by_name[name],
+            source_metadata=SourceMetadata(
+                source_name=source,
+                snapshot_label="2026-08-24",
+                dataset_source="OpenStreetMap",
+                generated_utc="2026-08-24T00:00:00Z",
+                oex_version="0.4.16",
+                license_label="Open Database License (ODC-ODbL)",
+                license_url=None,
+                pcode_source_date=None,
+                boundary="user geom",
+                metadata=MetadataReport(
+                    feature_count=3,
+                    geometry_types={"POLYGON": 3},
+                    bbox=(85.0, 27.8, 85.4, 28.3),
+                    columns=[ColumnReport("id", "VARCHAR", 0, 0.0, 3, [])],
+                    summary="3 features.",
+                ),
+            ),
+            dataset_name=f"demo_eq_ven_{name.lower()}",
+            # Real Items list what the layer published; without assets the page would
+            # offer no downloads and the test would not notice.
+            artifacts=[
+                Path(f"demo_eq_ven_{name.lower()}_{source}_gpkg.zip"),
+                Path(f"demo_eq_ven_{name.lower()}_{source}.geojson"),
+            ],
+        )
+        for name in categories
+    ]
+    collection = build_collection(
+        dataset_name="demo_eq_ven",
+        title="Venezuela earthquake",
+        description="Vector data for the affected area.",
+        layers=layers,
+        cfg=cfg,
+    )
+    documents = {f"https://x/demo_eq_ven_{source}_metadata.json": to_payload(collection)}
+    for layer in layers:
+        # Keyed on the href the Collection actually links, so a wrong key fails the test.
+        documents[item_href(cfg, layer)] = to_payload(build_item(layer, cfg))
+    return documents
+
+
+def test_the_dataset_page_describes_every_layer_on_the_dataset_not_just_this_run() -> None:
+    """An Overture run must still describe the OSM layers on the dataset, or the merged tileset
+    would carry layers the page leaves unlabelled and filters off the map."""
     from oex.hdx_publisher import CombinedCategory, HdxPublisher
 
     cfg = RootConfig(
         iso3="VEN",
         key="demo_eq",
         hdx=HdxConfig(combine=True, combined=CombinedHdx(name="demo_eq_ven")),
-        output=OutputConfig(s3=S3Config(enabled=False)),
+        output=OutputConfig(s3=S3Config(enabled=True, bucket="example-bucket", region="us-east-1")),
         categories=[
             CategoryConfig(name="Buildings"),
             CategoryConfig(name="Roads"),
@@ -387,33 +465,24 @@ def test_landing_describes_every_layer_on_the_dataset_not_just_this_run() -> Non
     # On HDX already: Buildings from both sources, Roads from OSM only. This run
     # publishes Overture, so `entries` carries Buildings alone.
     resources = [
+        {"name": "Layer Metadata (OSM), JSON", "url": "https://x/demo_eq_ven_osm_metadata.json"},
         {
-            "name": "Buildings (OSM), JSON",
-            "url": "https://x/demo_eq_ven_buildings_osm_metadata.json",
+            "name": "Layer Metadata (Overture), JSON",
+            "url": "https://x/demo_eq_ven_overture_metadata.json",
         },
-        {
-            "name": "Buildings (Overture), JSON",
-            "url": "https://x/demo_eq_ven_buildings_overture_metadata.json",
-        },
-        {"name": "Roads (OSM), JSON", "url": "https://x/demo_eq_ven_roads_osm_metadata.json"},
     ]
+    fetched = {
+        **_catalog(cfg, "osm", ["Buildings", "Roads"]),
+        **_catalog(cfg, "overture", ["Buildings"]),
+    }
     fresh = MagicMock()
     fresh.get_resources.return_value = resources
-
-    def payload_for(url):
-        source = "osm" if "_osm_metadata" in url else "overture"
-        return {"source_name": source}
 
     captured: dict = {}
 
     def fake_render(**kwargs):
         captured.update(kwargs)
         return "<html></html>"
-
-    def fake_metadata(payload):
-        meta = MagicMock()
-        meta.source_name = payload["source_name"]
-        return meta
 
     publisher = HdxPublisher.__new__(HdxPublisher)
     publisher._owner_org = "org"
@@ -427,15 +496,14 @@ def test_landing_describes_every_layer_on_the_dataset_not_just_this_run() -> Non
     )
     with (
         patch("hdx.data.dataset.Dataset.read_from_hdx", return_value=fresh),
-        patch("oex.hdx_publisher._download_json", side_effect=payload_for),
-        patch("oex.report.SourceMetadata.from_payload", side_effect=fake_metadata),
-        patch("oex.report.landing.render_landing", side_effect=fake_render),
+        patch("oex.hdx_publisher._download_json", side_effect=lambda url: fetched[url]),
+        patch("oex.report.page.render_dataset_page", side_effect=fake_render),
         patch.object(HdxPublisher, "_make_resource_for_path", return_value=MagicMock(data={})),
         patch.object(HdxPublisher, "_set_customviz_after_upload"),
         patch("oex.hdx_publisher._hdx_publish_with_retry"),
         patch("pathlib.Path.write_text"),
     ):
-        publisher._build_and_publish_landing(
+        publisher._build_and_publish_page(
             dt_name="demo_eq_ven",
             cfg=cfg,
             entries=[CombinedCategory(category=cfg.categories[0], zip_paths=[])],
@@ -443,11 +511,19 @@ def test_landing_describes_every_layer_on_the_dataset_not_just_this_run() -> Non
             ctx=ctx,
         )
 
-    panels = captured["panels"]
-    assert [p.slug for p in panels] == ["buildings", "roads"], "Roads (OSM) must not be dropped"
-    # Buildings carries both sources, OSM first.
-    assert [s.source_name for s in panels[0].sources] == ["osm", "overture"]
-    assert captured["subtitle"] == "3 layers from OSM and Overture for Venezuela"
+    layers = captured["layers"]
+    assert [layer.key for layer in layers] == [
+        "buildings-osm",
+        "buildings-overture",
+        "roads-osm",
+    ], "Roads (OSM) must not be dropped"
+    assert [layer.label for layer in layers[:2]] == [
+        "Buildings (OSM)",
+        "Buildings (Overture)",
+    ]
+    # The published page offers what each Item lists, not a guess at the filenames.
+    assert [d.format for d in layers[0].downloads] == ["gpkg", "geojson"]
+    assert layers[0].metadata_href.endswith("_buildings_osm_item.json"), layers[0].metadata_href
 
 
 def test_publish_combined_attaches_all_categories_and_pmtiles_once(tmp_path: Path) -> None:
@@ -513,7 +589,7 @@ def test_publish_combined_attaches_all_categories_and_pmtiles_once(tmp_path: Pat
             s3=cfg.output.s3,
         )
         dt_name = publisher.publish_combined(
-            cfg, entries, ctx, pmtiles_path=pmtiles, landing_enabled=False
+            cfg, entries, ctx, pmtiles_path=pmtiles, page_enabled=False
         )
 
     assert dt_name == "hotosm_npl"
@@ -524,3 +600,133 @@ def test_publish_combined_attaches_all_categories_and_pmtiles_once(tmp_path: Pat
     assert formats.count("gpkg") == 2
     # pmtiles is added before the category zips.
     assert formats[0] == "pmtiles"
+
+
+def test_a_retitled_file_keeps_its_hdx_resource_instead_of_gaining_a_second() -> None:
+    """HDX matches by id then name, so the id is what stops a rename from duplicating."""
+    from oex.hdx_publisher import _reuse_resource_ids
+
+    base = "https://bucket.s3.amazonaws.com/ISO3/NPL/buildings/"
+    existing = [
+        {
+            "id": "old",
+            "name": "hotosm_npl_buildings_osm_gpkg.zip",
+            "url": f"{base}hotosm_npl_buildings_osm_gpkg.zip",
+        },
+        {
+            "id": "titled",
+            "name": "Buildings (OSM), GeoPackage",
+            "url": f"{base}hotosm_npl_buildings_osm_gpkg.zip",
+        },
+        {
+            "id": "tiles",
+            "name": "hotosm_npl_buildings_osm.pmtiles",
+            "url": f"{base}hotosm_npl_buildings_osm.pmtiles",
+        },
+    ]
+    new = [
+        {"name": "Buildings (OSM), GeoPackage", "url": f"{base}hotosm_npl_buildings_osm_gpkg.zip"},
+        {
+            "name": "Buildings (OSM), Vector Tiles (PMTiles)",
+            "url": f"{base}hotosm_npl_buildings_osm.pmtiles",
+        },
+        {"name": "Buildings (OSM), GeoParquet", "url": f"{base}buildings.parquet"},
+    ]
+    _reuse_resource_ids(new, existing)
+    # The entry already carrying the title wins over the filename-named one.
+    assert [r.get("id") for r in new] == ["titled", "tiles", None]
+
+
+def test_updating_a_dataset_carries_ids_over_before_hdx_matches_by_name() -> None:
+    from oex.hdx_publisher import HdxPublisher
+
+    url = "https://bucket.s3.amazonaws.com/ISO3/NPL/buildings/hotosm_npl_buildings_osm.pmtiles"
+    new = [{"name": "Buildings (OSM), Vector Tiles (PMTiles)", "url": url}]
+    dataset = MagicMock()
+    dataset.get_resources.return_value = new
+    existing = MagicMock()
+    existing.get.return_value = "org"
+    existing.__getitem__.return_value = "dataset-id"
+    existing.get_resources.return_value = [
+        {"id": "tiles", "name": "hotosm_npl_buildings_osm.pmtiles", "url": url}
+    ]
+    publisher = HdxPublisher.__new__(HdxPublisher)
+    publisher._owner_org = "org"
+    seen: list[str | None] = []
+    dataset.update_in_hdx.side_effect = lambda **_: seen.append(new[0].get("id"))
+    with patch("hdx.data.dataset.Dataset.read_from_hdx", return_value=existing):
+        publisher._create_or_update(dataset, "hotosm_npl_buildings", remove_additional=False)
+    assert seen == ["tiles"]
+
+
+def test_each_source_keeps_its_own_geoparquet_resource() -> None:
+    """Both sources stage `buildings.parquet`, in different folders."""
+    from oex.hdx_publisher import _reuse_resource_ids
+
+    layers = "https://bucket.s3.amazonaws.com/ISO3/NPL/_layers/"
+    existing = [
+        {
+            "id": "osm",
+            "name": "Buildings (OSM), GeoParquet",
+            "url": f"{layers}osm/buildings.parquet",
+        }
+    ]
+    overture = [
+        {"name": "Buildings (Overture), GeoParquet", "url": f"{layers}overture/buildings.parquet"}
+    ]
+    _reuse_resource_ids(overture, existing)
+    assert overture[0].get("id") is None
+    renamed = [{"name": "Structures (OSM), GeoParquet", "url": f"{layers}osm/buildings.parquet"}]
+    _reuse_resource_ids(renamed, existing)
+    assert renamed[0]["id"] == "osm"
+
+
+def test_a_file_uploaded_to_hdx_is_matched_by_its_name_before_it_has_a_url() -> None:
+    """Without S3 the file goes to HDX's own store, and the URL only exists after upload."""
+    from oex.hdx_publisher import _reuse_resource_ids
+
+    class Pending(dict):
+        def get_file_to_upload(self) -> str:
+            return "/tmp/out/hotosm_npl_buildings_osm.pmtiles"
+
+    existing = [
+        {
+            "id": "tiles",
+            "name": "hotosm_npl_buildings_osm.pmtiles",
+            "url": "https://data.humdata.org/dataset/x/resource/y/download/hotosm_npl_buildings_osm.pmtiles",
+        }
+    ]
+    new = [Pending(name="Buildings (OSM), Vector Tiles (PMTiles)")]
+    _reuse_resource_ids(new, existing)
+    assert new[0]["id"] == "tiles"
+
+
+def _grid_cfg(*, push: bool, s3: bool, related: bool = True) -> RootConfig:
+    cfg = RootConfig(
+        iso3="NPL",
+        key="hotosm",
+        hdx=HdxConfig(push=push, site="prod"),
+        output=OutputConfig(
+            s3=S3Config(enabled=s3, bucket="bucket", prefix="ISO3", region="us-east-1")
+        ),
+        categories=[
+            CategoryConfig(name="buildings"),
+            CategoryConfig(name="roads"),
+            CategoryConfig(name="health_facilities"),
+        ],
+    )
+    cfg.output.report.related_datasets = related
+    return cfg
+
+
+def test_related_datasets_link_hdx_and_only_when_published_there() -> None:
+    from oex.hdx_publisher import related_dataset_links
+
+    buildings = CategoryConfig(name="buildings")
+    assert related_dataset_links(_grid_cfg(push=True, s3=True), buildings) == [
+        ("Roads", "https://data.humdata.org/dataset/hotosm_npl_roads"),
+        ("Health Facilities", "https://data.humdata.org/dataset/hotosm_npl_health_facilities"),
+    ]
+    # Without HDX no dataset page is published anywhere, so a link would be a dead end.
+    assert related_dataset_links(_grid_cfg(push=False, s3=True), buildings) == []
+    assert related_dataset_links(_grid_cfg(push=True, s3=True, related=False), buildings) == []

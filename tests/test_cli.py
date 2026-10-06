@@ -101,17 +101,17 @@ def test_overrides_dataset_name_empty_string_appears() -> None:
 
 
 def test_enabled_sources_returns_both_in_run_order(monkeypatch) -> None:
-    monkeypatch.setattr(cli, "load_config", lambda _p: _cfg(osm=True, overture=True))
+    monkeypatch.setattr(cli, "load_config", lambda _p, _o: _cfg(osm=True, overture=True))
     assert _enabled_sources(None, {}) == ["osm", "overture"]
 
 
 def test_enabled_sources_skips_disabled_source(monkeypatch) -> None:
-    monkeypatch.setattr(cli, "load_config", lambda _p: _cfg(osm=False, overture=True))
+    monkeypatch.setattr(cli, "load_config", lambda _p, _o: _cfg(osm=False, overture=True))
     assert _enabled_sources(None, {}) == ["overture"]
 
 
 def test_enabled_sources_empty_when_none_enabled(monkeypatch) -> None:
-    monkeypatch.setattr(cli, "load_config", lambda _p: _cfg(osm=False, overture=False))
+    monkeypatch.setattr(cli, "load_config", lambda _p, _o: _cfg(osm=False, overture=False))
     assert _enabled_sources(None, {}) == []
 
 
@@ -146,3 +146,19 @@ def test_all_propagates_overrides_to_each_run(monkeypatch) -> None:
     result = CliRunner().invoke(app, ["all", "COD", "--config", "x.yaml", "--no-hdx-push"])
     assert result.exit_code == 0
     assert seen[0]["hdx.push"] is False
+
+
+def test_iso3_from_the_command_line_satisfies_checks_on_a_config_without_one(tmp_path) -> None:
+    """The sweep passes the country as --iso3 over a base config that names none."""
+    config = tmp_path / "base.yaml"
+    config.write_text("key: t\nsource:\n  pcodes:\n    enabled: true\n", encoding="utf-8")
+    overrides = _build_overrides(None, None, None, iso3="npl")
+    assert cli._load_with_overrides(config, overrides).iso3 == "NPL"
+
+
+def test_metadata_applies_iso3_before_checking_the_config(tmp_path) -> None:
+    config = tmp_path / "base.yaml"
+    config.write_text("key: t\nsource:\n  pcodes:\n    enabled: true\n", encoding="utf-8")
+    result = CliRunner().invoke(app, ["metadata", "--config", str(config), "--iso3", "NPL"])
+    assert result.exit_code == 0, result.output
+    assert "no hdx.combined.name, skipping" in result.output

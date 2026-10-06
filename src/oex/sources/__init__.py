@@ -1,9 +1,4 @@
-"""Per-source query builders.
-
-A source knows how to expose a parquet read expression and a metadata block
-for a given category. The shared exporter then does the bbox/clip/select/
-write/zip steps in a uniform way.
-"""
+"""Where each source reads its features from, for the shared exporter to clip and write."""
 
 from oex.sources.base import CategorySkippedError, SourceQuery, SourceRunner
 

@@ -132,11 +132,8 @@ def test_publish_combined_builds_tileset_orders_and_cleans_up(tmp_path: Path) ->
 
 
 def test_combined_tileset_skips_staged_layers_not_in_this_config(tmp_path: Path) -> None:
-    """The S3 staging area is never pruned, so it outlives categories you drop.
-
-    Merging those stale layers would bloat the tileset with features no legend
-    entry references, so nothing on the page would even draw them.
-    """
+    """Staging is never pruned, so it outlives dropped categories; merging them would bloat the
+    tileset with features no legend entry draws."""
     from unittest.mock import MagicMock, patch
 
     import duckdb

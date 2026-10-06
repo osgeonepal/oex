@@ -1,7 +1,5 @@
-"""The country.parquet contract shared by every OSM engine.
-
-The exporter, the category selects and the published schema all assume these three
-columns, so a change here changes every dataset oex publishes.
+"""The country.parquet contract every OSM engine writes, which the exporter, the category
+selects and the published schema all assume.
 """
 
 from pathlib import Path

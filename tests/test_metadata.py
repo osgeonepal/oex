@@ -60,8 +60,10 @@ def test_metadata_top_values(populated_table: duckdb.DuckDBPyConnection) -> None
 
 def test_metadata_summary_string(populated_table: duckdb.DuckDBPyConnection) -> None:
     report = compute_metadata(populated_table, "features")
-    assert "5 features" in report.summary
-    assert "POINT" in report.summary
+    assert report.summary == (
+        "5 features: 3 points, 1 line, 1 polygon. "
+        "2 of 2 attributes are filled for at least half of the features."
+    )
 
 
 def test_metadata_empty_table() -> None:
@@ -71,7 +73,7 @@ def test_metadata_empty_table() -> None:
     report = compute_metadata(conn, "empty")
     assert report.feature_count == 0
     assert report.bbox is None
-    assert report.summary == "Empty dataset."
+    assert report.summary == "No features."
 
 
 def test_metadata_temporal_bounds_when_column_exists() -> None:
@@ -117,3 +119,27 @@ def test_metadata_temporal_skipped_when_column_not_requested() -> None:
     )
     report = compute_metadata(conn, "features")
     assert report.temporal is None
+
+
+def test_the_summary_counts_only_the_sources_own_attributes() -> None:
+    """oex fills `id` and the admin columns itself, so counting them misstates the source's fill."""
+    from oex.metadata import ColumnReport, _summary
+
+    columns = [
+        ColumnReport("id", "VARCHAR", 0, 0.0, 10, []),
+        ColumnReport("adm1_pcode", "VARCHAR", 0, 0.0, 3, []),
+        ColumnReport("adm4_name", "VARCHAR", 10, 100.0, 0, []),
+        ColumnReport("building", "VARCHAR", 0, 0.0, 2, []),
+        ColumnReport("name", "VARCHAR", 9, 90.0, 1, []),
+    ]
+    summary = _summary(10, {"POLYGON": 10}, columns)
+    assert summary.endswith("1 of 2 attributes are filled for at least half of the features.")
+
+
+def test_a_single_feature_and_attribute_read_in_the_singular() -> None:
+    from oex.metadata import ColumnReport, _summary
+
+    summary = _summary(1, {"POINT": 1}, [ColumnReport("name", "VARCHAR", 0, 0.0, 1, [])])
+    assert summary == (
+        "1 feature: 1 point. 1 of 1 attribute is filled for at least half of the feature."
+    )

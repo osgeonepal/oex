@@ -1,8 +1,5 @@
-"""The country.parquet contract every OSM engine writes.
-
-quackosm produces feature_id, tags and geometry for the geofabrik and planet
-engines; the live engines assemble the same three columns so the exporter, the
-category selects and the published schema stay identical whichever engine ran.
+"""The country.parquet contract, feature_id, tags and geometry, which every OSM engine
+writes so the exporter and the published schema do not depend on the engine.
 """
 
 from dataclasses import dataclass

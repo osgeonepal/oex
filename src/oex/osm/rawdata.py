@@ -1,7 +1,5 @@
-"""HOT Raw Data API source engine: live OSM through an asynchronous export job.
-
-The API tracks OSM continuously, so a small area comes back far fresher than a daily
-country PBF. A snapshot is submitted, polled until it completes, then downloaded.
+"""Live OSM through the HOT Raw Data API: a snapshot is submitted, polled until it
+completes, and written as the same country.parquet the PBF engines produce.
 """
 
 import json

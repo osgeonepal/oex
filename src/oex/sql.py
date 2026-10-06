@@ -15,11 +15,8 @@ def build_select_clause(select_fields: list[str]) -> str:
 
 
 def build_where_clause(boundary: Boundary, where_conditions: list[str], bbox_cols: str) -> str:
-    """Combine bbox prune + boundary intersect + caller-supplied conditions.
-
-    `bbox_cols="bbox"` uses an upstream `bbox` struct (Overture); `"geom"`
-    derives the bbox from the geometry column (OSM cache).
-    """
+    """`bbox_cols="bbox"` prunes on Overture's own bbox struct; `"geom"` derives it from the
+    geometry for the OSM cache."""
     minx, miny, maxx, maxy = boundary.bbox
     if bbox_cols == "geom":
         bbox_filter = (
@@ -32,9 +29,8 @@ def build_where_clause(boundary: Boundary, where_conditions: list[str], bbox_col
             f"bbox.ymin <= {maxy} AND bbox.ymax >= {miny}"
         )
 
-    # Some OSM PBFs include nodes with corrupt lat/lon (e.g. lat=115). The
-    # GDAL writer rejects them mid-COPY, killing the category. Drop any
-    # geometry with a vertex outside Earth before write.
+    # Some PBFs carry vertices off the Earth (lat=115), which GDAL rejects mid-COPY,
+    # killing the category.
     earth_filter = (
         "ST_YMin(geometry) >= -90 AND ST_YMax(geometry) <= 90 AND "
         "ST_XMin(geometry) >= -180 AND ST_XMax(geometry) <= 180"

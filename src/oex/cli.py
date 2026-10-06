@@ -6,7 +6,6 @@ from pathlib import Path
 import typer
 
 from oex.config.loader import (
-    apply_overrides,
     iter_configs,
     load_config,
     select_categories,
@@ -143,21 +142,24 @@ _RUNNERS = {"osm": OsmRunner, "overture": OvertureRunner, "file": FileRunner}
 _SOURCE_ORDER = ("osm", "overture")
 
 
+def _load_with_overrides(yaml_path: Path | None, overrides: dict[str, object]) -> RootConfig:
+    """CLI flags are merged before validation, so `--iso3` satisfies checks that need it."""
+    return load_config(yaml_path, [f"{key}={value}" for key, value in overrides.items()])
+
+
 def _run_one(
     yaml_path: Path | None,
     overrides: dict[str, object],
     theme: str | None,
     runner_factory,
 ) -> ExportResult:
-    cfg: RootConfig = load_config(yaml_path)
-    cfg = apply_overrides(cfg, overrides)
-    cfg = select_categories(cfg, theme)
+    cfg = select_categories(_load_with_overrides(yaml_path, overrides), theme)
     return Exporter(cfg, runner_factory()).run()
 
 
 def _enabled_sources(yaml_path: Path | None, overrides: dict[str, object]) -> list[str]:
     """Return the runnable source names in run order, honouring CLI overrides."""
-    cfg = apply_overrides(load_config(yaml_path), overrides)
+    cfg = _load_with_overrides(yaml_path, overrides)
     return [name for name in _SOURCE_ORDER if name in cfg.source and cfg.source[name].enabled]
 
 
@@ -492,9 +494,10 @@ def cmd_metadata(
     from oex.hdx_publisher import HdxPublisher
 
     yamls = _resolve_config(iso3, configs_dir, config)
+    overrides = _build_overrides(None, None, None, iso3=iso3)
     failed = 0
     for yaml_path in yamls:
-        cfg = load_config(yaml_path)
+        cfg = _load_with_overrides(yaml_path, overrides)
         if not cfg.hdx.combined.name:
             typer.echo(f"{yaml_path}: no hdx.combined.name, skipping")
             continue

@@ -139,8 +139,9 @@ output/
 ```
 
 Each zip contains the GIS file(s) plus `README.txt`, `config.yaml`, and
-optionally `metadata.json` (when `output.metadata: true`) with per-column
-null shares, distinct counts, geometry types, and bbox.
+optionally `metadata.json` (when `output.metadata` or `output.report.enabled` is on),
+which is the layer as a STAC Item carrying per-column null shares, distinct counts,
+geometry types and bbox.
 
 ## OSM engine: geofabrik vs planet
 

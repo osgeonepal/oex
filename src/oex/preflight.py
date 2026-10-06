@@ -6,6 +6,7 @@ from pathlib import Path
 
 from oex.config.schema import RootConfig
 from oex.logging_setup import get_logger
+from oex.writers import tile_builder
 
 logger = get_logger(__name__)
 
@@ -15,12 +16,8 @@ class PreflightError(RuntimeError):
 
 
 def check_writable_paths(cfg: RootConfig) -> None:
-    """Verify every directory the run needs to write to is writable.
-
-    Catches read-only filesystems and permission errors before downloading
-    PBFs or running quackosm. Tests by creating, writing, then deleting a
-    tiny temp file in each candidate path.
-    """
+    """Probe every directory the run writes to with a temp file, so a read-only filesystem
+    fails before PBFs are downloaded or quackosm runs."""
     candidates: list[Path] = [Path(cfg.output.dir)]
 
     osm_cfg = cfg.source.get("osm")
@@ -77,3 +74,11 @@ def _verify_writable(path: Path) -> None:
         probe.unlink(missing_ok=True)
 
     logger.info("preflight: %s is writable", path)
+
+
+def check_tile_builder(cfg: RootConfig) -> None:
+    """Tiles are built after every layer is exported, so a missing tippecanoe would
+    otherwise surface hours into a run."""
+    if not cfg.output.pmtiles.enabled:
+        return
+    logger.info("preflight: tiles will be built with %s", tile_builder())

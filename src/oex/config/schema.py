@@ -10,12 +10,8 @@ OsmTagFilter = dict[str, Any]
 
 @dataclass
 class CombinedHdx:
-    """Metadata for the one dataset that `hdx.combine` publishes every category onto.
-
-    Mirrors a category's `hdx:` block, so dataset-level metadata is described the
-    same way per-layer metadata is. Every value is optional: an empty one falls
-    back to what oex derives from the categories and the source that built them.
-    """
+    """Metadata for the one dataset `hdx.combine` publishes every category onto. Every value
+    is optional; an empty one falls back to what oex derives from the categories."""
 
     # Dataset slug. Empty falls back to "{key}_{iso3}".
     name: str = ""
@@ -61,11 +57,8 @@ class DuckdbConfig:
 
 @dataclass
 class MapAssetsConfig:
-    """Where the report map gets its basemap and its JavaScript.
-
-    The published page fetches these at view time, so they are configurable: pin a
-    different version, or serve them from your own host when a CDN is unreachable.
-    """
+    """Where the page map gets its basemap and JavaScript. Fetched at view time, so a version
+    can be pinned or served from your own host."""
 
     basemap_tiles: str = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
     basemap_attribution: str = "(c) OpenStreetMap contributors"
@@ -75,19 +68,31 @@ class MapAssetsConfig:
 
 
 @dataclass
+class ThemeConfig:
+    """Colours the pages are built from. Everything else derives from these."""
+
+    accent_color: str = "#2563eb"
+    map_popup_color: str = "#2563eb"
+    boundary_outline_color: str = "#e11d48"
+
+
+@dataclass
 class ReportConfig:
     enabled: bool = False
     # Layer colours, assigned in layer order and cycled when there are more layers.
     palette: list[str] = field(default_factory=lambda: list(DEFAULT_PALETTE))
+    theme: ThemeConfig = field(default_factory=ThemeConfig)
     map_assets: MapAssetsConfig = field(default_factory=MapAssetsConfig)
+    related_datasets: bool = False
 
 
 @dataclass
 class PmtilesConfig:
-    # Higher max_zoom means sharper detail when zoomed in, at the cost of archive size.
     enabled: bool = False
     min_zoom: int = 0
+    # tippecanoe may add up to max_extra_zooms past max_zoom before it drops the densest features.
     max_zoom: int = 12
+    max_extra_zooms: int = 4
 
 
 @dataclass
@@ -100,29 +105,38 @@ class S3Config:
     endpoint_url: str | None = None
     # Mid-path folder and filename id segment. Empty falls back to iso3.
     folder: str = ""
-    # Keep the {category}/ subfolder in the key. False writes a flat layout.
     nest_by_category: bool = True
-    # Keep the source token (osm/overture) in the artifact filename.
     name_include_source: bool = True
     # Requires output.split_by_geometry.
     nest_by_geometry: bool = False
 
 
 @dataclass
+class StacCatalogConfig:
+    # Every run links its Collections into a root and per-area catalog on S3.
+    catalog: bool = False
+    id: str = "oex-exports"
+    title: str = "oex exports"
+    description: str = "Vector layers published by oex."
+    group: str | None = None
+    group_title: str | None = None
+
+
+@dataclass
 class OutputConfig:
     dir: str = "output"
     formats: list[str] = field(default_factory=lambda: ["gpkg", "shp"])
-    # Which formats to zip. None zips every format; a list zips only those named, and
-    # the rest publish as the bare file. Shapefiles are always zipped: they are a set
-    # of sidecar files, not one.
+    # None zips every format; a list zips only those named. Shapefiles are always
+    # zipped, since a shapefile is a set of sidecar files.
     zip_formats: list[str] | None = None
+    # Layer metadata as a STAC Item per layer plus one Collection per dataset.
     metadata: bool = False
     report: ReportConfig = field(default_factory=ReportConfig)
     pmtiles: PmtilesConfig = field(default_factory=PmtilesConfig)
+    stac: StacCatalogConfig = field(default_factory=StacCatalogConfig)
     s3: S3Config = field(default_factory=S3Config)
     resume: bool = True
     remove_after_upload: bool = True
-    # Labels are points, lines, polygons.
     split_by_geometry: bool = False
 
 
@@ -137,7 +151,6 @@ class ParallelConfig:
 class BoundaryConfig:
     geom: str | None = None
     geoboundaries_level: str = "ADM0"
-    # Outward buffer in metres on the ground. 0 disables it.
     buffer_meters: float = 0.0
 
 
@@ -181,7 +194,6 @@ class OsmSourceConfig:
     rawdata_endpoint: str = "https://api-prod.raw-data.hotosm.org/v1"
     postpass_timeout_s: int = 600
     rawdata_timeout_s: int = 1800
-    # Engine to try when `engine` fails, so one upstream outage does not stop a run.
     fallback_engine: str = ""
 
 
@@ -195,24 +207,20 @@ class PcodesSourceConfig:
         "https://data.fieldmaps.io/edge-matched/humanitarian/intl/adm{level}_polygons.parquet"
     )
     manifest_group: str = "humanitarian"
-    # 'geos' (default): precise ST_Contains; correct to the metre. 'h3_neighbor': 1-ring
-    # hash fallback, ~5 km error at admin borders, memory-bounded. Set h3_neighbor on
-    # high-cardinality categories (buildings, roads, waterways) to avoid OOM on big
-    # countries; small categories keep geos by inheritance.
+    # 'geos' is exact; 'h3_neighbor' errs by up to 5 km at admin borders but bounds
+    # memory, which is what buildings, roads and waterways in large countries need.
     boundary_resolution: str = "geos"
 
 
-# HDX licence ids are identifiers, not titles; reports show the title instead.
+# HDX licence ids, as HDX's license_list API names them; reports show the title instead.
 HDX_LICENSE_LABELS = {
     "hdx-odc-odbl": "Open Database License (ODC-ODbL)",
     "hdx-odc-by": "Open Data Commons Attribution License",
-    "hdx-odc-pddl": "Open Data Commons Public Domain Dedication and License",
+    "hdx-pddl": "Open Data Commons Public Domain Dedication and License",
     "cc-by": "Creative Commons Attribution 4.0",
     "cc-by-sa": "Creative Commons Attribution Share-Alike 4.0",
     "cc-by-igo": "Creative Commons Attribution for Intergovernmental Organisations",
-    "cc-zero": "Creative Commons Zero (Public Domain)",
-    "cc-by-nc": "Creative Commons Attribution Non-Commercial",
-    "public-domain": "Public Domain",
+    "other-pd-nr": "Public Domain (CC0)",
 }
 
 
@@ -285,9 +293,8 @@ class TransliterateRule:
 
 @dataclass
 class CategoryTemporal:
-    # Column alias in the materialised table that carries a per-feature
-    # timestamp. When set and present, min/max drive HDX dataset_date and the
-    # report's temporal block. Must be reachable via the source's select.
+    # A per-feature timestamp from the source's select; its range dates the HDX
+    # dataset and the report's temporal block.
     column: str | None = None
 
 
@@ -333,9 +340,6 @@ class RootConfig:
 
 
 def dataset_identity(cfg: RootConfig) -> str:
-    """Path and filename id for a dataset: iso3 when set, else the S3 folder id.
-
-    Sub-national exports (Tasking Manager projects) have no country code; they
-    identify by project id through ``output.s3.folder``.
-    """
+    """iso3 when set, else the S3 folder id, which is how a sub-national Tasking Manager
+    export identifies itself."""
     return cfg.iso3.lower() or cfg.output.s3.folder

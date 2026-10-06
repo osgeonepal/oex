@@ -22,6 +22,14 @@ output:
   remove_after_upload: true
   report:
     enabled: false
+    # Link each per-category page to the area's other category datasets.
+    related_datasets: false
+    # Colours the pages are built from. accent_color needs 4.5:1 against white,
+    # because the download button draws white text on it.
+    theme:
+      accent_color: "#2563eb"
+      map_popup_color: "#2563eb"
+      boundary_outline_color: "#e11d48"
     # Layer colours (20 distinct defaults, cycled beyond that). Override with a
     # list of hex colours to control how each layer is drawn.
     # The published page fetches these at view time. Repoint them to pin a
@@ -32,10 +40,20 @@ output:
       maplibre_css: "https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"
       maplibre_js: "https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"
       pmtiles_js: "https://unpkg.com/pmtiles@3.2.1/dist/pmtiles.js"
+  # Root catalog at {prefix}/catalog.json, one per area at {prefix}/{folder or ISO3}/catalog.json.
+  stac:
+    catalog: false
+    id: oex-exports
+    title: oex exports
+    description: Vector layers published by oex.
+    # A catalog between the root and the area, e.g. `activations` for event datasets.
+    group: null
+    group_title: null
   pmtiles:
     enabled: false
     min_zoom: 0
     max_zoom: 12
+    max_extra_zooms: 4
   s3:
     enabled: false
     bucket: ""

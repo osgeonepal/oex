@@ -46,7 +46,10 @@ def make_zip(
         if config_snapshot is not None:
             zf.writestr("config.yaml", yaml.safe_dump(config_snapshot, sort_keys=False))
         if metadata_report is not None:
-            zf.writestr("metadata.json", json.dumps(metadata_report, indent=2, default=str))
+            zf.writestr(
+                "metadata.json",
+                json.dumps(metadata_report, indent=2, default=str, ensure_ascii=False),
+            )
 
     size_mb = zip_path.stat().st_size / (1024 * 1024)
     logger.info("Created %s (%.2f MB)", zip_path, size_mb)

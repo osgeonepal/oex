@@ -1,8 +1,5 @@
-"""OSM engine dispatch tests covering the new planet + geofabrik wiring.
-
-Planet-engine end-to-end behavior is covered by tests/test_runner_planet.py;
-this file just verifies the dispatch layer (engine validation, geofabrik
-fast-fail paths). No network and no quackosm runs.
+"""OSM engine dispatch: engine validation and Geofabrik's fast-fail paths, with no network
+and no quackosm.
 """
 
 from pathlib import Path
@@ -66,6 +63,7 @@ categories: []
         runner.prepare(cfg)
 
 
+@pytest.mark.network
 def test_geofabrik_reuses_existing_snapshot(tmp_path: Path) -> None:
     """When the parquet for this boundary + filters exists, nothing is rebuilt."""
     from oex.osm.runner import _parquet_fingerprint

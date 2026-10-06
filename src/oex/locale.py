@@ -13,12 +13,8 @@ def primary_osm_language(iso3: str) -> str | None:
 
 
 def local_osm_languages(iso3: str) -> list[str]:
-    """Up to three non-English official languages for the country.
-
-    Babel sometimes lists English first for multilingual countries (Sudan,
-    Philippines), so English is dropped: `name_en` is already covered by
-    the schema's static select.
-    """
+    """Up to three non-English official languages. Babel lists English first for some
+    multilingual countries, and `name_en` is already in the schema's select."""
     if not iso3:
         return []
 

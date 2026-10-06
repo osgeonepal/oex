@@ -1,9 +1,5 @@
-"""What the writer names, the publisher must be able to read back.
-
-`oex-cli metadata --prune` decides which published HDX resources to delete by parsing
-artifact filenames, so a writer that names a file the parser cannot read would either
-orphan a resource or delete the wrong one. This runs a real export and parses its own
-output, rather than asserting the two halves separately.
+"""Real exports checked end to end: what the writer names, the publisher must read back
+(`metadata --prune` deletes HDX resources by parsing filenames), and the memory it writes with.
 """
 
 import json
@@ -12,9 +8,10 @@ from pathlib import Path
 import duckdb
 import pytest
 
+import oex.exporter
 from oex.config.loader import load_config
 from oex.exporter import Exporter
-from oex.hdx_publisher import _split_artifact_filename
+from oex.naming import split_artifact_filename
 from oex.sources.file import FileRunner
 
 BOUNDARY = json.dumps(
@@ -131,7 +128,72 @@ def test_every_artifact_parses_back_to_its_category_and_source(
     prefix = "test_npl_"
     for name in layers:
         assert name.startswith(prefix), name
-        slug, source, fmt = _split_artifact_filename(name[len(prefix) :], {category})
+        slug, source, fmt = split_artifact_filename(name[len(prefix) :], {category})
         assert slug == category, f"{name} parsed to slug {slug!r}"
         assert source == ("file" if include_source else ""), f"{name} parsed to source {source!r}"
         assert fmt in {"gpkg", "geojson"}, f"{name} parsed to format {fmt!r}"
+
+
+def test_metadata_without_reports_writes_the_catalog_and_no_report_page(
+    tmp_path: Path, shapefile: Path
+) -> None:
+    """`output.metadata` describes the layer; it must not turn report pages back on."""
+    out = tmp_path / "out"
+    cfg_path = tmp_path / "c.yaml"
+    cfg_path.write_text(
+        CONFIG.format(
+            boundary=BOUNDARY,
+            formats="gpkg",
+            out=out,
+            zip_line="",
+            category="bridges",
+            path=shapefile,
+            include_source="true",
+        ).replace("output:\n", "output:\n  metadata: true\n"),
+        encoding="utf-8",
+    )
+    Exporter(load_config(cfg_path), runner=FileRunner()).run()
+    written = sorted(p.name for p in (out / "npl" / "file").iterdir() if p.is_file())
+    assert not [name for name in written if name.endswith("_report.html")], written
+    assert "test_npl_bridges_file_item.json" in written
+    collection = out / "npl" / "file" / "test_npl_bridges_file_metadata.json"
+    assert json.loads(collection.read_text(encoding="utf-8"))["title"] == "Bridges of Nepal"
+
+
+def _memory_limit(conn: duckdb.DuckDBPyConnection) -> str:
+    row = conn.execute("SELECT current_setting('memory_limit')").fetchone()
+    assert row is not None
+    return row[0]
+
+
+def test_geoparquet_is_written_within_the_run_memory_budget(tmp_path, shapefile, monkeypatch):
+    """GeoParquet's Hilbert sort holds the whole layer, so a cap below the run's fails large ones."""
+
+    limits = []
+    write = oex.exporter.write_geoparquet
+
+    def recording_write(conn, table_name, out_path):
+        limits.append(_memory_limit(conn))
+        return write(conn, table_name, out_path)
+
+    monkeypatch.setattr(oex.exporter, "write_geoparquet", recording_write)
+    cfg_path = tmp_path / "c.yaml"
+    cfg_path.write_text(
+        CONFIG.format(
+            boundary=BOUNDARY,
+            formats="geoparquet",
+            out=tmp_path / "out",
+            zip_line="",
+            category="bridges",
+            path=shapefile,
+            include_source="true",
+        ),
+        encoding="utf-8",
+    )
+    cfg = load_config(cfg_path)
+    cfg.parallel.memory_gb = 4
+    Exporter(cfg, runner=FileRunner()).run()
+
+    expected = duckdb.connect()
+    expected.execute("SET memory_limit='4GB'")
+    assert limits == [_memory_limit(expected)]

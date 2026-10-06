@@ -1,7 +1,5 @@
-"""Postpass engine tests: predicate translation, id mapping, parquet contract.
-
-The one network call is stubbed; the parquet build runs for real against DuckDB
-because the schema it produces is the contract the exporter depends on.
+"""Postpass engine: predicate translation and id mapping with the network stubbed; the
+parquet build runs for real, since its schema is the contract the exporter relies on.
 """
 
 import json

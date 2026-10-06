@@ -1,29 +1,39 @@
-"""Tests for reading `*_metadata.json` resources off an HDX dataset."""
-
 from typing import Any
 from unittest.mock import patch
 
-from oex.config.schema import CategoryConfig
+from oex.config.schema import BoundaryConfig, CategoryConfig, RootConfig
 from oex.hdx_publisher import (
+    _entry_name,
+    _item_hrefs,
     _load_source_metadata,
-    _metadata_entries,
+    _resource_url,
     _slug_from_metadata_name,
 )
 from oex.metadata import ColumnReport, MetadataReport
 from oex.report import SourceMetadata
+from oex.stac import LayerAssets, build_collection, build_item, to_payload
 
 PREFIX = "hot_flood_npl_"
 CATEGORIES = [CategoryConfig(name="buildings"), CategoryConfig(name="points_of_interest")]
+BASE = "https://example.invalid/a"
 
 
-def _payload(source_name: str, category: str) -> dict[str, Any]:
+def _cfg() -> RootConfig:
+    cfg = RootConfig(iso3="NPL", key="hot_flood", boundary=BoundaryConfig())
+    cfg.output.s3.enabled = True
+    cfg.output.s3.bucket = "example-bucket"
+    cfg.output.s3.region = "us-east-1"
+    return cfg
+
+
+def _layer(source_name: str, category: str) -> LayerAssets:
     source = SourceMetadata(
         source_name=source_name,
         snapshot_label="2026-08-24",
         dataset_source="OpenStreetMap",
         generated_utc="2026-08-24T00:00:00Z",
         oex_version="0.4.10",
-        license_label="ODbL 1.0",
+        license_label="Open Database License (ODC-ODbL)",
         license_url=None,
         pcode_source_date=None,
         boundary="user geom",
@@ -36,97 +46,162 @@ def _payload(source_name: str, category: str) -> dict[str, Any]:
             temporal=None,
         ),
     )
-    return {"category": category, **source.to_payload()}
+    return LayerAssets(
+        category=CategoryConfig(name=category),
+        source_metadata=source,
+        dataset_name=f"hot_flood_npl_{category}",
+    )
 
 
-def _envelope() -> dict[str, Any]:
-    return {
-        "dataset": "hot_flood_npl",
-        "layers": [
-            _payload("osm", "buildings"),
-            _payload("overture", "points_of_interest"),
-        ],
-    }
+def _published(
+    *pairs: tuple[str, str], dataset_name: str = "hot_flood_npl"
+) -> list[dict[str, Any]]:
+    """What a reader fetches: the Collection first, then the Item behind each item link."""
+    layers = [_layer(source, category) for source, category in pairs]
+    collection = build_collection(
+        dataset_name=dataset_name,
+        title="Nepal flood affected area data",
+        description="Vector data for the flood affected area.",
+        layers=layers,
+        cfg=_cfg(),
+    )
+    items = [build_item(layer, _cfg()) for layer in layers]
+    return [to_payload(collection), *(to_payload(item) for item in items)]
 
 
-def test_metadata_entries_passes_through_a_single_payload() -> None:
-    """A per-category resource yields itself under its own name."""
-    name = "hot_flood_npl_buildings_osm_metadata.json"
-    payload = _payload("osm", "buildings")
+def test_the_collection_names_where_every_item_lives() -> None:
+    """The reader walks rel=item; a Collection that names none describes nothing."""
+    collection, *_ = _published(("osm", "buildings"), ("overture", "points_of_interest"))
 
-    assert _metadata_entries(name, payload) == [(name, payload)]
+    assert [href.rsplit("/", 1)[-1] for href in _item_hrefs(collection, f"{BASE}/c.json")] == [
+        "hot_flood_npl_buildings_osm_item.json",
+        "hot_flood_npl_points_of_interest_overture_item.json",
+    ]
 
 
-def test_metadata_entries_expands_a_combined_envelope() -> None:
-    """A combined dataset's envelope yields one entry per layer it describes."""
-    entries = _metadata_entries("hot_flood_npl_metadata.json", _envelope())
+def test_an_entry_name_resolves_to_its_category_slug() -> None:
+    """The dataset page matches layers by name; an unresolvable one drops a layer."""
+    collection, *items = _published(("osm", "buildings"), ("overture", "points_of_interest"))
+    names = [_entry_name(collection, item) for item in items]
 
-    assert [name for name, _ in entries] == [
+    assert names == [
         "hot_flood_npl_buildings_osm_metadata.json",
         "hot_flood_npl_points_of_interest_overture_metadata.json",
     ]
+    assert [_slug_from_metadata_name(n, PREFIX, CATEGORIES) for n in names] == [
+        "buildings",
+        "points_of_interest",
+    ]
 
 
-def test_expanded_entry_names_resolve_to_their_category_slug() -> None:
-    """The synthesised names are the form the slug matcher reads, underscores included."""
-    entries = _metadata_entries("hot_flood_npl_metadata.json", _envelope())
+def test_entry_names_come_from_the_collection_not_the_resource_filename() -> None:
+    """A combined dataset names one metadata resource per source, and the resource name
+    is a human-readable title that carries no filename convention."""
+    collection, item = _published(("overture", "buildings"))
 
-    slugs = [_slug_from_metadata_name(name, PREFIX, CATEGORIES) for name, _ in entries]
-    assert slugs == ["buildings", "points_of_interest"]
+    assert _entry_name(collection, item) == "hot_flood_npl_buildings_overture_metadata.json"
 
 
-def test_load_source_metadata_reads_a_combined_envelope() -> None:
-    """The envelope is not a source payload, so parsing it whole raised KeyError."""
+def test_a_custom_dataset_name_carries_into_the_entry_names() -> None:
+    """`hdx.combined.name` can differ from key + iso3; resources follow the dataset name."""
+    dt_name = "hot_flood_npl_corridor"  # key is hot_flood_corridor, so they differ
+    collection, item = _published(("osm", "buildings"), dataset_name=dt_name)
+    name = _entry_name(collection, item)
+
+    assert name == f"{dt_name}_buildings_osm_metadata.json"
+    assert (
+        _slug_from_metadata_name(name, f"{dt_name}_", [CategoryConfig(name="buildings")])
+        == "buildings"
+    )
+    # A key+iso3 prefix matches nothing and would drop every panel.
+    assert (
+        _slug_from_metadata_name(
+            name, "hot_flood_corridor_npl_", [CategoryConfig(name="buildings")]
+        )
+        is None
+    )
+
+
+def test_load_source_metadata_follows_the_collection_to_its_items() -> None:
+    """The Collection carries no layer detail, so a reader that stops there sees nothing."""
     resources = [
         {
             "name": "Layer Metadata, JSON",
-            "url": "https://example.invalid/hot_flood_npl_metadata.json",
+            "url": f"{BASE}/hot_flood_npl_metadata.json",
         }
     ]
+    fetched = _published(("osm", "buildings"), ("overture", "points_of_interest"))
 
-    with patch("oex.hdx_publisher._download_json", return_value=_envelope()):
+    with patch("oex.hdx_publisher._download_json", side_effect=fetched):
         loaded = _load_source_metadata(resources, "hot_flood_npl")
 
-    assert [source.source_name for _, source in loaded] == ["osm", "overture"]
+    assert [layer.source.source_name for layer in loaded] == ["osm", "overture"]
+    assert [layer.source.metadata.feature_count for layer in loaded] == [3, 3]
+    assert [_slug_from_metadata_name(layer.name, PREFIX, CATEGORIES) for layer in loaded] == [
+        "buildings",
+        "points_of_interest",
+    ]
 
 
-def test_expanded_names_ignore_the_resource_filename() -> None:
-    """Per-source metadata resources must still resolve to their category slug.
-
-    A combined dataset names one metadata resource per source, so the entry names
-    come from the envelope rather than from the file carrying it.
-    """
-    entries = _metadata_entries("hot_flood_npl_overture_metadata.json", _envelope())
-
-    slugs = [_slug_from_metadata_name(name, PREFIX, CATEGORIES) for name, _ in entries]
-    assert slugs == ["buildings", "points_of_interest"]
-
-
-def test_both_source_envelopes_contribute_their_layers() -> None:
+def test_every_source_on_a_dataset_contributes_its_layers() -> None:
     """Each source keeps its own resource, so the pair covers every layer."""
+    resources = [
+        {"name": "Layer Metadata (OSM), JSON", "url": f"{BASE}/hot_flood_npl_osm_metadata.json"},
+        {
+            "name": "Layer Metadata (Overture), JSON",
+            "url": f"{BASE}/hot_flood_npl_overture_metadata.json",
+        },
+    ]
+    fetched = [*_published(("osm", "buildings")), *_published(("overture", "buildings"))]
+
+    with patch("oex.hdx_publisher._download_json", side_effect=fetched):
+        loaded = _load_source_metadata(resources, "hot_flood_npl")
+
+    assert [layer.source.source_name for layer in loaded] == ["osm", "overture"]
+    assert {_slug_from_metadata_name(layer.name, PREFIX, CATEGORIES) for layer in loaded} == {
+        "buildings"
+    }
+
+
+def test_metadata_is_found_by_filename_not_display_name() -> None:
+    """Resources carry human-readable names, so the filename is what identifies them."""
     resources = [
         {
             "name": "Layer Metadata (OSM), JSON",
-            "url": "https://example.invalid/hot_flood_npl_osm_metadata.json",
-        },
-        {
-            "name": "Layer Metadata (Overture), JSON",
-            "url": "https://example.invalid/hot_flood_npl_overture_metadata.json",
-        },
+            "url": f"{BASE}/hot_flood_npl_osm_metadata.json",
+        }
     ]
-    osm = {"dataset": "hot_flood_npl", "layers": [_payload("osm", "buildings")]}
-    overture = {"dataset": "hot_flood_npl", "layers": [_payload("overture", "buildings")]}
-
-    with patch("oex.hdx_publisher._download_json", side_effect=[osm, overture]):
+    with patch("oex.hdx_publisher._download_json", side_effect=_published(("osm", "buildings"))):
         loaded = _load_source_metadata(resources, "hot_flood_npl")
 
-    assert [source.source_name for _, source in loaded] == ["osm", "overture"]
-    assert {_slug_from_metadata_name(n, PREFIX, CATEGORIES) for n, _ in loaded} == {"buildings"}
+    assert [layer.source.source_name for layer in loaded] == ["osm"]
+
+
+def test_unrelated_resources_are_ignored() -> None:
+    """A renamed zip must not be mistaken for a metadata document."""
+    resources = [
+        {
+            "name": "Buildings (OSM), GeoPackage",
+            "url": f"{BASE}/hot_flood_npl_buildings_osm_gpkg.zip",
+        }
+    ]
+    assert _load_source_metadata(resources, "hot_flood_npl") == []
+
+
+def test_a_broken_metadata_resource_fails_the_publish_rather_than_dropping_layers() -> None:
+    """A silently skipped resource publishes a report missing half the dataset."""
+    import pytest
+
+    resources = [{"name": "Layer Metadata, JSON", "url": f"{BASE}/hot_flood_npl_metadata.json"}]
+    with patch("oex.hdx_publisher._download_json", return_value={"id": "x"}):
+        with pytest.raises(RuntimeError, match="could not parse"):
+            _load_source_metadata(resources, "hot_flood_npl")
 
 
 def test_resource_names_read_as_layer_and_source() -> None:
     """Resource names are what people scan on HDX, so they must not be filenames."""
-    from oex.hdx_publisher import FORMAT_LABEL, RESOURCE_SOURCE, category_label
+    from oex.hdx_publisher import FORMAT_LABEL, RESOURCE_SOURCE
+    from oex.naming import category_label
 
     category = CategoryConfig(name="points_of_interest")
     stem = "hot_flood_npl_points_of_interest_osm_gpkg"
@@ -139,7 +214,8 @@ def test_resource_names_read_as_layer_and_source() -> None:
 
 def test_format_is_part_of_the_name() -> None:
     """Same-named resources differing only by format get collapsed by ResourceMatcher."""
-    from oex.hdx_publisher import FORMAT_LABEL, RESOURCE_SOURCE, category_label
+    from oex.hdx_publisher import FORMAT_LABEL, RESOURCE_SOURCE
+    from oex.naming import category_label
 
     category = CategoryConfig(name="buildings")
     names = {
@@ -159,35 +235,8 @@ def test_license_ids_render_as_names() -> None:
     assert license_label("ODbL 1.0") == "ODbL 1.0"
 
 
-def test_metadata_is_found_by_filename_not_display_name() -> None:
-    """Resources carry human-readable names, so the filename is what identifies them."""
-    resources = [
-        {
-            "name": "Layer Metadata (OSM), JSON",
-            "url": "https://example.invalid/a/hot_flood_npl_osm_metadata.json",
-        }
-    ]
-    with patch("oex.hdx_publisher._download_json", return_value=_envelope()):
-        loaded = _load_source_metadata(resources, "hot_flood_npl")
-
-    assert [s.source_name for _, s in loaded] == ["osm", "overture"]
-
-
-def test_unrelated_resources_are_ignored() -> None:
-    """A renamed zip must not be mistaken for a metadata document."""
-    resources = [
-        {
-            "name": "Buildings (OSM), GeoPackage",
-            "url": "https://example.invalid/a/hot_flood_npl_buildings_osm_gpkg.zip",
-        }
-    ]
-    assert _load_source_metadata(resources, "hot_flood_npl") == []
-
-
 def test_tileset_is_found_by_filename_not_display_name() -> None:
-    """The landing map looks up its tileset; renaming the resource must not hide it."""
-    from oex.hdx_publisher import _resource_url
-
+    """The dataset page map looks up its tileset; renaming the resource must not hide it."""
     resources = [
         {
             "name": "Vector Tiles, All Layers (PMTiles)",
@@ -196,27 +245,6 @@ def test_tileset_is_found_by_filename_not_display_name() -> None:
     ]
     assert _resource_url(resources, "hot_flood_npl.pmtiles") == resources[0]["url"]
     assert _resource_url(resources, "other.pmtiles") is None
-
-
-def test_slug_prefix_follows_a_custom_dataset_name() -> None:
-    """`hdx.combined.name` can differ from key + iso3; resources follow the dataset name."""
-    dt_name = "hot_flood_npl_corridor"  # key is hot_flood_corridor, so they differ
-    envelope = {"dataset": dt_name, "layers": [_payload("osm", "buildings")]}
-    entries = _metadata_entries(f"{dt_name}_osm_metadata.json", envelope)
-
-    name = entries[0][0]
-    assert name == f"{dt_name}_buildings_osm_metadata.json"
-    assert (
-        _slug_from_metadata_name(name, f"{dt_name}_", [CategoryConfig(name="buildings")])
-        == "buildings"
-    )
-    # The old key+iso3 prefix would have matched nothing and dropped every panel.
-    assert (
-        _slug_from_metadata_name(
-            name, "hot_flood_corridor_npl_", [CategoryConfig(name="buildings")]
-        )
-        is None
-    )
 
 
 class _FakeResource(dict):
@@ -268,3 +296,25 @@ def test_ordering_ignores_case() -> None:
     dataset = _FakeDataset(["beta", "Alpha"])
     HdxPublisher._sort_resources_by_name(dataset, "ds")
     assert [r["name"] for r in dataset.get_resources()] == ["Alpha", "beta"]
+
+
+def test_only_layers_on_a_shared_tileset_filter_it_by_category_and_source() -> None:
+    """Only the combined tileset carries `category` and `source`; filtering a layer's own
+    tileset on them draws nothing."""
+    from oex.hdx_publisher import PublishedLayer, _page_layers
+
+    published = {"buildings": [PublishedLayer("b", _layer("osm", "buildings").source_metadata, [])]}
+    cfg = _cfg()
+    cfg.categories = [CategoryConfig(name="buildings")]
+    (own,) = _page_layers(cfg, published, None)
+    (shared,) = _page_layers(cfg, published, ("all.pmtiles", "all"))
+    assert own.match_key is None
+    assert shared.match_key == "buildings|osm"
+
+
+def test_a_category_tileset_is_read_with_the_category_layer() -> None:
+    from oex.hdx_publisher import _category_tilesets
+
+    url = "https://example.invalid/NPL/buildings/hotosm_npl_buildings_osm.pmtiles"
+    resources = [{"name": "Buildings (OSM), Vector Tiles (PMTiles)", "url": url}]
+    assert _category_tilesets(resources, "buildings") == {"osm": (url, "buildings")}

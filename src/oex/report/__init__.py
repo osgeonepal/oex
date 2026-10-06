@@ -1,5 +1,5 @@
-"""Multi-source HTML report rendered from per-source metadata.json payloads."""
+"""Dataset page rendered from the STAC Items a run writes."""
 
-from oex.report.html import SourceMetadata, render_report
+from oex.report.html import SourceMetadata
 
-__all__ = ["SourceMetadata", "render_report"]
+__all__ = ["SourceMetadata"]

@@ -21,11 +21,8 @@ from oex.sources.file import (
 
 @pytest.fixture
 def utm_shapefile(tmp_path: Path, conn) -> Path:
-    """Two points near Kathmandu, stored in UTM 45N rather than lon/lat.
-
-    Written with DuckDB rather than geopandas, which oex does not depend on, so the
-    file source cannot end up silently untested.
-    """
+    """Two points near Kathmandu in UTM 45N, written with DuckDB because oex does not depend on
+    geopandas."""
     path = tmp_path / "bridges.shp"
     conn.execute("""
         CREATE OR REPLACE TABLE fixture AS
