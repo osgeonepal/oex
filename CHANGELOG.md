@@ -64,6 +64,12 @@ and is auto-managed by [commitizen](https://commitizen-tools.github.io/commitize
 
 - **config**: config fix
 
+## v0.4.17 (2026-10-20)
+
+### Fix
+
+- **enhance**: enhances retry download ,fixes export time , fixes memory limit
+
 ## v0.4.16 (2026-10-06)
 
 ### Feat
