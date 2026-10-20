@@ -3,6 +3,8 @@ caching, the engine-aware query_for and the Geofabrik to planet fallback.
 """
 
 import json
+import os
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -364,7 +366,7 @@ def test_geofabrik_engine_runs_strategy_b_pipeline(tmp_path: Path) -> None:
 
     with (
         patch("oex.osm.runner.lookup_country", side_effect=fake_lookup_country),
-        patch("oex.osm.runner.requests.head", return_value=_StubHead()),
+        patch("oex.http.session.head", return_value=_StubHead()),
         patch("oex.osm.runner.download_pbf", side_effect=fake_download),
         patch(
             "oex.osm.runner.resolve_boundary",
@@ -525,7 +527,7 @@ def test_geofabrik_download_retries_twice_before_giving_up(tmp_path: Path) -> No
 
     with (
         patch("oex.osm.runner.lookup_country", side_effect=fake_lookup_country),
-        patch("oex.osm.runner.requests.head", return_value=_StubHead()),
+        patch("oex.http.session.head", return_value=_StubHead()),
         patch("oex.osm.runner.download_pbf", side_effect=always_fails),
         # zero out backoff so the test stays fast
         patch("oex.osm.runner._GEOFABRIK_RETRY_BACKOFF_SECONDS", 0),
@@ -596,4 +598,16 @@ def test_planet_requires_an_identity(tmp_path: Path) -> None:
     cfg = _planet_cfg(tmp_path, planet_pbf=planet_pbf)
     cfg.iso3 = ""
     with pytest.raises(ValueError, match="output.s3.folder"):
+        OsmRunner().prepare(cfg)
+
+
+def test_a_planet_older_than_the_update_frequency_is_refused(tmp_path: Path) -> None:
+    """Publishing it would put the dataset past its HDX due date on arrival."""
+    planet = tmp_path / "planet.osm.pbf"
+    planet.write_bytes(b"\x00")
+    two_months_ago = time.time() - 60 * 86400
+    os.utime(planet, (two_months_ago, two_months_ago))
+    cfg = _planet_cfg(tmp_path, planet_pbf=planet)
+    cfg.frequency = "monthly"
+    with pytest.raises(RuntimeError, match="older than"):
         OsmRunner().prepare(cfg)

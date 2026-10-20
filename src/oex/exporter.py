@@ -2,7 +2,6 @@
 
 import concurrent.futures
 import itertools
-import json
 import os
 import shutil
 import threading
@@ -421,32 +420,6 @@ class Exporter:
                         hdx_dataset=entry.hdx_dataset,
                     )
                 )
-            if (
-                entry
-                and self._state.is_built(slug, snapshot_label=snapshot_label)
-                and publisher is not None
-            ):
-                logger.info(
-                    "%s resume: already built (%s); attempting upload only",
-                    cat_tag,
-                    entry.built_utc,
-                )
-                try:
-                    return _early(
-                        self._upload_only(
-                            category=category,
-                            cat_start=cat_start,
-                            cat_tag=cat_tag,
-                            entry=entry,
-                            publisher=publisher,
-                            query=query,
-                            out_root=out_root,
-                            slug=slug,
-                        )
-                    )
-                except Exception:
-                    logger.exception("%s resume upload failed; rebuilding", cat_tag)
-                    self._state.reset(slug)
 
         logger.info(
             "%s source: %s | snapshot: %s",
@@ -636,13 +609,6 @@ class Exporter:
                 geoparquet_path = write_geoparquet(
                     conn, table, out_root / "_layers" / f"{slug}.parquet"
                 )
-                geoparquet_url = self._stage_layer_parquet(geoparquet_path, slug, cat_tag)
-                if publish_geoparquet and self._cfg.hdx.push and geoparquet_url is None:
-                    raise ValueError(
-                        "output.formats includes 'geoparquet' and hdx.push is true, but "
-                        "output.s3.enabled is false: the HDX resource points at the staged "
-                        "object, so there is nothing to publish"
-                    )
 
             pmtiles_extra: list[ExtraResource] = []
             pmtiles_path: Path | None = None
@@ -669,6 +635,17 @@ class Exporter:
                     )
                 )
 
+            # Taken before staging so the S3 upload stays out of the build time.
+            export_seconds = time.time() - cat_start
+            if geoparquet_path is not None:
+                geoparquet_url = self._stage_layer_parquet(geoparquet_path, slug, cat_tag)
+                if publish_geoparquet and self._cfg.hdx.push and geoparquet_url is None:
+                    raise ValueError(
+                        "output.formats includes 'geoparquet' and hdx.push is true, but "
+                        "output.s3.enabled is false: the HDX resource points at the staged "
+                        "object, so there is nothing to publish"
+                    )
+
             if want_item and source_metadata is not None:
                 # After the artifacts exist, so the layer can name every one as an asset.
                 layer = LayerAssets(
@@ -681,6 +658,7 @@ class Exporter:
                     geoparquet_path=geoparquet_path,
                     pmtiles_url=self._artifact_url(pmtiles_path, slug),
                     pmtiles_path=pmtiles_path,
+                    export_seconds=export_seconds,
                 )
                 item_path = self._write_layer_metadata(layer, out_root, metadata_json_path)
 
@@ -1371,51 +1349,6 @@ class Exporter:
         except HDXError:
             logger.exception("%s metadata refresh failed", cat_tag)
 
-    def _upload_only(
-        self,
-        *,
-        category: CategoryConfig,
-        cat_start: float,
-        cat_tag: str,
-        entry,  # CategoryState
-        publisher: HdxPublisher,
-        query: SourceQuery,
-        out_root: Path,
-        slug: str,
-    ) -> CategoryResult:
-        zip_paths = [Path(p) for p in entry.zip_paths]
-        metadata_json_path = Path(entry.metadata_json_path) if entry.metadata_json_path else None
-        item_path = out_root / item_filename(
-            layer_dataset_name(self._cfg, category), self._runner.name
-        )
-        logger.info("%s uploading %d cached artifact(s) to HDX...", cat_tag, len(zip_paths))
-        t_min, t_max = _temporal_bounds_from_item_file(item_path)
-        ctx = PublishContext(
-            dataset_source=query.dataset_source,
-            snapshot_date=query.snapshot_date,
-            source_name=self._runner.name,
-            metadata_json_path=metadata_json_path,
-            combined_report_enabled=self._cfg.output.report.enabled,
-            output_dir=out_root,
-            s3=self._cfg.output.s3,
-            temporal_min=t_min,
-            temporal_max=t_max,
-        )
-        dataset_name = publisher.publish(self._cfg, category, zip_paths, ctx)
-        if self._state is not None:
-            self._state.mark_uploaded(slug, hdx_dataset=dataset_name)
-        if self._cfg.output.remove_after_upload:
-            _remove_uploaded_outputs(zip_paths, metadata_json_path, [item_path])
-            logger.info("%s removed %d local output(s) after upload", cat_tag, len(zip_paths))
-        return CategoryResult(
-            name=category.name,
-            status="ok",
-            feature_count=0,
-            duration_s=time.time() - cat_start,
-            zip_paths=zip_paths,
-            hdx_dataset=dataset_name,
-        )
-
     def _materialise_outputs(
         self,
         *,
@@ -1631,18 +1564,6 @@ def _combined_temporal_bounds(
         if hi is not None:
             maxs.append(hi)
     return (min(mins) if mins else None, max(maxs) if maxs else None)
-
-
-def _temporal_bounds_from_item_file(
-    path: Path | None,
-) -> tuple[datetime | None, datetime | None]:
-    """The data's own time range, which dates the HDX dataset ahead of the snapshot."""
-    if path is None or not path.exists():
-        return (None, None)
-    temporal = json.loads(path.read_text(encoding="utf-8"))["properties"].get("oex:temporal")
-    if not temporal:
-        return (None, None)
-    return (_parse_temporal(temporal.get("min")), _parse_temporal(temporal.get("max")))
 
 
 def _format_notes(fmt: str) -> list[str]:

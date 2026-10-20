@@ -28,7 +28,8 @@ jobs:
         with:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tippecanoe
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libsqlite3-dev zlib1g-dev
+      - run: sudo scripts/install-tippecanoe.sh
       - run: uv sync --all-groups
       - run: uv run pytest --cov-report=xml
 
@@ -40,6 +41,5 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tippecanoe
       - run: uv sync --all-groups
       - uses: pre-commit/action@v3.0.1

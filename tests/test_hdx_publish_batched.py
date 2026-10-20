@@ -730,3 +730,117 @@ def test_related_datasets_link_hdx_and_only_when_published_there() -> None:
     # Without HDX no dataset page is published anywhere, so a link would be a dead end.
     assert related_dataset_links(_grid_cfg(push=False, s3=True), buildings) == []
     assert related_dataset_links(_grid_cfg(push=True, s3=True, related=False), buildings) == []
+
+
+def test_a_purging_update_keeps_the_report_the_same_publish_rebuilds() -> None:
+    """Purged and re-added, the report would get a new HDX id and break links to it."""
+    from hdx.api.configuration import Configuration
+    from hdx.data.dataset import Dataset
+    from hdx.data.resource import Resource
+
+    from oex.hdx_publisher import HdxPublisher
+
+    base = "https://bucket.s3.amazonaws.com/ISO3/NPL/buildings/"
+    Configuration.delete()
+    Configuration.create(hdx_site="demo", user_agent="oex-test", hdx_key="dummy")
+    try:
+        existing = Dataset({"id": "dataset-id", "name": "hotosm_npl_buildings", "owner_org": "org"})
+        existing.add_update_resources(
+            [
+                Resource(
+                    {
+                        "id": "report",
+                        "package_id": "dataset-id",
+                        "name": "Buildings, Data Quality Report",
+                        "url": f"{base}hotosm_npl_buildings_report.html",
+                        "format": "HTML",
+                    }
+                ),
+                Resource(
+                    {
+                        "id": "stale",
+                        "package_id": "dataset-id",
+                        "name": "old",
+                        "url": f"{base}old.geojson",
+                        "format": "GeoJSON",
+                    }
+                ),
+            ],
+            ignore_datasetid=True,
+        )
+        dataset = Dataset({"name": "hotosm_npl_buildings"})
+        dataset.add_update_resource(
+            Resource(
+                {
+                    "name": "Buildings (OSM), GeoPackage",
+                    "url": f"{base}hotosm_npl_buildings_osm_gpkg.zip",
+                    "format": "GeoPackage",
+                }
+            )
+        )
+        publisher = HdxPublisher.__new__(HdxPublisher)
+        publisher._owner_org = "org"
+        sent: list[list[str | None]] = []
+
+        def update_in_hdx(**_: object) -> None:
+            sent.append([r.get("id") for r in dataset.get_resources()])
+            for number, resource in enumerate(dataset.get_resources()):
+                if not resource.get("id"):
+                    resource["id"] = f"assigned-{number}"
+
+        with (
+            patch("hdx.data.dataset.Dataset.read_from_hdx", return_value=existing),
+            patch.object(dataset, "update_in_hdx", side_effect=update_in_hdx),
+        ):
+            publisher._create_or_update(
+                dataset,
+                "hotosm_npl_buildings",
+                remove_additional=True,
+                keep_files=frozenset({"hotosm_npl_buildings_report.html"}),
+            )
+    finally:
+        Configuration.delete()
+    assert sent == [[None, "report"]]
+
+
+def test_a_renamed_page_keeps_its_hdx_resource(tmp_path: Path) -> None:
+    """HDX matches by id then name, so only the URL ties a retitled page to its resource."""
+    from hdx.api.configuration import Configuration
+    from hdx.data.dataset import Dataset
+    from hdx.data.resource import Resource
+
+    from oex.hdx_publisher import HdxPublisher
+
+    url = "https://bucket.s3.amazonaws.com/ISO3/NPL/buildings/hotosm_npl_buildings_report.html"
+    Configuration.delete()
+    Configuration.create(hdx_site="demo", user_agent="oex-test", hdx_key="dummy")
+    try:
+        dataset = Dataset({"id": "dataset-id", "name": "hotosm_npl_buildings"})
+        dataset.add_update_resource(
+            Resource({"id": "report", "name": "Old title", "url": url, "format": "HTML"})
+        )
+        publisher = HdxPublisher.__new__(HdxPublisher)
+        renamed = Resource({"name": "Buildings, Data Quality Report", "url": url, "format": "HTML"})
+        sent: list[list[tuple[str | None, str]]] = []
+        with (
+            patch.object(publisher, "_make_resource_for_path", return_value=renamed),
+            patch.object(
+                dataset,
+                "update_in_hdx",
+                side_effect=lambda **_: sent.append(
+                    [(r.get("id"), r["name"]) for r in dataset.get_resources()]
+                ),
+            ),
+        ):
+            publisher._publish_html_viz(
+                dataset=dataset,
+                dt_name="hotosm_npl_buildings",
+                html_path=tmp_path / "hotosm_npl_buildings_report.html",
+                description="report",
+                iso3="NPL",
+                category_slug="buildings",
+                s3_cfg=None,
+            )
+    finally:
+        Configuration.delete()
+    assert sent == [[("report", "Buildings, Data Quality Report")]]

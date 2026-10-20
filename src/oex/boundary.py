@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from typing import Any
 
 import requests
-from pyproj import CRS, Transformer
+import shapely
+from pyproj import CRS, Geod, Transformer
 from shapely.geometry import mapping, shape
 from shapely.ops import transform
 
@@ -33,6 +34,16 @@ class Boundary:
     bbox: tuple[float, float, float, float]
     geojson: str
     source: str
+
+
+def area_sq_km(geometry: dict[str, Any]) -> float:
+    """Geodesic area on the WGS84 ellipsoid, holes excluded."""
+    # pyproj signs each ring by its winding, and drawn boundaries do not always follow the
+    # right-hand rule, so an unoriented hole would add area.
+    area, _perimeter = Geod(ellps="WGS84").geometry_area_perimeter(
+        shapely.orient_polygons(shape(geometry))
+    )
+    return abs(area) / 1_000_000
 
 
 _lock = threading.Lock()

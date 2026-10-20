@@ -127,6 +127,29 @@ def test_write_pmtiles_produces_archive(
     assert header["max_zoom"] == 8
 
 
+def test_a_tileset_is_named_after_its_file_not_the_build_directory(
+    conn_with_table: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
+    from pmtiles.reader import MmapSource, Reader
+
+    from oex.writers import write_pmtiles
+
+    out = write_pmtiles(
+        conn_with_table,
+        "features",
+        tmp_path / "hotosm_npl_roads_osm.pmtiles",
+        layer="features",
+        min_zoom=0,
+        max_zoom=4,
+        max_extra_zooms=0,
+    )
+    with out.open("rb") as handle:
+        metadata = Reader(MmapSource(handle)).metadata()
+    assert metadata["name"] == "hotosm_npl_roads_osm"
+    assert metadata["description"] == "hotosm_npl_roads_osm"
+    assert "/" not in metadata["generator_options"]
+
+
 def test_write_geoparquet_roundtrips_as_geometry(
     conn_with_table: duckdb.DuckDBPyConnection, tmp_path: Path
 ) -> None:
@@ -481,7 +504,7 @@ def _fake_tippecanoe(directory: Path, body: str) -> None:
 def test_a_missing_tile_builder_is_named_in_the_error(fresh_tile_builder: Path) -> None:
     from oex.writers import TileBuilderError, tile_builder
 
-    with pytest.raises(TileBuilderError, match="needs tippecanoe on PATH"):
+    with pytest.raises(TileBuilderError, match="needs tippecanoe 2.81 or later on PATH"):
         tile_builder()
 
 
@@ -490,15 +513,15 @@ def test_a_tippecanoe_older_than_the_options_oex_passes_is_refused(
 ) -> None:
     from oex.writers import TileBuilderError, tile_builder
 
-    _fake_tippecanoe(fresh_tile_builder, "echo 'tippecanoe v2.30.9' >&2")
-    with pytest.raises(TileBuilderError, match="needs 2.31.0 or later"):
+    _fake_tippecanoe(fresh_tile_builder, "echo 'tippecanoe v2.80.0' >&2")
+    with pytest.raises(TileBuilderError, match="needs 2.81.0 or later"):
         tile_builder()
 
 
 def test_a_recent_enough_tippecanoe_is_accepted(fresh_tile_builder: Path) -> None:
     from oex.writers import tile_builder
 
-    _fake_tippecanoe(fresh_tile_builder, "echo 'tippecanoe v2.31.0' >&2")
+    _fake_tippecanoe(fresh_tile_builder, "echo 'tippecanoe v2.81.0' >&2")
     assert tile_builder() == str(fresh_tile_builder / "tippecanoe")
 
 
@@ -644,7 +667,7 @@ def test_a_failed_tile_build_reports_tippecanoe_and_leaves_nothing_behind(
 
     _fake_tippecanoe(
         fresh_tile_builder,
-        '[ "$1" = --version ] && { echo "tippecanoe v2.80.0" >&2; exit 0; }\n'
+        '[ "$1" = --version ] && { echo "tippecanoe v2.81.0" >&2; exit 0; }\n'
         ': > "${1#--output=}"\necho "disk full" >&2\nexit 1',
     )
     out_dir = tmp_path / "out"

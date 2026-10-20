@@ -1,5 +1,5 @@
-"""Per country and source resume state, so a partial run skips finished categories and an
-HDX rate-limit storm does not mean rebuilding zips. A new snapshot always rebuilds.
+"""Per country and source resume state, so a partial run skips categories already uploaded.
+A new snapshot always rebuilds.
 """
 
 import json

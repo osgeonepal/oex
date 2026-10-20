@@ -85,12 +85,9 @@ hdx:
   methodology: Other
   methodology_other: Open Source Geographic information
   title_template: ""
-  # Destructive: deletes every existing resource on the dataset before upload.
   purge_existing_resources: false
-  # Publish every category onto ONE HDX dataset instead of one per category.
+  time_period_start: null
   combine: false
-  # Metadata for the single combined dataset. Same shape as a category's hdx
-  # block. Empty values fall back to what oex derives from the categories.
   combined:
     name: ""
     title: ""

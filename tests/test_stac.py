@@ -50,6 +50,7 @@ def _layer(
     bbox: tuple[float, float, float, float] | None = NPL_BBOX,
     artifacts: list[str] | None = None,
     geoparquet_url: str | None = None,
+    export_seconds: float | None = None,
 ) -> LayerAssets:
     slug = slugify(name)
     report = MetadataReport(
@@ -99,6 +100,7 @@ def _layer(
         dataset_name=dataset_name or f"hot_flood_npl_{slug}",
         artifacts=[Path(n) for n in names],
         geoparquet_url=geoparquet_url,
+        export_seconds=export_seconds,
         pmtiles_url=pmtiles_url,
     )
 
@@ -419,20 +421,6 @@ def test_a_per_layer_tileset_is_an_item_asset():
     assert item.assets["pmtiles"].roles == ["visual", "overview"]
 
 
-def test_a_resumed_upload_reads_the_time_period_out_of_an_item(tmp_path):
-    """Resume reads the file, not the in-memory object, so the dataset date rides on it."""
-    from oex.exporter import _temporal_bounds_from_item_file
-
-    path = tmp_path / "item.json"
-    path.write_text(
-        json.dumps(to_payload(build_item(_rich_layer(), _cfg()))),
-        encoding="utf-8",
-    )
-    low, high = _temporal_bounds_from_item_file(path)
-    assert low is not None and high is not None
-    assert (low.date().isoformat(), high.date().isoformat()) == ("2026-08-01", "2026-09-18")
-
-
 def test_every_layer_of_a_collection_resolves_back_to_its_category():
     """The dataset page matches layers by filename; an unresolvable name drops a layer."""
     from oex.hdx_publisher import _entry_name, _slug_from_metadata_name
@@ -657,3 +645,12 @@ def test_a_configured_catalog_becomes_the_root_and_parent_a_client_walks_back_to
 @pytest.mark.network
 def test_a_collection_under_a_catalog_satisfies_the_stac_spec():
     pystac.validation.validate_dict(to_payload(_collection(_layer(), cfg=_under_grid(_cfg()))))
+
+
+def test_an_item_records_how_long_its_layer_took_to_build():
+    item = build_item(_layer(export_seconds=41.27), _cfg())
+    assert item.properties["oex:export_seconds"] == 41.3
+
+
+def test_an_item_without_a_measured_build_carries_no_build_time():
+    assert "oex:export_seconds" not in build_item(_layer(), _cfg()).properties

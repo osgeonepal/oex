@@ -43,7 +43,9 @@ For each category that succeeds:
 1. The HDX dataset is created or updated under `<key>_<iso3>_<category>`.
 2. Each format zip is uploaded as a resource (`.gpkg.zip`, `.shp.zip`,
    `.geojson.zip`).
-3. The dataset's time period is set to the source snapshot date.
+3. The dataset's time period is set to the source snapshot date, or runs from
+   `hdx.time_period_start` (YYYY-MM-DD) to the snapshot date when that is set. A category's
+   `temporal.column`, when the data has it, sets the period from the data's own dates instead.
 
 Per-category metadata comes from each category's `hdx:` block:
 
@@ -186,11 +188,12 @@ output:
 ```
 
 The map lives on the report page, and it needs S3 to render, for the reason given
-below. Tilesets are built with [tippecanoe](https://github.com/felt/tippecanoe) 2.31
-or later, which has to be on `PATH`. Debian bookworm-backports, Debian trixie and
-Ubuntu 24.04 package it as `tippecanoe`. A run with PMTiles enabled checks for it
-before exporting anything. Every feature, however small, is kept at the top zoom,
-and tippecanoe adds zooms past `max_zoom` until one holds every feature, up to
+below. Tilesets are built with [tippecanoe](https://github.com/felt/tippecanoe) 2.81
+or later, which has to be on `PATH`. The Docker image includes it. Elsewhere, build it
+with `scripts/install-tippecanoe.sh`, since no tagged release or distribution package
+is that recent. A run with PMTiles enabled checks for it before exporting anything.
+Every feature, however small, is kept at the top zoom, and tippecanoe adds zooms past
+`max_zoom` until one holds every feature, up to
 `max_extra_zooms` (default 4) more, and 0 turns this off. Each added zoom makes the
 archive larger. Past that limit tippecanoe drops the densest features from the top zoom. A category's
 tileset has one layer named for the category, such as `buildings`, so one map style serves
@@ -325,7 +328,8 @@ layer publishes as an asset:
     "proj:code": "EPSG:4326",
     "table:row_count": 20403,
     "table:columns": [{"name": "id", "type": "VARCHAR"}],
-    "oex:snapshot": "2026-09-18T03:55:55Z"
+    "oex:snapshot": "2026-09-18T03:55:55Z",
+    "oex:export_seconds": 41.3
   },
   "assets": {
     "gpkg": {
@@ -351,6 +355,9 @@ layer, so one dataset link always resolves to one Collection.
 for, such as null counts and top values, sit beside them under `oex:` keys, and are
 what oex's own report reads back. Treat them as internal: the layer's GeoParquet is
 the source to query for statistics.
+
+`oex:export_seconds` on an Item is the time from the start of the layer to its last local
+file, in seconds, including reading the source. Uploads to S3 and HDX are not counted.
 
 The Collection points at its own published address with `rel="self"` and back at the
 HDX dataset page with `rel="via"`. Under `hdx.combine` the merged tileset is a

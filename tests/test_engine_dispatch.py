@@ -248,7 +248,7 @@ categories:
         "oex.osm.runner.lookup_country",
         lambda *a, **k: type("E", (), {"pbf_url": "https://example.com/npl.osm.pbf"})(),
     )
-    monkeypatch.setattr("oex.osm.runner.requests.head", lambda *a, **k: _DatelessHead())
+    monkeypatch.setattr("oex.http.session.head", lambda *a, **k: _DatelessHead())
     monkeypatch.setattr(
         OsmRunner, "_prepare_rawdata", lambda self, cfg_, src: called.append("rawdata")
     )

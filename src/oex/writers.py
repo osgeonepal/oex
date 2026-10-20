@@ -165,8 +165,8 @@ def _write_shapefiles(
     return written
 
 
-# Per the tippecanoe CHANGELOG: 2.31 added --no-tiny-polygon-reduction-at-maximum-zoom.
-TIPPECANOE_MIN_VERSION = (2, 31, 0)
+# Per the tippecanoe CHANGELOG, sorting honours --temporary-directory only from 2.81.
+TIPPECANOE_MIN_VERSION = (2, 81, 0)
 # Per the tippecanoe CHANGELOG, FlatGeobuf integers read as numbers from 2.81, booleans from 2.66.
 _TIPPECANOE_TYPES = {
     "BOOLEAN": "bool",
@@ -195,13 +195,15 @@ class TileBuilderError(RuntimeError):
 @functools.cache
 def tile_builder() -> str:
     """Path to a tippecanoe recent enough for the options oex passes, checked once per process."""
-    path = shutil.which("tippecanoe")
-    if path is None:
+    found = shutil.which("tippecanoe")
+    if found is None:
         raise TileBuilderError(
-            "output.pmtiles needs tippecanoe on PATH: install it with your package manager "
-            "(Debian bookworm-backports, Debian trixie and Ubuntu 24.04 ship it) "
-            "or from github.com/felt/tippecanoe"
+            "output.pmtiles needs tippecanoe 2.81 or later on PATH: use the oex Docker image "
+            "or build it with "
+            "https://github.com/osgeonepal/oex/blob/main/scripts/install-tippecanoe.sh"
         )
+    # Tiles are built with the build directory as cwd, where a relative PATH hit would not resolve.
+    path = os.path.abspath(found)
     reported = subprocess.run([path, "--version"], capture_output=True, text=True, check=True)
     match = re.search(r"(\d+)\.(\d+)\.(\d+)", reported.stdout + reported.stderr)
     if match is None:
@@ -262,12 +264,13 @@ def write_pmtiles(
         )
         built = subprocess.run(
             [
-                tile_builder(),
-                f"--output={building}",
+                "tippecanoe",
+                f"--output={building.name}",
                 f"--layer={layer}",
+                f"--name={out_path.stem}",
                 f"--minimum-zoom={int(min_zoom)}",
                 f"--maximum-zoom={int(max_zoom)}",
-                f"--temporary-directory={work}",
+                "--temporary-directory=.",
                 "--drop-densest-as-needed",
                 # Alone this both enables and caps extension; with the uncapped flag it is ignored.
                 f"--extend-zooms-if-still-dropping-maximum={int(max_extra_zooms)}",
@@ -275,12 +278,13 @@ def write_pmtiles(
                 *attribute_types(conn, table_name),
                 "--force",
                 "--quiet",
-                str(staged),
+                staged.name,
             ],
+            # Relative paths keep the build directory out of the generator_options metadata.
+            executable=tile_builder(),
+            cwd=work,
             capture_output=True,
             text=True,
-            # Per the tippecanoe CHANGELOG, sorting honours --temporary-directory only from 2.81.
-            env={**os.environ, "TMPDIR": work},
         )
         if built.returncode != 0:
             raise TileBuilderError(f"tippecanoe failed on {out_path.name}: {built.stderr.strip()}")

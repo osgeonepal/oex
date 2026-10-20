@@ -33,14 +33,19 @@ RUN apt-get update \
     | bash -s -- --to /usr/local/bin
 
 
+FROM debian:bookworm-slim AS tippecanoe-build
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential curl ca-certificates libsqlite3-dev zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY scripts/install-tippecanoe.sh /tmp/install-tippecanoe.sh
+RUN /tmp/install-tippecanoe.sh
+
+
 FROM python:3.13-slim-bookworm AS runtime
 
-# tippecanoe builds the PMTiles; bookworm carries it only in backports, at 2.52.
-RUN echo "deb http://deb.debian.org/debian bookworm-backports main" \
-        > /etc/apt/sources.list.d/backports.list \
-    && apt-get update \
+RUN apt-get update \
     && apt-get install -y --no-install-recommends osmium-tool \
-    && apt-get install -y --no-install-recommends -t bookworm-backports tippecanoe \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --create-home --uid 1000 app
@@ -50,6 +55,7 @@ WORKDIR /app
 COPY --from=builder --chown=app:app /app/.venv /app/.venv
 COPY --from=builder --chown=app:app /app/src /app/src
 COPY --from=just-fetch /usr/local/bin/just /usr/local/bin/just
+COPY --from=tippecanoe-build /usr/local/bin/tippecanoe /usr/local/bin/tippecanoe
 COPY --chown=app:app justfile /app/justfile
 COPY --chown=app:app configs /app/configs
 COPY --chown=app:app hot_countries.txt /app/hot_countries.txt

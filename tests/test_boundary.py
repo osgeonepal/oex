@@ -6,7 +6,7 @@ import math
 import pytest
 from shapely.geometry import mapping
 
-from oex.boundary import resolve_boundary
+from oex.boundary import area_sq_km, resolve_boundary
 from oex.config.schema import BoundaryConfig
 
 
@@ -154,3 +154,33 @@ def test_buffer_distance_is_true_on_the_ground_not_in_mercator() -> None:
     radius_before = math.sqrt(before / math.pi)
     radius_after = math.sqrt(after / math.pi)
     assert 195 < (radius_after - radius_before) < 205
+
+
+_DEGREE_SQUARE = {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]}
+
+
+def test_a_degree_square_at_the_equator_is_measured_on_the_ellipsoid() -> None:
+    assert area_sq_km(_DEGREE_SQUARE) == pytest.approx(12308.78, abs=0.01)
+
+
+def test_a_hole_is_removed_whatever_its_winding() -> None:
+    """Drawn boundaries do not reliably follow the GeoJSON right-hand rule."""
+    hole_same_winding = {
+        "type": "Polygon",
+        "coordinates": [
+            [[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]],
+            [[0.25, 0.25], [0.75, 0.25], [0.75, 0.75], [0.25, 0.75], [0.25, 0.25]],
+        ],
+    }
+    assert area_sq_km(hole_same_winding) == pytest.approx(9231.61, abs=0.01)
+
+
+def test_every_part_of_a_multipolygon_counts() -> None:
+    two_squares = {
+        "type": "MultiPolygon",
+        "coordinates": [
+            [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]],
+            [[[2, 0], [3, 0], [3, 1], [2, 1], [2, 0]]],
+        ],
+    }
+    assert area_sq_km(two_squares) == pytest.approx(2 * 12308.78, abs=0.02)

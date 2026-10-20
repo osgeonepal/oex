@@ -3,6 +3,7 @@
 import os
 import re
 from collections.abc import Iterator
+from datetime import date
 from importlib import resources
 from pathlib import Path
 from typing import Any, cast
@@ -85,6 +86,7 @@ def load_config(
     _validate_pcodes(container)
     _validate_theme(container)
     _validate_pmtiles(container)
+    _validate_time_period_start(container)
     return container
 
 
@@ -116,6 +118,16 @@ def _validate_pmtiles(cfg: RootConfig) -> None:
     extra = cfg.output.pmtiles.max_extra_zooms
     if extra < 0:
         raise ConfigError(f"output.pmtiles.max_extra_zooms must be 0 or more, got {extra}")
+
+
+def _validate_time_period_start(cfg: RootConfig) -> None:
+    start = cfg.hdx.time_period_start
+    if start is None:
+        return
+    try:
+        date.fromisoformat(start)
+    except ValueError as error:
+        raise ConfigError(f"hdx.time_period_start must be YYYY-MM-DD, got {start!r}") from error
 
 
 def _validate_formats(cfg: RootConfig) -> None:

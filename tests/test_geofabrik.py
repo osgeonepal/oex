@@ -56,7 +56,7 @@ def reset_index_cache() -> None:
     geofabrik._index_cache.clear()
 
 
-@patch("oex.osm.geofabrik.requests.get")
+@patch("oex.http.session.get")
 def test_lookup_country_nepal(mock_get) -> None:
     mock_get.return_value.raise_for_status = lambda: None
     mock_get.return_value.json = lambda: _mock_index()
@@ -68,7 +68,7 @@ def test_lookup_country_nepal(mock_get) -> None:
     assert extract.md5_url == extract.pbf_url + ".md5"
 
 
-@patch("oex.osm.geofabrik.requests.get")
+@patch("oex.http.session.get")
 def test_lookup_country_prefers_country_over_state(mock_get) -> None:
     mock_get.return_value.raise_for_status = lambda: None
     mock_get.return_value.json = lambda: _mock_index()
@@ -82,7 +82,7 @@ def test_lookup_country_unknown_iso3() -> None:
         geofabrik.lookup_country("XYZ")
 
 
-@patch("oex.osm.geofabrik.requests.get")
+@patch("oex.http.session.get")
 def test_lookup_country_no_geofabrik_extract(mock_get) -> None:
     mock_get.return_value.raise_for_status = lambda: None
     mock_get.return_value.json = lambda: {"type": "FeatureCollection", "features": []}
@@ -90,7 +90,7 @@ def test_lookup_country_no_geofabrik_extract(mock_get) -> None:
         geofabrik.lookup_country("NPL")
 
 
-@patch("oex.osm.geofabrik.requests.get")
+@patch("oex.http.session.get")
 def test_index_cached_per_url(mock_get) -> None:
     payload = _mock_index()
     mock_get.return_value.raise_for_status = lambda: None
@@ -101,7 +101,7 @@ def test_index_cached_per_url(mock_get) -> None:
     assert mock_get.call_count == 1
 
 
-@patch("oex.osm.geofabrik.requests.get")
+@patch("oex.http.session.get")
 def test_index_rejects_non_featurecollection(mock_get) -> None:
     mock_get.return_value.raise_for_status = lambda: None
     mock_get.return_value.json = lambda: {"type": "Feature"}

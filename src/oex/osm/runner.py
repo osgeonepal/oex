@@ -18,6 +18,7 @@ from upath import UPath
 if TYPE_CHECKING:
     from shapely.geometry.base import BaseGeometry
 
+from oex import http
 from oex.boundary import resolve_boundary
 from oex.config.schema import (
     CategoryConfig,
@@ -75,6 +76,10 @@ def _row_group_size(memory_gb: int) -> int:
     return 100_000 if memory_gb >= 16 else max(10_000, memory_gb * 5_000)
 
 
+# quackosm's default drops source, ele, area and other tags the layers select.
+_IGNORE_METADATA_TAGS = False
+
+
 def _parquet_fingerprint(cfg: RootConfig, *, clip: bool) -> str:
     """Keyed on the boundary config and tag filters too, or changing either would reuse a stale
     parquet; the config is hashed rather than the geometry so reuse never needs the network."""
@@ -87,7 +92,12 @@ def _parquet_fingerprint(cfg: RootConfig, *, clip: bool) -> str:
             "buffer": boundary.buffer_meters,
         }
     payload = json.dumps(
-        {"clip": clip_key, "filter": union_tag_filter(cfg.categories)},
+        # Which tags quackosm keeps shapes the parquet, so it is part of the key.
+        {
+            "clip": clip_key,
+            "filter": union_tag_filter(cfg.categories),
+            "ignore_metadata_tags": _IGNORE_METADATA_TAGS,
+        },
         sort_keys=True,
         default=str,
     )
@@ -118,6 +128,21 @@ def _inject_local_name(select_fields: list[str], iso3: str) -> list[str]:
         new_fields.insert(insert_at, f"tags['name:{lang}'] AS {alias}")
         insert_at += 1
     return new_fields
+
+
+def _refuse_stale_planet(planet_pbf: Path, frequency: str) -> None:
+    """Data older than the advertised frequency lands on HDX already past its due date."""
+    from hdx.data.dataset import Dataset
+
+    days = Dataset.transform_update_frequency(frequency)
+    if days is None or int(days) <= 0:
+        return
+    age_days = (time.time() - planet_pbf.stat().st_mtime) / 86400
+    if age_days > int(days):
+        raise RuntimeError(
+            f"{planet_pbf} is {age_days:.0f} days old, older than the {frequency} update "
+            f"frequency; refresh the planet PBF before exporting"
+        )
 
 
 class OsmRunner(SourceRunner):
@@ -322,6 +347,8 @@ class OsmRunner(SourceRunner):
             )
             planet_pbf = result.path
 
+        if not src.snapshot or src.snapshot == "latest":
+            _refuse_stale_planet(planet_pbf, cfg.frequency)
         snapshot_label = self._planet_snapshot_label(planet_pbf, src.snapshot)
         country_root = Path(src.cache_dir) / "planet" / dataset_identity(cfg)
         snapshot_dir = country_root / snapshot_label
@@ -406,6 +433,7 @@ class OsmRunner(SourceRunner):
             geometry_filter=geometry_filter,
             result_file_path=country_parquet,
             keep_all_tags=True,
+            ignore_metadata_tags=_IGNORE_METADATA_TAGS,
             sort_result=True,
             compression="zstd",
             compression_level=3,
@@ -545,7 +573,7 @@ class OsmRunner(SourceRunner):
         """The date Geofabrik last rebuilt the extract, so `latest` tracks upstream."""
         if requested and requested != "latest":
             return requested
-        head = requests.head(pbf_url, allow_redirects=True, timeout=60)
+        head = http.session.head(pbf_url, allow_redirects=True, timeout=60)
         head.raise_for_status()
         last_modified = head.headers.get("Last-Modified")
         if not last_modified:

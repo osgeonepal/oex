@@ -5,8 +5,8 @@ from dataclasses import dataclass
 from typing import Any
 
 import pycountry
-import requests
 
+from oex import http
 from oex.logging_setup import get_logger
 
 logger = get_logger(__name__)
@@ -66,7 +66,7 @@ def _load_index(index_url: str) -> list[dict[str, Any]]:
         return cached
 
     logger.info("Fetching Geofabrik index: %s", index_url)
-    resp = requests.get(index_url, timeout=120)
+    resp = http.session.get(index_url, timeout=120)
     resp.raise_for_status()
     payload = resp.json()
     if payload.get("type") != "FeatureCollection":

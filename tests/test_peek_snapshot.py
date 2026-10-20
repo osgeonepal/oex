@@ -44,7 +44,7 @@ def test_peek_reports_the_upstream_snapshot_not_the_cached_one(
 ):
     """The cache holds August; Geofabrik has rebuilt since, so the export must not skip."""
     monkeypatch.setattr(
-        "oex.osm.runner.requests.head",
+        "oex.http.session.head",
         lambda *a, **k: _Head({"Last-Modified": "Sun, 06 Sep 2026 23:09:31 GMT"}),
     )
     assert OsmRunner().peek_snapshot_label(_cfg(cached_august)) == "2026-09-06"
@@ -70,7 +70,7 @@ def test_peek_gives_up_when_the_extract_itself_is_unreachable(
     def unreachable(*_args, **_kwargs):
         raise requests.ConnectionError("HEAD failed")
 
-    monkeypatch.setattr("oex.osm.runner.requests.head", unreachable)
+    monkeypatch.setattr("oex.http.session.head", unreachable)
     assert OsmRunner().peek_snapshot_label(_cfg(cached_august)) is None
 
 
@@ -78,7 +78,7 @@ def test_peek_gives_up_when_geofabrik_reports_no_last_modified(
     cached_august, index_reachable, monkeypatch
 ):
     """A PBF that answers without a date cannot be dated, and guessing is the bug."""
-    monkeypatch.setattr("oex.osm.runner.requests.head", lambda *a, **k: _Head({}))
+    monkeypatch.setattr("oex.http.session.head", lambda *a, **k: _Head({}))
     assert OsmRunner().peek_snapshot_label(_cfg(cached_august)) is None
 
 

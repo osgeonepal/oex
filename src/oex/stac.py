@@ -70,6 +70,8 @@ class LayerAssets:
     pmtiles_path: Path | None = None
     # Names the place too, since an Item turns up in searches away from its Collection.
     title: str | None = None
+    # Wall time to build the layer's files, reading the source included and uploads excluded.
+    export_seconds: float | None = None
 
 
 def spdx_license(hdx_license: str) -> str:
@@ -192,6 +194,9 @@ def build_item(
                 "oex:geometry_types": report.geometry_types,
                 # The column name and its coverage have no STAC field of their own.
                 "oex:temporal": asdict(report.temporal) if report.temporal else None,
+                "oex:export_seconds": (
+                    round(layer.export_seconds, 1) if layer.export_seconds is not None else None
+                ),
             }
         ),
         collection=collection_id,

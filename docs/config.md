@@ -340,7 +340,7 @@ source:
     geofabrik_clip_to_boundary: true
     planet_clip_to_boundary: true  # planet only; false = whole planet, no clip
     pbf_path: null             # required for engine: planet or planet_fallback
-    planet_fallback: false     # try geofabrik, fall back to planet on 404
+    planet_fallback: false     # try geofabrik, fall back to planet when it has no extract or stays unreachable
     auto_download_planet: false  # when true, download the planet PBF if pbf_path is missing
     postpass_endpoint: https://postpass.geofabrik.de/api/interpreter
     postpass_max_area_sq_km: 2000
@@ -370,10 +370,9 @@ extraction at query time is a tag-predicate WHERE on the resulting
 `osmium-tool` binary on PATH (one-time `dnf install osmium-tool` /
 `apt install osmium-tool` / `brew install osmium-tool`).
 
-`planet_fallback: true`: keeps `engine: geofabrik` as primary and only
-switches to the planet path when Geofabrik does not publish the country
-(e.g. some small territories). Other Geofabrik failures (network errors,
-rate limits) are not swallowed.
+`planet_fallback: true`: keeps `engine: geofabrik` as primary and switches to
+the planet path when Geofabrik does not publish the country (e.g. some small
+territories) or stays unreachable after its requests are retried.
 
 `postpass`: sends one SQL query per OSM table, three per run, to Geofabrik's Postpass API,
 which serves a minutely-updated OSM database, and writes the rows to
@@ -440,7 +439,8 @@ Resolution rules:
   verbatim with no lookup. `latest` lists the public S3 bucket and picks the
   highest `YYYY-MM-DD.N`.
 - **OSM `snapshot` for `planet`**: defaults to the planet PBF's mtime as
-  an ISO date. An explicit value pins the cache directory name; subsequent
+  an ISO date, and a PBF older than the config's `frequency` is refused, so a stale
+  planet fails the run instead of publishing data that is already due. An explicit value pins the cache directory name; subsequent
   runs reuse `<cache>/planet/<iso3>/<snapshot>/country-<fingerprint>.parquet` without
   reclipping the planet.
 - **OSM `snapshot` for `geofabrik`**: this is a label for the per-country

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 import requests
 
+from oex import http
 from oex.config.schema import CategoryConfig, HdxConfig, RootConfig, S3Config
 from oex.logging_setup import get_logger
 from oex.naming import (
@@ -148,6 +149,20 @@ class PublishContext:
     boundary_geojson: str | None = None
 
 
+def apply_time_period(dataset, ctx: PublishContext, start: str | None) -> None:  # noqa: ANN001 - hdx Dataset
+    if ctx.temporal_min is not None and ctx.temporal_max is not None:
+        dataset.set_time_period(ctx.temporal_min, ctx.temporal_max)
+    elif start is not None:
+        first_day = datetime.fromisoformat(start)
+        if first_day.date() > ctx.snapshot_date.date():
+            raise ValueError(
+                f"hdx.time_period_start {start} is after the snapshot {ctx.snapshot_date.date()}"
+            )
+        dataset.set_time_period(first_day, ctx.snapshot_date)
+    else:
+        dataset.set_time_period(ctx.snapshot_date)
+
+
 def _category_summary(category: CategoryConfig) -> str:
     """Resource description for a category: `hdx.summary`, else the opening of its notes."""
     if category.hdx.summary:
@@ -178,11 +193,10 @@ def _strip_tag_names(notes: str, category: CategoryConfig) -> str:
 
 def _aoi_payload(boundary_geojson: str, buffer_meters: float) -> tuple[str, str]:
     """The area of interest as a FeatureCollection, plus a description naming its size."""
-    from pyproj import Geod
-    from shapely.geometry import shape
+    from oex.boundary import area_sq_km
 
     geometry = json.loads(boundary_geojson)
-    area = abs(Geod(ellps="WGS84").geometry_area_perimeter(shape(geometry))[0]) / 1e6
+    area = area_sq_km(geometry)
     widened = ", widened beyond the source geometry" if buffer_meters else ""
     collection = {
         "type": "FeatureCollection",
@@ -301,9 +315,15 @@ class HdxPublisher:
 
         # A category's dataset holds every source that publishes it, so an OSM run
         # must not delete the Overture resources already there. Pruning is opt-in.
-        self._create_or_update(dataset, dt_name, remove_additional=cfg.hdx.purge_existing_resources)
+        rebuilt = ctx.combined_report_enabled and ctx.output_dir is not None
+        self._create_or_update(
+            dataset,
+            dt_name,
+            remove_additional=cfg.hdx.purge_existing_resources,
+            keep_files=frozenset({f"{dt_name}_report.html"} if rebuilt else ()),
+        )
 
-        if ctx.combined_report_enabled and ctx.output_dir is not None:
+        if rebuilt:
             self._build_and_publish_combined_report(
                 dt_name=dt_name,
                 category=category,
@@ -338,10 +358,7 @@ class HdxPublisher:
                 f"(owner_org={existing_org!r}; you are publishing as {self._owner_org!r})."
             )
 
-        if ctx.temporal_min and ctx.temporal_max:
-            existing.set_time_period(ctx.temporal_min, ctx.temporal_max)
-        else:
-            existing.set_time_period(ctx.snapshot_date)
+        apply_time_period(existing, ctx, cfg.hdx.time_period_start)
         _hdx_publish_with_retry(
             lambda: existing.update_in_hdx(
                 update_resources=False,
@@ -354,7 +371,12 @@ class HdxPublisher:
         return dt_name
 
     def _create_or_update(  # noqa: ANN001 - hdx Dataset
-        self, dataset, dt_name: str, *, remove_additional: bool
+        self,
+        dataset,
+        dt_name: str,
+        *,
+        remove_additional: bool,
+        keep_files: frozenset[str] = frozenset(),
     ) -> None:
         from hdx.data.dataset import Dataset
 
@@ -369,6 +391,12 @@ class HdxPublisher:
                     "to namespace your datasets, or have HDX transfer ownership."
                 )
             dataset["id"] = existing["id"]
+            if remove_additional:
+                # A page this publish rebuilds next is kept, so it is updated in place
+                # instead of being purged and re-created under a new id.
+                for resource in existing.get_resources():
+                    if _resource_filename(resource) in keep_files:
+                        dataset.add_update_resource(resource, ignore_datasetid=True)
             _reuse_resource_ids(dataset.get_resources(), existing.get_resources())
             logger.info(
                 "Updating HDX dataset %s with %d resources",
@@ -495,9 +523,15 @@ class HdxPublisher:
 
         # A combined dataset accumulates across sources: an Overture run must not
         # delete the resources an earlier OSM run put here. Pruning is opt-in.
-        self._create_or_update(dataset, dt_name, remove_additional=cfg.hdx.purge_existing_resources)
+        rebuilt = page_enabled and ctx.output_dir is not None
+        self._create_or_update(
+            dataset,
+            dt_name,
+            remove_additional=cfg.hdx.purge_existing_resources,
+            keep_files=frozenset({f"{dt_name}_overview.html"} if rebuilt else ()),
+        )
 
-        if page_enabled and ctx.output_dir is not None:
+        if rebuilt:
             self._build_and_publish_page(
                 dt_name=dt_name,
                 cfg=cfg,
@@ -635,10 +669,7 @@ class HdxPublisher:
             )
 
         dataset = Dataset(dataset_args)
-        if ctx.temporal_min is not None and ctx.temporal_max is not None:
-            dataset.set_time_period(ctx.temporal_min, ctx.temporal_max)
-        else:
-            dataset.set_time_period(ctx.snapshot_date)
+        apply_time_period(dataset, ctx, cfg.hdx.time_period_start)
         dataset.set_expected_update_frequency(cfg.frequency)
         dataset.add_other_location(cfg.iso3.upper())
         seen_tags: set[str] = set()
@@ -685,6 +716,7 @@ class HdxPublisher:
             category_slug=category_slug,
             name=name,
         )
+        _reuse_resource_ids([resource], dataset.get_resources())
         dataset.add_update_resource(resource)
         url = resource["url"] if "url" in resource.data else None
         if url:
@@ -829,10 +861,7 @@ class HdxPublisher:
             dataset_args["license_url"] = category.hdx.license_url
 
         dataset = Dataset(dataset_args)
-        if ctx.temporal_min is not None and ctx.temporal_max is not None:
-            dataset.set_time_period(ctx.temporal_min, ctx.temporal_max)
-        else:
-            dataset.set_time_period(ctx.snapshot_date)
+        apply_time_period(dataset, ctx, cfg.hdx.time_period_start)
         dataset.set_expected_update_frequency(cfg.frequency)
         dataset.add_other_location(cfg.iso3.upper())
         for tag in category.hdx.tags:
@@ -1042,7 +1071,7 @@ def _summarise_hdx_error(exc: BaseException) -> str:
 
 
 def _download_json(url: str, *, timeout: float = 60.0) -> dict:
-    resp = requests.get(url, timeout=timeout)
+    resp = http.session.get(url, timeout=timeout)
     resp.raise_for_status()
     return resp.json()
 

@@ -38,6 +38,9 @@ class HdxConfig:
     title_template: str = ""
     # Destructive: deletes every existing resource on the dataset before upload.
     purge_existing_resources: bool = False
+    # YYYY-MM-DD the dataset first covered; the HDX time period then runs to each snapshot,
+    # unless the data's own dates from a category's temporal.column are known.
+    time_period_start: str | None = None
     # Publish every category as resources on ONE HDX dataset instead of one
     # dataset per category.
     combine: bool = False

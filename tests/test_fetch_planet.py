@@ -40,7 +40,7 @@ class _Stream:
 def test_an_interrupted_download_leaves_nothing_at_the_target(tmp_path: Path) -> None:
     """A run that finds the target reuses it as a complete extract."""
     with (
-        patch("oex.osm.fetch_planet.requests.head", return_value=_Head()),
+        patch("oex.http.session.head", return_value=_Head()),
         patch("oex.osm.fetch_planet.requests.get", return_value=_Stream([BODY[:4]], True)),
         pytest.raises(requests.ConnectionError),
     ):
@@ -51,7 +51,7 @@ def test_an_interrupted_download_leaves_nothing_at_the_target(tmp_path: Path) ->
 def test_a_partial_download_resumes_into_the_target(tmp_path: Path) -> None:
     (tmp_path / "nepal-latest.osm.pbf.part").write_bytes(BODY[:4])
     with (
-        patch("oex.osm.fetch_planet.requests.head", return_value=_Head()),
+        patch("oex.http.session.head", return_value=_Head()),
         patch("oex.osm.fetch_planet.requests.get", return_value=_Stream([BODY[4:]])) as get,
     ):
         result = download_pbf(URL, tmp_path)
@@ -70,8 +70,9 @@ class _Sidecar:
 def test_a_download_that_fails_its_md5_is_discarded(tmp_path: Path) -> None:
     """A resume can join two versions of the extract; keeping it would fail every later run."""
     with (
-        patch("oex.osm.fetch_planet.requests.head", return_value=_Head()),
-        patch("oex.osm.fetch_planet.requests.get", side_effect=[_Stream([BODY]), _Sidecar()]),
+        patch("oex.http.session.head", return_value=_Head()),
+        patch("oex.osm.fetch_planet.requests.get", return_value=_Stream([BODY])),
+        patch("oex.http.session.get", return_value=_Sidecar()),
         pytest.raises(RuntimeError, match="md5 mismatch"),
     ):
         download_pbf(URL, tmp_path, md5_url=URL + ".md5")

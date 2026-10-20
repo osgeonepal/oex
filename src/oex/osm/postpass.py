@@ -7,9 +7,8 @@ from datetime import datetime
 from pathlib import Path
 
 import requests
-from pyproj import Geod
-from shapely.geometry import shape
 
+from oex.boundary import area_sq_km
 from oex.logging_setup import get_logger
 from oex.osm.category_filter import OsmTagsFilter
 from oex.osm.country_parquet import LiveSnapshot, write_country_parquet
@@ -22,12 +21,9 @@ DEFAULT_ENDPOINT = "https://postpass.geofabrik.de/api/interpreter"
 # osm2pgsql spreads OSM over three tables and stores relations as negative ids.
 _TABLES = ("planet_osm_point", "planet_osm_line", "planet_osm_polygon")
 
-_GEOD = Geod(ellps="WGS84")
-
 
 def boundary_area_sq_km(boundary_geojson: str) -> float:
-    area, _perimeter = _GEOD.geometry_area_perimeter(shape(json.loads(boundary_geojson)))
-    return abs(area) / 1_000_000
+    return area_sq_km(json.loads(boundary_geojson))
 
 
 def _escape(value: str) -> str:

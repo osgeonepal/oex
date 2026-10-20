@@ -9,6 +9,7 @@ from pathlib import Path
 import requests
 from tqdm import tqdm
 
+from oex import http
 from oex.logging_setup import get_logger
 
 logger = get_logger(__name__)
@@ -39,7 +40,7 @@ def download_pbf(
     # Written under another name until verified, so an existing target is always complete.
     partial = dest_root / f"{name}.part"
 
-    head = requests.head(url, allow_redirects=True, timeout=60)
+    head = http.session.head(url, allow_redirects=True, timeout=60)
     head.raise_for_status()
     total = int(head.headers.get("Content-Length") or 0)
     last_modified = head.headers.get("Last-Modified", "unknown")
@@ -87,7 +88,7 @@ def download_pbf(
 def _verify_md5(path: Path, md5_url: str) -> bool:
     logger.info("Fetching md5 sidecar: %s", md5_url)
     try:
-        resp = requests.get(md5_url, timeout=60)
+        resp = http.session.get(md5_url, timeout=60)
         resp.raise_for_status()
     except requests.RequestException as exc:
         logger.warning("Could not fetch md5 sidecar (%s): %s", md5_url, exc)

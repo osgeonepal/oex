@@ -3,6 +3,7 @@
 """
 
 import json
+import time
 from pathlib import Path
 
 import duckdb
@@ -197,3 +198,78 @@ def test_geoparquet_is_written_within_the_run_memory_budget(tmp_path, shapefile,
     expected = duckdb.connect()
     expected.execute("SET memory_limit='4GB'")
     assert limits == [_memory_limit(expected)]
+
+
+def test_a_built_category_that_never_uploaded_is_rebuilt_on_resume(
+    tmp_path, shapefile, monkeypatch
+):
+    """Publishing only the cached zips would drop its tiles from the HDX dataset."""
+    from unittest.mock import MagicMock
+
+    cfg_path = tmp_path / "c.yaml"
+    cfg_path.write_text(
+        CONFIG.format(
+            boundary=BOUNDARY,
+            formats="gpkg",
+            out=tmp_path / "out",
+            zip_line="",
+            category="bridges",
+            path=shapefile,
+            include_source="true",
+        ),
+        encoding="utf-8",
+    )
+    cfg = load_config(cfg_path)
+    cfg.output.pmtiles.enabled = True
+    Exporter(cfg, runner=FileRunner()).run()
+
+    cfg.hdx.push = True
+    publisher_class = MagicMock()
+    publisher_class.return_value.publish.return_value = "test_npl_bridges"
+    monkeypatch.setattr(oex.exporter, "HdxPublisher", publisher_class)
+    Exporter(cfg, runner=FileRunner()).run()
+
+    publisher_class.return_value.publish.assert_called_once()
+    assert publisher_class.return_value.publish.call_args.kwargs["extra_resources"]
+
+
+def test_the_build_time_on_an_item_leaves_out_the_upload(
+    tmp_path: Path, shapefile: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A slow connection must not read as a slow export."""
+
+    class Clock:
+        offset = 0.0
+
+        def time(self) -> float:
+            return time.time() + self.offset
+
+    clock = Clock()
+    staged: list[Path] = []
+
+    def slow_upload(self, path: Path, slug: str, cat_tag: str) -> str:
+        staged.append(path)
+        clock.offset += 1000
+        return "https://example.com/bridges.parquet"
+
+    monkeypatch.setattr(oex.exporter, "time", clock)
+    monkeypatch.setattr(Exporter, "_stage_layer_parquet", slow_upload)
+    out = tmp_path / "out"
+    cfg_path = tmp_path / "c.yaml"
+    cfg_path.write_text(
+        CONFIG.format(
+            boundary=BOUNDARY,
+            formats="gpkg, geoparquet",
+            out=out,
+            zip_line="",
+            category="bridges",
+            path=shapefile,
+            include_source="true",
+        ).replace("output:\n", "output:\n  metadata: true\n"),
+        encoding="utf-8",
+    )
+    Exporter(load_config(cfg_path), runner=FileRunner()).run()
+
+    assert staged, "the GeoParquet upload must run for this test to mean anything"
+    item = json.loads((out / "npl" / "file" / "test_npl_bridges_file_item.json").read_text())
+    assert 0 <= item["properties"]["oex:export_seconds"] < 1000
