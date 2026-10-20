@@ -248,6 +248,9 @@ class HdxPublisher:
 
         from hdx.api.configuration import Configuration
 
+        # hdx-python-api keeps one global configuration and refuses a second create; a process
+        # can build several publishers, one per source or config.
+        Configuration.delete()
         Configuration.create(
             hdx_site=hdx_cfg.site,
             hdx_key=api_key,
