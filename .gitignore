@@ -63,6 +63,7 @@ bench-india/
 .claude
 
 scripts/*.sh
+!scripts/install-tippecanoe.sh
 
 # Local export outputs
 luka_request/
