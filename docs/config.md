@@ -10,7 +10,7 @@ Layers merge with [OmegaConf](https://omegaconf.readthedocs.io/), with one
 deviation: when a user YAML provides a `categories` list, it **replaces** the
 default list rather than element-wise merging.
 
-## Mental model: `filter`, `where`, `select`
+## `filter`, `where` and `select`
 
 - **`select`** lists the columns to keep in the output. Same on both sources.
   Pure SQL expressions, e.g. `names.primary AS name` (Overture) or
@@ -111,7 +111,7 @@ Each category carries:
 Both `overture.select` and `osm.select` are pure SQL fragments. The geometry
 column is appended automatically.
 
-## OSM source schema (what your SELECT runs against)
+## OSM source schema
 
 The OSM cache produced by quackosm has three columns:
 
@@ -137,7 +137,7 @@ osm:
     amenity: ["hospital", "clinic"]
 ```
 
-## Overture source schema (what your SELECT runs against)
+## Overture source schema
 
 Overture publishes parquet at `s3://overturemaps-us-west-2/release/<release>/theme=<theme>/type=<feature_type>/`.
 Each (theme, feature_type) has a documented column set. The current release
@@ -354,7 +354,7 @@ source:
     planet_clip_to_boundary: true  # planet only; false = whole planet, no clip
     pbf_path: null             # required for engine: planet or planet_fallback
     planet_fallback: false     # try geofabrik, fall back to planet when it has no extract or stays unreachable
-    auto_download_planet: false  # when true, download the planet PBF if pbf_path is missing
+    auto_download_planet: false  # when true, download the planet PBF if missing, or older than pbf_url's with snapshot: latest
     postpass_endpoint: https://postpass.geofabrik.de/api/interpreter
     postpass_max_area_sq_km: 2000
     postpass_timeout_s: 600

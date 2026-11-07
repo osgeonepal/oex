@@ -1,7 +1,9 @@
 """Per-category export loop, shared by Overture and OSM sources."""
 
 import concurrent.futures
+import hashlib
 import itertools
+import json
 import os
 import shutil
 import threading
@@ -11,6 +13,7 @@ from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
+import duckdb
 import pystac
 from hdx.data.hdxobject import HDXError
 
@@ -40,7 +43,7 @@ from oex.hdx_publisher import (
     related_dataset_links,
 )
 from oex.logging_setup import get_logger
-from oex.metadata import compute_metadata
+from oex.metadata import compute_metadata, temporal_bounds
 from oex.naming import (
     COMBINED_SLUG,
     category_dataset_name,
@@ -165,6 +168,10 @@ class ExportResult:
     @property
     def empty(self) -> int:
         return sum(1 for r in self.categories.values() if r.status == "empty")
+
+    @property
+    def unchanged(self) -> int:
+        return sum(1 for r in self.categories.values() if r.status == "unchanged")
 
 
 class Exporter:
@@ -361,11 +368,12 @@ class Exporter:
 
         result.total_duration_s = time.time() - start
         logger.info(
-            "[%s] %s done in %.1fs: %d ok, %d empty, %d skipped, %d failed",
+            "[%s] %s done in %.1fs: %d ok, %d unchanged, %d empty, %d skipped, %d failed",
             result.iso3,
             self._runner.name,
             result.total_duration_s,
             result.succeeded,
+            result.unchanged,
             result.empty,
             result.skipped,
             result.failed,
@@ -491,7 +499,7 @@ class Exporter:
             if count == 0:
                 logger.info("%s empty: no features within boundary", cat_tag)
                 if publisher is not None and not self._cfg.hdx.combine:
-                    self._refresh_empty_category(category, query, publisher, cat_tag)
+                    self._refresh_dataset_dates(category, query, publisher, cat_tag)
                 return _early(
                     CategoryResult(
                         name=category.name,
@@ -500,6 +508,38 @@ class Exporter:
                         duration_s=time.time() - cat_start,
                     )
                 )
+
+            content_hash = None
+            if publisher is not None and self._skips_unchanged(combine):
+                content_hash = self._content_hash(conn, table, category)
+                if content_hash == self._published_content_hash(category):
+                    logger.info("%s unchanged since its last publish; dates only", cat_tag)
+                    refreshed = self._refresh_dataset_dates(
+                        category,
+                        query,
+                        publisher,
+                        cat_tag,
+                        temporal=_data_temporal_bounds(conn, table, category),
+                    )
+                    if refreshed is not None:
+                        if self._state is not None:
+                            self._state.mark_built(
+                                slug,
+                                snapshot_label=query.snapshot_label or "unknown",
+                                zip_paths=[],
+                                metadata_json_path=None,
+                            )
+                            self._state.mark_uploaded(slug, hdx_dataset=refreshed)
+                        return _early(
+                            CategoryResult(
+                                name=category.name,
+                                status="unchanged",
+                                feature_count=count,
+                                duration_s=time.time() - cat_start,
+                                hdx_dataset=refreshed,
+                            )
+                        )
+                    logger.info("%s has no HDX dataset to refresh; exporting", cat_tag)
 
             if self._pcode_cache is not None and not category.skip_pcodes:
                 tag_start = time.time()
@@ -666,6 +706,7 @@ class Exporter:
                         "object, so there is nothing to publish"
                     )
 
+            layer: LayerAssets | None = None
             if want_item and source_metadata is not None:
                 # After the artifacts exist, so the layer can name every one as an asset.
                 layer = LayerAssets(
@@ -730,6 +771,10 @@ class Exporter:
                 )
                 if self._state is not None:
                     self._state.mark_uploaded(slug, hdx_dataset=dataset_name)
+                if content_hash is not None and layer is not None:
+                    # Only a layer HDX accepted may be skipped next time.
+                    layer.content_hash = content_hash
+                    self._write_item(layer, out_root)
                 if self._cfg.output.remove_after_upload:
                     extra_paths = [e.path for e in pmtiles_extra]
                     if item_path is not None:
@@ -1071,15 +1116,31 @@ class Exporter:
     def _write_layer_metadata(
         self, layer: LayerAssets, out_root: Path, collection_path: Path | None
     ) -> Path:
-        """The layer's Item file, and its Collection when the layer is its own dataset. The
-        filename is derived here so the staged key and the `rel="item"` href cannot drift."""
-        item_path = out_root / item_filename(layer.dataset_name, self._runner.name)
+        """The layer's Item file, and its Collection when the layer is its own dataset."""
+        item_path = self._write_item(layer, out_root)
+        if collection_path is not None:
+            collection_id, collection_slug, collection_href = self._layer_collection(layer)
+            write_json(
+                self._collection_for([layer], collection_id, collection_slug), collection_path
+            )
+            self._stage_metadata(collection_path, collection_slug)
+            self._staged_collections.append((self._collection_title([layer]), collection_href))
+        return item_path
+
+    def _layer_collection(self, layer: LayerAssets) -> tuple[str, str, str]:
         combined = self._cfg.hdx.combine
         collection_id = combined_dataset_name(self._cfg) if combined else layer.dataset_name
         collection_slug = COMBINED_SLUG if combined else slugify(layer.category.name)
         collection_href = href_or_filename(
             self._cfg, collection_slug, collection_filename(collection_id, self._runner.name)
         )
+        return collection_id, collection_slug, collection_href
+
+    def _write_item(self, layer: LayerAssets, out_root: Path) -> Path:
+        """The filename is derived here so the staged key and the `rel="item"` href cannot
+        drift."""
+        item_path = out_root / item_filename(layer.dataset_name, self._runner.name)
+        collection_id, _, collection_href = self._layer_collection(layer)
         item = build_item(
             layer,
             self._cfg,
@@ -1091,12 +1152,6 @@ class Exporter:
         )
         write_json(item, item_path)
         self._stage_metadata(item_path, slugify(layer.category.name))
-        if collection_path is not None:
-            write_json(
-                self._collection_for([layer], collection_id, collection_slug), collection_path
-            )
-            self._stage_metadata(collection_path, collection_slug)
-            self._staged_collections.append((self._collection_title([layer]), collection_href))
         return item_path
 
     def _area_title(self) -> str:
@@ -1189,20 +1244,25 @@ class Exporter:
         s3cfg = self._cfg.output.s3
         if not s3cfg.enabled:
             return
-        bucket, prefix, region, endpoint_url, acl = s3_resolve(s3cfg)
+        bucket, _, region, endpoint_url, acl = s3_resolve(s3cfg)
         if not bucket:
             raise ValueError(
                 "output.s3.enabled is true but no bucket given via output.s3.bucket or OEX_S3_BUCKET"
             )
-        key = artifact_key(
+        key = self._metadata_key(path.name, category_slug)
+        s3_upload(path, bucket=bucket, key=key, region=region, endpoint_url=endpoint_url, acl=acl)
+
+    def _metadata_key(self, filename: str, category_slug: str) -> str:
+        s3cfg = self._cfg.output.s3
+        _, prefix, _, _, _ = s3_resolve(s3cfg)
+        return artifact_key(
             prefix,
             self._cfg.iso3,
             category_slug,
-            path.name,
+            filename,
             folder=s3cfg.folder,
             nest_by_category=s3cfg.nest_by_category,
         )
-        s3_upload(path, bucket=bucket, key=key, region=region, endpoint_url=endpoint_url, acl=acl)
 
     def _build_combined_tiles(
         self, built_ok: list[BuiltCategory], out_root: Path, dt_name: str
@@ -1357,17 +1417,69 @@ class Exporter:
         logger.info("%s staged layer geoparquet -> %s", cat_tag, url)
         return url
 
-    def _refresh_empty_category(
+    def _skips_unchanged(self, combine: bool) -> bool:
+        """The fingerprint lives on the published STAC Item, which needs metadata and S3."""
+        out = self._cfg.output
+        return (
+            out.skip_unchanged
+            and out.resume
+            and out.s3.enabled
+            and not combine
+            and self._want_metadata()
+        )
+
+    def _content_hash(
+        self, conn: duckdb.DuckDBPyConnection, table: str, category: CategoryConfig
+    ) -> str:
+        """Order-free hash of the queried features, joined with everything that shapes the
+        published layer, so a new oex, setting or admin source also counts as a change."""
+        # A sum, unlike XOR, keeps two copies of a row from cancelling out.
+        [(total, rows)] = conn.execute(
+            f"SELECT sum(hash(t)::HUGEINT), count(*) FROM {table} t"
+        ).fetchall()
+        recipe = json.dumps(self._layer_recipe(category), sort_keys=True)
+        return hashlib.sha256(f"{total}:{rows}:{recipe}".encode()).hexdigest()
+
+    def _layer_recipe(self, category: CategoryConfig) -> dict:
+        """Settings that change the published layer; paths and resource limits differ between
+        machines and runs without changing it, so they stay out."""
+        cfg = self._cfg
+        output = asdict(cfg.output)
+        for local in ("dir", "resume", "remove_after_upload", "skip_unchanged"):
+            output.pop(local)
+        hdx = {k: v for k, v in asdict(cfg.hdx).items() if k not in ("api_key", "user_agent")}
+        pcodes = {k: v for k, v in asdict(self._pcodes_cfg).items() if k != "cache_dir"}
+        return {
+            "oex": _oex_version(),
+            "dataset": [cfg.iso3, cfg.key, cfg.dataset_name, cfg.subnational, cfg.frequency],
+            "boundary": asdict(cfg.boundary),
+            "output": output,
+            "hdx": hdx,
+            "category": asdict(category),
+            "pcodes": pcodes,
+            "pcode_dates": sorted(e.upstream_date for e in (self._pcode_cache or {}).values()),
+        }
+
+    def _published_content_hash(self, category: CategoryConfig) -> str | None:
+        """None before a layer's first publish, so the layer is exported and uploaded."""
+        filename = item_filename(layer_dataset_name(self._cfg, category), self._runner.name)
+        item, _ = S3CatalogStore(self._cfg).read(
+            self._metadata_key(filename, slugify(category.name))
+        )
+        return None if item is None else item.get("properties", {}).get("oex:content_hash")
+
+    def _refresh_dataset_dates(
         self,
         category: CategoryConfig,
         query: SourceQuery,
         publisher: HdxPublisher,
         cat_tag: str,
-    ) -> None:
-        """Restate the snapshot date on an empty category's dataset. An HDXError only leaves the
-        older date in place, so it is logged rather than failing the export."""
+        temporal: tuple[datetime | None, datetime | None] = (None, None),
+    ) -> str | None:
+        """Restate the snapshot date on a dataset whose files stay as they are; None when it is
+        not on HDX or the refresh failed. An HDXError only leaves the older date in place."""
         try:
-            publisher.refresh_metadata(
+            return publisher.refresh_metadata(
                 self._cfg,
                 category,
                 PublishContext(
@@ -1375,10 +1487,13 @@ class Exporter:
                     snapshot_date=query.snapshot_date,
                     source_name=self._runner.name,
                     s3=self._cfg.output.s3,
+                    temporal_min=temporal[0],
+                    temporal_max=temporal[1],
                 ),
             )
         except HDXError:
             logger.exception("%s metadata refresh failed", cat_tag)
+            return None
 
     def _materialise_outputs(
         self,
@@ -1574,6 +1689,18 @@ def _parse_temporal(value: str | None) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     return parsed
+
+
+def _data_temporal_bounds(
+    conn: duckdb.DuckDBPyConnection, table: str, category: CategoryConfig
+) -> tuple[datetime | None, datetime | None]:
+    """The data's own date range, which a full publish also gives HDX."""
+    if not category.temporal.column:
+        return (None, None)
+    bounds = temporal_bounds(conn, table, category.temporal.column)
+    if bounds is None:
+        return (None, None)
+    return (_parse_temporal(bounds.min), _parse_temporal(bounds.max))
 
 
 def _temporal_bounds_for_hdx(metadata_obj) -> tuple[datetime | None, datetime | None]:

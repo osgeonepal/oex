@@ -126,10 +126,11 @@ def _summarise(results: list[ExportResult]) -> int:
     total_fail = sum(r.failed for r in results)
     for r in results:
         log.info(
-            "%s/%s: %d ok, %d empty, %d skipped, %d failed in %.1fs",
+            "%s/%s: %d ok, %d unchanged, %d empty, %d skipped, %d failed in %.1fs",
             r.iso3,
             r.source_name,
             r.succeeded,
+            r.unchanged,
             r.empty,
             r.skipped,
             r.failed,

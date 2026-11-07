@@ -2,7 +2,7 @@
 
 How oex turns an ISO3 country code into ready-to-use vector datasets.
 
-## How it works
+## Data flow
 
 ```mermaid
 flowchart TD
@@ -76,12 +76,14 @@ flowchart TD
 
 ## Technical pipeline
 
-**Query engine.** DuckDB runs embedded in the Python process and reads
+### Query engine
+
+DuckDB runs embedded in the Python process and reads
 GeoParquet files via memory-mapped columnar scans. Per-category exports are
 DuckDB SQL SELECT statements with a bbox clip and `ST_Intersects` boundary filter,
 so a feature crossing the boundary is kept whole rather than dropped.
 
-**OSM path: Geofabrik to planet fallback to GeoParquet cache.**
+### OSM path
 
 The default OSM engine downloads the per-country PBF from Geofabrik.
 For countries Geofabrik does not publish, oex falls back to a local planet
@@ -99,13 +101,15 @@ PBF:
 4. Per-category queries run as DuckDB SELECT statements over the cached
    parquet.
 
-**Overture path: S3 parquet via httpfs.**
+### Overture path
+
 Overture Maps publishes release parquet at
 `s3://overturemaps-us-west-2/release/<release>/theme=.../type=.../`.
 DuckDB's httpfs extension reads these files with parallel HTTP range
 requests, applying the bbox filter at the parquet page level.
 
-**Pcode tagging: H3 index join.**
+### Pcode tagging
+
 Once per country run, the admin polygons of each level are filtered to the country,
 simplified, and written to parquet files in the run's output folder that every layer
 then reads.

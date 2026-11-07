@@ -57,9 +57,9 @@ alias oex-cli='docker run --rm \
 
 After that, `oex-cli osm npl` runs the container.
 
-## Three flows
+## Usage
 
-### 1. Download a country
+### Download a country
 
 ```bash
 oex-cli osm npl
@@ -77,7 +77,7 @@ For Overture Maps instead of OSM:
 oex-cli overture npl
 ```
 
-### 2. Use a curated category set
+### Use a curated category set
 
 Example schemas live in `configs/examples/` in the source repository, and in
 the docker image at `/app/configs/examples/`. They are not installed by `pip`
@@ -98,7 +98,7 @@ oex-cli osm --config configs/examples/custom-schema.yaml --iso3 NPL
 These are starting points to copy and edit, not a supported interface: their
 category lists and HDX metadata change between releases.
 
-### 3. Add your own category
+### Add your own category
 
 Write a YAML:
 
@@ -126,7 +126,7 @@ oex-cli osm --config ./my-stuff.yaml
 
 See [Custom categories](custom-categories.md) for the full schema reference.
 
-## Where does the data go
+## Output location
 
 ```text
 output/
@@ -200,7 +200,8 @@ country PBFs to land on disk.
   ```
 
   By default a missing `pbf_path` is a loud failure. To download the
-  planet PBF the first time the planet path is needed, opt in:
+  planet PBF when it is missing, and again whenever `pbf_url` serves a newer
+  one (with `snapshot: latest`), opt in:
 
   ```yaml
   source:

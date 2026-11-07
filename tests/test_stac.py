@@ -670,3 +670,10 @@ def test_an_item_records_how_long_its_layer_took_to_build():
 
 def test_an_item_without_a_measured_build_carries_no_build_time():
     assert "oex:export_seconds" not in build_item(_layer(), _cfg()).properties
+
+
+def test_the_item_carries_the_layer_fingerprint():
+    """The next run compares against this value to skip an unchanged layer."""
+    layer = _layer()
+    layer.content_hash = "3f2a"
+    assert build_item(layer, _cfg()).properties["oex:content_hash"] == "3f2a"

@@ -6,7 +6,8 @@ import hashlib
 import json
 import shutil
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -131,6 +132,33 @@ def _inject_local_name(select_fields: list[str], iso3: str) -> list[str]:
     return new_fields
 
 
+def _planet_published_at(pbf_url: str) -> float:
+    """The planet is republished weekly, so a copy kept on disk falls behind between runs."""
+    head = http.session.head(pbf_url, allow_redirects=True, timeout=60)
+    head.raise_for_status()
+    if "Last-Modified" not in head.headers:
+        raise RuntimeError(f"{pbf_url} sent no Last-Modified, so the local planet cannot be dated")
+    return parsedate_to_datetime(head.headers["Last-Modified"]).timestamp()
+
+
+def _drop_older_partial(planet_pbf: Path, published_at: float) -> None:
+    """A partial download of an older planet would otherwise be resumed into the new one."""
+    partial = planet_pbf.with_name(f"{planet_pbf.name}.part")
+    if partial.is_file() and partial.stat().st_mtime < published_at:
+        partial.unlink()
+
+
+@contextmanager
+def _download_lock(target: Path) -> Iterator[None]:
+    """Parallel country exports share one planet file, so only one of them downloads it."""
+    import fcntl  # POSIX only; imported here so the module still loads on Windows
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with (target.parent / f"{target.name}.lock").open("w") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
+
+
 def _refuse_stale_planet(planet_pbf: Path, frequency: str) -> None:
     """Data older than the advertised frequency lands on HDX already past its due date."""
     from hdx.data.dataset import Dataset
@@ -144,6 +172,12 @@ def _refuse_stale_planet(planet_pbf: Path, frequency: str) -> None:
             f"{planet_pbf} is {age_days:.0f} days old, older than the {frequency} update "
             f"frequency; refresh the planet PBF before exporting"
         )
+
+
+def _refreshes_planet(src: OsmSourceConfig) -> bool:
+    """A remote pbf_path is copied from its own source, so only a local planet is refreshed."""
+    is_local = bool(src.pbf_path) and UPath(src.pbf_path).protocol in ("", "file", "local")
+    return src.auto_download_planet and src.snapshot in ("", "latest") and is_local
 
 
 class OsmRunner(SourceRunner):
@@ -179,6 +213,8 @@ class OsmRunner(SourceRunner):
                 return None
             pbf = Path(src.pbf_path)
             if not pbf.exists():
+                return None
+            if _refreshes_planet(src) and _planet_published_at(src.pbf_url) > pbf.stat().st_mtime:
                 return None
             return self._planet_snapshot_label(pbf, src.snapshot)
         return None
@@ -327,26 +363,36 @@ class OsmRunner(SourceRunner):
                 "(a local path or an s3:// URL to a planet PBF)"
             )
         planet_pbf = _ensure_local_pbf(src.pbf_path, Path(src.cache_dir))
-        if not planet_pbf.is_file():
-            if not src.auto_download_planet:
-                raise FileNotFoundError(
-                    f"Planet PBF not found at {planet_pbf}. "
-                    "Download it with `oex-cli osm-build-cache`, "
-                    "set source.osm.auto_download_planet=true, "
-                    "or pass --download-if-missing on the CLI."
+        if not planet_pbf.is_file() and not src.auto_download_planet:
+            raise FileNotFoundError(
+                f"Planet PBF not found at {planet_pbf}. "
+                "Download it with `oex-cli osm-build-cache`, "
+                "set source.osm.auto_download_planet=true, "
+                "or pass --download-if-missing on the CLI."
+            )
+        if src.auto_download_planet:
+            with _download_lock(planet_pbf):
+                published_at = _planet_published_at(src.pbf_url) if _refreshes_planet(src) else None
+                outdated = (
+                    published_at is not None
+                    and planet_pbf.is_file()
+                    and published_at > planet_pbf.stat().st_mtime
                 )
-            logger.warning(
-                "Planet PBF missing at %s; auto_download_planet is on, downloading from %s",
-                planet_pbf,
-                src.pbf_url,
-            )
-            result = download_pbf(
-                src.pbf_url,
-                planet_pbf.parent,
-                md5_url=src.md5_url,
-                filename=planet_pbf.name,
-            )
-            planet_pbf = result.path
+                if not planet_pbf.is_file() or outdated:
+                    if published_at is not None:
+                        _drop_older_partial(planet_pbf, published_at)
+                    logger.warning(
+                        "Planet PBF at %s is missing or older than %s; downloading it",
+                        planet_pbf,
+                        src.pbf_url,
+                    )
+                    result = download_pbf(
+                        src.pbf_url,
+                        planet_pbf.parent,
+                        md5_url=src.md5_url,
+                        filename=planet_pbf.name,
+                    )
+                    planet_pbf = result.path
 
         if not src.snapshot or src.snapshot == "latest":
             _refuse_stale_planet(planet_pbf, cfg.frequency)

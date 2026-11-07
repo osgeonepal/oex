@@ -1,7 +1,7 @@
 # oex
 
-**Open Data Exporter.** Country-scale vector data from OpenStreetMap and
-Overture Maps, exported to GeoPackage, Shapefile, GeoJSON, or KML. Optional
+oex (Open Data Exporter) exports country-scale vector data from OpenStreetMap
+and Overture Maps to GeoPackage, Shapefile, GeoJSON, or KML, with optional
 HDX publication.
 
 ## Install
@@ -34,16 +34,16 @@ curl -LsSf https://raw.githubusercontent.com/osgeonepal/oex/main/scripts/install
 
 That writes `/usr/local/bin/oex-cli` wrapping the docker image.
 
-## Three flows
+## Usage
 
 ```bash
-# 1. Download a country with the bundled defaults
+# Download a country with the bundled defaults
 oex-cli osm npl
 
-# 2. Use a curated category set from the source repo (HOT-style, Overture package, ...)
+# Use a curated category set from the source repo (HOT-style, Overture package, ...)
 oex-cli osm --config configs/examples/hot-schema.yaml --iso3 NPL
 
-# 3. Define your own categories
+# Define your own categories
 oex-cli osm --config ./my-stuff.yaml
 ```
 
@@ -56,7 +56,7 @@ optionally `metadata.json` (when `output.metadata` or `output.report.enabled` is
 which is the layer as a STAC Item carrying per-column null shares, distinct counts,
 geometry types and bbox.
 
-## Features
+## Export contents
 
 - 8 default categories: Buildings, Roads, Hospitals, Schools, Rivers,
   Land Use, Transportation Hubs, Settlements.
@@ -66,7 +66,7 @@ geometry types and bbox.
 - Four OSM engines: a per-country PBF on demand (Geofabrik), a planet PBF
   cache for batch runs across many countries, and two that query a live OSM
   database (Postpass, HOT Raw Data API) for event response.
-- **Administrative pcode tagging**: each feature gets `adm0`-`adm4` pcode
+- Administrative pcode tagging: each feature gets `adm0`-`adm4` pcode
   and name columns from fieldmaps.io humanitarian boundaries (opt-in,
   enabled by default in the HOT schema).
 
@@ -81,11 +81,11 @@ geometry types and bbox.
 | Package manager      | [uv](https://github.com/astral-sh/uv)                                             |
 | Linter / type-check  | [ruff](https://github.com/astral-sh/ruff) / [ty](https://github.com/astral-sh/ty) |
 
-## Where next
+## Documentation
 
-- **[Architecture](architecture.md)**: data flow diagram, technical pipeline, and Brazil benchmark
-- **[Get started](get-started.md)**: install matrix and three flows in detail
-- **[Custom categories](custom-categories.md)**: write your own SQL select / OSM tag filter
-- **[Configuration](config.md)**: full schema reference
-- **[HDX publication](hdx.md)**: pushing to data.humdata.org
-- **[CLI and library](usage.md)**: Python API + CLI reference
+- [Architecture](architecture.md): data flow diagram, technical pipeline, and Brazil benchmark
+- [Get started](get-started.md): install options and usage
+- [Custom categories](custom-categories.md): write your own SQL select / OSM tag filter
+- [Configuration](config.md): full schema reference
+- [HDX publication](hdx.md): pushing to data.humdata.org
+- [CLI and library](usage.md): Python API + CLI reference

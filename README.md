@@ -1,7 +1,7 @@
 # oex
 
-**Open Data Exporter.** Country-scale vector data from OpenStreetMap and
-Overture Maps, exported to GeoPackage, Shapefile, GeoJSON, or KML. Optional
+oex (Open Data Exporter) exports country-scale vector data from OpenStreetMap
+and Overture Maps to GeoPackage, Shapefile, GeoJSON, or KML, with optional
 HDX publication.
 
 ## Install
@@ -36,7 +36,7 @@ curl -LsSf https://raw.githubusercontent.com/osgeonepal/oex/main/scripts/install
 That writes `/usr/local/bin/oex-cli` wrapping the docker image so
 `oex-cli osm npl` runs the container.
 
-## One liner country export
+## Export a country
 
 ```bash
 oex-cli osm npl
@@ -47,7 +47,7 @@ Transportation Hubs, Settlements) for Nepal as gpkg + shp zips in
 `./output/`. Replace `npl` with any ISO3. Use `oex-cli overture <iso3>`
 for Overture Maps instead.
 
-## Two ways to customise
+## Custom category sets
 
 ```bash
 # Curated schema from configs/examples/ in this repo (HOT-style HDX export, Overture package)
@@ -58,11 +58,11 @@ oex-cli osm --config ./my-stuff.yaml
 ```
 
 See **[Get started](https://osgeonepal.github.io/oex/get-started/)** for
-the install matrix and three flows in detail, **[Custom categories](https://osgeonepal.github.io/oex/custom-categories/)**
+the install options and usage, **[Custom categories](https://osgeonepal.github.io/oex/custom-categories/)**
 for the schema, and **[HDX publication](https://osgeonepal.github.io/oex/hdx/)**
 for pushing to HDX.
 
-## Features
+## Export contents
 
 - 8 default categories: Buildings, Roads, Hospitals, Schools, Rivers,
   Land Use, Transportation Hubs, Settlements.

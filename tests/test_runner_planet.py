@@ -5,12 +5,14 @@ caching, the engine-aware query_for and the Geofabrik to planet fallback.
 import json
 import os
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from email.utils import format_datetime
 from pathlib import Path
 from unittest.mock import patch
 
 import duckdb
 import pytest
+import requests
 from upath import UPath
 
 from oex.config.schema import (
@@ -611,3 +613,121 @@ def test_a_planet_older_than_the_update_frequency_is_refused(tmp_path: Path) -> 
     cfg.frequency = "monthly"
     with pytest.raises(RuntimeError, match="older than"):
         OsmRunner().prepare(cfg)
+
+
+class _PlanetHead:
+    def __init__(self, last_modified: str) -> None:
+        self.headers = {"Last-Modified": last_modified}
+
+    def raise_for_status(self) -> None:
+        return None
+
+
+def _existing_planet(tmp_path: Path, written: datetime) -> Path:
+    planet = tmp_path / "planet-latest.osm.pbf"
+    planet.write_bytes(b"\x00")
+    os.utime(planet, (written.timestamp(), written.timestamp()))
+    return planet
+
+
+def _prepare_with_head(cfg: RootConfig, head: object) -> list[str]:
+    """Prepare with HTTP, osmium and quackosm stubbed; returns the URLs downloaded."""
+    downloaded: list[str] = []
+
+    def fake_download(url, dest_dir, *, md5_url=None, filename=None):  # noqa: ANN001
+        downloaded.append(url)
+        out = Path(dest_dir) / (filename or "planet.osm.pbf")
+        out.write_bytes(b"\x01")
+        return type("R", (), {"path": out})()
+
+    def fake_head(*_args, **_kwargs):  # noqa: ANN002, ANN003
+        if isinstance(head, Exception):
+            raise head
+        return head
+
+    with (
+        patch("oex.osm.runner.http.session.head", side_effect=fake_head),
+        patch("oex.osm.runner.download_pbf", side_effect=fake_download),
+        patch(
+            "oex.osm.runner.resolve_boundary",
+            return_value=type("B", (), {"geojson": json.dumps(NPL_GEOJSON)})(),
+        ),
+        patch(
+            "oex.osm.runner.osmium_polygon_extract",
+            side_effect=lambda pbf, geom, out, **_: out.write_bytes(b"\x00"),
+        ),
+        patch(
+            "quackosm.functions.convert_pbf_to_parquet",
+            side_effect=lambda **kw: _seed_country_parquet(kw["result_file_path"]),
+        ),
+    ):
+        OsmRunner().prepare(cfg)
+    return downloaded
+
+
+_NOW = datetime.now(UTC)
+_PUBLISHED = _PlanetHead(format_datetime(_NOW - timedelta(days=3), usegmt=True))
+
+
+def test_an_outdated_planet_is_downloaded_again(tmp_path: Path) -> None:
+    planet = _existing_planet(tmp_path, _NOW - timedelta(days=25))
+    cfg = _planet_cfg(tmp_path, planet_pbf=planet)
+    cfg.source["osm"].auto_download_planet = True
+
+    downloaded = _prepare_with_head(cfg, _PUBLISHED)
+
+    assert downloaded == [cfg.source["osm"].pbf_url]
+
+
+@pytest.mark.parametrize(("age_days", "kept"), [(10, False), (1, True)])
+def test_only_a_partial_download_of_an_older_planet_is_dropped(
+    tmp_path: Path, age_days: int, kept: bool
+) -> None:
+    """Resuming an older planet's partial would join two files; the current one can resume."""
+    planet = _existing_planet(tmp_path, _NOW - timedelta(days=25))
+    partial = tmp_path / "planet-latest.osm.pbf.part"
+    partial.write_bytes(b"\x00")
+    written = (_NOW - timedelta(days=age_days)).timestamp()
+    os.utime(partial, (written, written))
+    cfg = _planet_cfg(tmp_path, planet_pbf=planet)
+    cfg.source["osm"].auto_download_planet = True
+
+    _prepare_with_head(cfg, _PUBLISHED)
+
+    assert partial.exists() is kept
+
+
+def test_a_current_planet_is_kept(tmp_path: Path) -> None:
+    planet = _existing_planet(tmp_path, _NOW - timedelta(days=1))
+    cfg = _planet_cfg(tmp_path, planet_pbf=planet)
+    cfg.source["osm"].auto_download_planet = True
+
+    downloaded = _prepare_with_head(cfg, _PUBLISHED)
+
+    assert downloaded == []
+
+
+def test_an_unreachable_planet_server_fails_the_run(tmp_path: Path) -> None:
+    """Exporting from the old copy would publish stale data under a new date."""
+    planet = _existing_planet(tmp_path, _NOW - timedelta(days=25))
+    cfg = _planet_cfg(tmp_path, planet_pbf=planet)
+    cfg.source["osm"].auto_download_planet = True
+
+    with pytest.raises(requests.ConnectionError):
+        _prepare_with_head(cfg, requests.ConnectionError("planet.openstreetmap.org down"))
+
+
+@pytest.mark.parametrize(("age_days", "outdated"), [(25, True), (1, False)])
+def test_peek_gives_no_snapshot_while_the_planet_is_outdated(
+    tmp_path: Path, age_days: int, outdated: bool
+) -> None:
+    """A stale label would let resume skip a country whose planet is about to change."""
+    written = _NOW - timedelta(days=age_days)
+    planet = _existing_planet(tmp_path, written)
+    cfg = _planet_cfg(tmp_path, planet_pbf=planet)
+    cfg.source["osm"].auto_download_planet = True
+
+    with patch("oex.osm.runner.http.session.head", return_value=_PUBLISHED):
+        label = OsmRunner().peek_snapshot_label(cfg)
+
+    assert label == (None if outdated else written.date().isoformat())

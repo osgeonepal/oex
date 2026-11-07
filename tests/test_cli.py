@@ -25,6 +25,7 @@ def _fake_result(source_name: str) -> SimpleNamespace:
         iso3="COD",
         source_name=source_name,
         succeeded=1,
+        unchanged=0,
         empty=0,
         skipped=0,
         failed=0,

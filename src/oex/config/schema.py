@@ -139,6 +139,9 @@ class OutputConfig:
     stac: StacCatalogConfig = field(default_factory=StacCatalogConfig)
     s3: S3Config = field(default_factory=S3Config)
     resume: bool = True
+    # A layer whose features and settings match its published STAC Item is not rebuilt or
+    # uploaded again; only its HDX dates move forward. Needs metadata, S3 and hdx.push.
+    skip_unchanged: bool = False
     remove_after_upload: bool = True
     split_by_geometry: bool = False
 

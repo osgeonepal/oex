@@ -65,7 +65,7 @@ def compute_metadata(
     columns = _column_reports(conn, table_name, feature_count)
     summary = _summary(feature_count, geometry_types, columns)
     temporal = (
-        _temporal_bounds(conn, table_name, temporal_column)
+        temporal_bounds(conn, table_name, temporal_column)
         if temporal_column and feature_count
         else None
     )
@@ -194,7 +194,7 @@ def _plural(word: str, count: int) -> str:
     return word if count == 1 else f"{word}s"
 
 
-def _temporal_bounds(
+def temporal_bounds(
     conn: duckdb.DuckDBPyConnection,
     table: str,
     column: str,

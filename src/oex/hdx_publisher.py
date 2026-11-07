@@ -344,14 +344,14 @@ class HdxPublisher:
         category: CategoryConfig,
         ctx: PublishContext,
     ) -> str | None:
-        """Restate the snapshot date when a category exports nothing, so its dataset does not
+        """Restate the snapshot date on a dataset whose files stay as they are, so it does not
         drift past the frequency it advertises. None when nothing is published yet."""
         from hdx.data.dataset import Dataset
 
         dt_name = category_dataset_name(cfg, category)
         existing = Dataset.read_from_hdx(dt_name)
         if existing is None:
-            logger.info("%s empty and not on HDX; nothing to refresh", dt_name)
+            logger.info("%s not on HDX; nothing to refresh", dt_name)
             return None
 
         existing_org = existing.get("owner_org")
@@ -370,7 +370,7 @@ class HdxPublisher:
             ),
             label=f"refresh {dt_name}",
         )
-        logger.info("%s empty; refreshed snapshot date to %s", dt_name, ctx.snapshot_date)
+        logger.info("%s refreshed snapshot date to %s", dt_name, ctx.snapshot_date)
         return dt_name
 
     def _create_or_update(  # noqa: ANN001 - hdx Dataset

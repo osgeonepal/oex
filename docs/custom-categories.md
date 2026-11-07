@@ -4,7 +4,7 @@ A category is one logical dataset. Each one is written out as a zip per
 output format (`gpkg`, `shp`, `geojson`, `kml`). You write its SELECT and
 WHERE in plain SQL.
 
-## Anatomy
+## Category structure
 
 ```yaml
 - name: Buildings
@@ -38,7 +38,7 @@ WHERE in plain SQL.
 When both `overture.enabled` and `osm.enabled` are true, both sources
 contribute resources to the same HDX dataset.
 
-## Mental model
+## Where each field runs
 
 | Field              | Where it runs                    | Purpose                          |
 | ------------------ | -------------------------------- | -------------------------------- |
@@ -98,7 +98,7 @@ Overture renames types across releases (e.g. `boundary` -> `division_boundary`
 in 2026-04-15.0). Pin `source.overture.release` if you depend on a specific
 schema.
 
-## Three ways to plug in a category set
+## Loading a category set
 
 1. **Inline in the country YAML.** Drop a `categories:` block; it replaces
    the bundled defaults wholesale.

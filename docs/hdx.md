@@ -36,7 +36,7 @@ hdx:
   api_key: ${oc.env:HDX_API_KEY,null}
 ```
 
-## What happens
+## Publishing steps
 
 For each category that succeeds:
 
@@ -115,7 +115,7 @@ AWS credentials come from boto3's default chain: `AWS_ACCESS_KEY_ID` +
 `AWS_SECRET_ACCESS_KEY` (with optional `AWS_SESSION_TOKEN`), `AWS_PROFILE`,
 or an IAM role on EC2. Nothing oex-specific needed for credentials.
 
-## Optional features
+## Optional settings
 
 ```yaml
 output:
@@ -135,6 +135,26 @@ categories:
 ```
 
 See [Custom categories](custom-categories.md) for the per-category schema.
+
+## Unchanged layers
+
+```yaml
+output:
+  skip_unchanged: true
+```
+
+With `skip_unchanged`, each layer's STAC Item records a fingerprint of its features and of
+the settings that shape the layer, such as the oex version, the category and the admin
+boundaries used for pcodes. On the next run oex compares the new fingerprint with the
+published one. When they match, it skips building the files and uploading them, and only
+moves the dataset's HDX time period forward to the new snapshot. Everything else runs as
+usual.
+
+It needs `output.metadata` (or `output.report.enabled`), `output.s3.enabled` and
+`hdx.push`, and it applies to datasets published one per category. `--no-resume` turns it
+off for a run. A layer without a published Item, for example on its first run, is exported
+and uploaded, and so is one whose HDX dataset is missing. The Item of an unchanged layer
+keeps the snapshot date of the run that built its files.
 
 ## One dataset for all categories
 
@@ -254,7 +274,7 @@ are listed together; `group_title` names it. Writes are conditional, so runs
 updating the same catalog at once keep each other's links. Links are added or refreshed,
 never removed.
 
-### The map needs S3 and a bucket CORS policy
+### S3 and CORS for the map
 
 The table always renders. The map fetches tiles with cross-origin **range**
 requests, and HDX's file store redirects them to S3 with a CORS header scoped to
@@ -402,7 +422,7 @@ The local overview describes the layers that run produced. The published one
 describes every layer on the HDX dataset, including those an earlier run of the
 other source put there, which is knowledge only HDX holds.
 
-## Production sanity
+## Before publishing to production
 
 - Always run with `hdx.site: demo` first against the HDX demo instance
   before pointing at `prod`.

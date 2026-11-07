@@ -75,6 +75,8 @@ class LayerAssets:
     export_seconds: float | None = None
     # The export boundary as GeoJSON; the Item's footprint when set, else the data's bbox.
     footprint: str | None = None
+    # Fingerprint of the features and the settings that shaped them, for skip_unchanged.
+    content_hash: str | None = None
 
 
 def spdx_license(hdx_license: str) -> str:
@@ -200,6 +202,7 @@ def build_item(
                 "oex:export_seconds": (
                     round(layer.export_seconds, 1) if layer.export_seconds is not None else None
                 ),
+                "oex:content_hash": layer.content_hash,
             }
         ),
         collection=collection_id,
