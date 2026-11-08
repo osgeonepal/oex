@@ -6,6 +6,7 @@ import duckdb
 from unidecode import unidecode
 
 from oex.logging_setup import get_logger
+from oex.sql import sql_identifier
 
 if TYPE_CHECKING:
     from oex.config.schema import TransliterateRule
@@ -22,23 +23,20 @@ def _to_latin(text: str | None) -> str | None:
 
 
 def _ensure_udf(conn: duckdb.DuckDBPyConnection) -> None:
-    try:
+    registered = conn.execute(
+        "SELECT 1 FROM duckdb_functions() WHERE function_name = ?", [_UDF_NAME]
+    ).fetchone()
+    if registered is None:
         conn.create_function(_UDF_NAME, _to_latin, ["VARCHAR"], "VARCHAR")
-    except duckdb.CatalogException:
-        pass
-
-
-def _quote(identifier: str) -> str:
-    return '"' + identifier.replace('"', '""') + '"'
 
 
 def _require_varchar(table: str, column: str, schema: dict[str, str], role: str) -> None:
-    col_type = schema[column]
-    if col_type.upper().startswith("VARCHAR"):
+    column_type = schema[column]
+    if column_type.upper().startswith("VARCHAR"):
         return
     raise ValueError(
         f"transliterate {role} column {column!r} on table {table} has type "
-        f"{col_type!r}; expected VARCHAR. For Overture name fields use "
+        f"{column_type!r}; expected VARCHAR. For Overture name fields use "
         f"`names.common->>'en'` (text) instead of `names.common->'en'` (JSON)."
     )
 
@@ -71,19 +69,17 @@ def transliterate_table(
         if rule.prefer is not None:
             _require_varchar(table, rule.prefer, schema, "prefer")
 
-        target_q = _quote(rule.target)
-        source_q = _quote(rule.source)
+        quoted_target = sql_identifier(rule.target)
+        quoted_source = sql_identifier(rule.source)
         if rule.target in existing:
-            conn.execute(f"ALTER TABLE {table} DROP COLUMN {target_q}")
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {target_q} VARCHAR")
+            conn.execute(f"ALTER TABLE {table} DROP COLUMN {quoted_target}")
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {quoted_target} VARCHAR")
 
         if rule.prefer is not None:
-            prefer_q = _quote(rule.prefer)
-            update_sql = (
-                f"UPDATE {table} SET {target_q} = COALESCE({prefer_q}, {_UDF_NAME}({source_q}))"
-            )
+            quoted_prefer = sql_identifier(rule.prefer)
+            update_sql = f"UPDATE {table} SET {quoted_target} = COALESCE({quoted_prefer}, {_UDF_NAME}({quoted_source}))"
         else:
-            update_sql = f"UPDATE {table} SET {target_q} = {_UDF_NAME}({source_q})"
+            update_sql = f"UPDATE {table} SET {quoted_target} = {_UDF_NAME}({quoted_source})"
         conn.execute(update_sql)
         existing.add(rule.target)
         logger.info(

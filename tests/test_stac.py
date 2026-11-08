@@ -1,7 +1,6 @@
 """The Collection is what a catalog serves, so it has to satisfy the spec, not resemble it."""
 
 import json
-import time
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -186,16 +185,14 @@ def test_the_row_count_and_schema_travel_with_the_item():
 
 def test_the_item_names_the_geometry_column_of_its_geoparquet():
     """Readers use primary_geometry to find the geometry without guessing a name."""
-    from oex.metadata import GEOMETRY_COL
+    from oex.metadata import GEOMETRY_COLUMN
 
-    assert build_item(_layer(), _cfg()).properties["table:primary_geometry"] == GEOMETRY_COL
+    assert build_item(_layer(), _cfg()).properties["table:primary_geometry"] == GEOMETRY_COLUMN
 
 
-@pytest.mark.network
 def test_an_empty_layer_still_describes_itself():
     """A layer with no features has no bbox; the Item must stay valid without one."""
     item = build_item(_layer(feature_count=0, bbox=None), _cfg())
-    item.validate()
     assert item.bbox is None
     assert item.properties["table:row_count"] == 0
 
@@ -233,15 +230,17 @@ def test_split_by_geometry_keeps_every_artifact_addressable():
     assert "polygons_shp" in item.assets and "lines_gpkg" in item.assets
 
 
-@pytest.mark.network
-def test_an_asset_carries_the_size_of_the_file_it_points_at(tmp_path):
-    """A download list that cannot state a size makes the reader fetch to find out."""
+def _layer_with_sized_artifact(tmp_path: Path) -> LayerAssets:
     artifact = tmp_path / "d_npl_buildings_osm_gpkg.zip"
     artifact.write_bytes(b"x" * 4096)
     layer = _layer()
     layer.artifacts = [artifact]
-    item = build_item(layer, _cfg())
-    item.validate()
+    return layer
+
+
+def test_an_asset_carries_the_size_of_the_file_it_points_at(tmp_path):
+    """A download list that cannot state a size makes the reader fetch to find out."""
+    item = build_item(_layer_with_sized_artifact(tmp_path), _cfg())
     assert item.assets["gpkg"].extra_fields["file:size"] == 4096
 
 
@@ -298,28 +297,27 @@ def test_the_data_time_range_is_a_stac_range_not_only_an_oex_field():
     assert item.properties["oex:temporal"]["column"] == "update_time"
 
 
-@pytest.mark.network
-def test_a_time_column_that_holds_no_timestamps_leaves_the_range_off():
-    """Free text in the configured column must not invent a range or fail the export."""
+def _layer_with_untimed_temporal_column() -> LayerAssets:
     layer = _rich_layer()
     layer.source_metadata.metadata.temporal = TemporalReport(
         column="update_time", min="last tuesday", max="recently", non_null_count=3
     )
-    item = build_item(layer, _cfg())
-    item.validate()
+    return layer
+
+
+def test_a_time_column_that_holds_no_timestamps_leaves_the_range_off():
+    """Free text in the configured column must not invent a range or fail the export."""
+    item = build_item(_layer_with_untimed_temporal_column(), _cfg())
     assert "start_datetime" not in item.properties
     assert item.properties["oex:temporal"]["min"] == "last tuesday"
 
 
 @pytest.mark.parametrize("zone", ["UTC", "Asia/Kathmandu", "America/Los_Angeles"])
-@pytest.mark.network
-def test_a_snapshot_label_that_is_not_a_time_still_dates_the_item(zone, monkeypatch):
+def test_a_snapshot_label_that_is_not_a_time_still_dates_the_item(zone, set_timezone):
     """Overture labels like `2026-06-17.0` are releases, not timestamps. Run in three zones,
     since a bare date read as local time shifts the Item in a way UTC alone never shows."""
-    monkeypatch.setenv("TZ", zone)
-    time.tzset()
+    set_timezone(zone)
     item = build_item(_layer(snapshot_label="2026-06-17.0"), _cfg())
-    item.validate()
     assert item.datetime == datetime(2026, 6, 17, tzinfo=UTC)
     assert item.properties["oex:snapshot"] == "2026-06-17.0"
 
@@ -346,16 +344,33 @@ def test_a_stac_client_reads_every_layer_out_of_the_collection():
     ]
 
 
-@pytest.mark.network
+def _item_in_collection() -> pystac.Item:
+    href = "https://example-bucket.s3.amazonaws.com/ISO3/NPL/combined/c.json"
+    return build_item(_layer(), _cfg(), collection_id="hot_flood_npl", collection_href=href)
+
+
 def test_an_item_names_the_collection_it_belongs_to_and_links_back_to_it():
     """A crawler that reaches an Item first has to be able to walk up to the dataset."""
-    href = "https://example-bucket.s3.amazonaws.com/ISO3/NPL/combined/c.json"
-    item = build_item(_layer(), _cfg(), collection_id="hot_flood_npl", collection_href=href)
-    payload = to_payload(item)
-    # validate_dict rather than Item.validate: the latter fetches the root link it finds.
-    pystac.validation.validate_dict(payload, pystac.STACObjectType.ITEM)
+    payload = to_payload(_item_in_collection())
     assert payload["collection"] == "hot_flood_npl"
     assert {link["rel"] for link in payload["links"]} >= {"collection", "parent", "root"}
+
+
+@pytest.mark.network
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda tmp_path: build_item(_layer(feature_count=0, bbox=None), _cfg()),
+        lambda tmp_path: build_item(_layer_with_sized_artifact(tmp_path), _cfg()),
+        lambda tmp_path: build_item(_layer_with_untimed_temporal_column(), _cfg()),
+        lambda tmp_path: build_item(_layer(snapshot_label="2026-06-17.0"), _cfg()),
+        lambda tmp_path: _item_in_collection(),
+    ],
+    ids=["empty layer", "sized asset", "untimed column", "release label", "in a collection"],
+)
+def test_an_edge_case_item_satisfies_the_stac_spec(build, tmp_path):
+    """validate_dict, since Item.validate fetches the root link it finds."""
+    pystac.validation.validate_dict(to_payload(build(tmp_path)), pystac.STACObjectType.ITEM)
 
 
 def test_the_collection_says_who_made_the_data_and_what_it_covers():
@@ -529,7 +544,6 @@ def test_a_layer_with_no_configured_licence_url_reads_back_with_the_spdx_one():
     assert restored.metadata == layer.source_metadata.metadata
 
 
-@pytest.mark.network
 def test_the_item_footprint_is_the_bbox_as_a_closed_lon_lat_ring():
     """A swapped axis order puts Nepal in the Indian Ocean, and validate() does not notice."""
     footprint = build_item(_layer(), _cfg()).geometry
@@ -560,7 +574,7 @@ def test_a_dataset_with_no_footprint_still_writes_valid_json():
     """pystac returns infinities for an extent with no bbox, and Infinity is not JSON."""
     payload = to_payload(_collection(_layer(feature_count=0, bbox=None)))
     assert payload["extent"]["spatial"]["bbox"] == [[-180.0, -90.0, 180.0, 90.0]]
-    json.loads(json.dumps(payload))
+    json.dumps(payload, allow_nan=False)
 
 
 def _mixed_licence_collection() -> pystac.Collection:

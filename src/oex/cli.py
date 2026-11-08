@@ -2,6 +2,7 @@
 
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from typing import Annotated
 
 import typer
 
@@ -24,6 +25,85 @@ app = typer.Typer(
 )
 
 
+Iso3OrYamlArgument = Annotated[
+    str | None,
+    typer.Argument(help="ISO3 like NPL, or name of a YAML in ./configs/ (prefer --iso3)"),
+]
+ThemeArgument = Annotated[
+    str | None, typer.Argument(help="Optional theme override (e.g. buildings)")
+]
+ConfigsDirOption = Annotated[
+    Path | None, typer.Option("--configs-dir", help="Run every YAML in this directory")
+]
+ConfigOption = Annotated[
+    Path | None, typer.Option("--config", "-c", help="Explicit config YAML path")
+]
+Iso3Option = Annotated[
+    str | None,
+    typer.Option(
+        "--iso3",
+        help="ISO3 country code (e.g. NPL, COD). Overrides the positional argument and YAML.",
+    ),
+]
+DatasetNameOption = Annotated[
+    str | None,
+    typer.Option(
+        "--dataset-name",
+        help=(
+            "Free-form area label used as the {country} substitution in hdx.title_template. "
+            "Set this to fix pycountry inversions (e.g. DRC) or for sub-national exports."
+        ),
+    ),
+]
+OutputDirOption = Annotated[Path | None, typer.Option("--output-dir", "-o")]
+HdxPushOption = Annotated[bool | None, typer.Option("--hdx-push/--no-hdx-push")]
+HdxPurgeOption = Annotated[
+    bool | None,
+    typer.Option(
+        "--hdx-purge/--no-hdx-purge",
+        help="Destructive: delete every existing resource on the dataset before upload.",
+    ),
+]
+HdxCombineOption = Annotated[
+    bool | None,
+    typer.Option(
+        "--hdx-combine/--no-hdx-combine",
+        help="Publish every category onto one HDX dataset instead of one per category.",
+    ),
+]
+PmtilesOption = Annotated[
+    bool | None,
+    typer.Option(
+        "--pmtiles/--no-pmtiles",
+        help="Generate PMTiles. With --hdx-combine, all layers merge into one tileset.",
+    ),
+]
+S3Option = Annotated[
+    bool | None,
+    typer.Option("--s3/--no-s3", help="Upload artifacts to S3. Overrides output.s3.enabled."),
+]
+DownloadIfMissingOption = Annotated[
+    bool | None,
+    typer.Option(
+        "--download-if-missing/--no-download-if-missing",
+        help=(
+            "When the planet path is missing, download the ~87 GB planet PBF "
+            "before running. Overrides source.osm.auto_download_planet."
+        ),
+    ),
+]
+ResumeOption = Annotated[
+    bool | None,
+    typer.Option(
+        "--resume/--no-resume",
+        help=(
+            "Skip categories already built and uploaded according to the "
+            "state file. Default: enabled (configurable via output.resume)."
+        ),
+    ),
+]
+
+
 def _print_version(value: bool) -> None:
     if not value:
         return
@@ -35,9 +115,9 @@ def _print_version(value: bool) -> None:
 
 
 @app.callback()
-def _global(
+def main_callback(
     log_level: str = typer.Option("INFO", envvar="LOG_LEVEL"),
-    _v: bool = typer.Option(
+    show_version: bool = typer.Option(
         False,
         "--version",
         "-V",
@@ -86,57 +166,39 @@ def _build_overrides(
         overrides["iso3"] = iso3.upper()
     if dataset_name is not None:
         overrides["dataset_name"] = dataset_name
-    if hdx_push is True:
-        overrides["hdx.push"] = True
-    if hdx_push is False:
-        overrides["hdx.push"] = False
-    if hdx_purge is True:
-        overrides["hdx.purge_existing_resources"] = True
-    if hdx_purge is False:
-        overrides["hdx.purge_existing_resources"] = False
-    if hdx_combine is True:
-        overrides["hdx.combine"] = True
-    if hdx_combine is False:
-        overrides["hdx.combine"] = False
-    if pmtiles is True:
-        overrides["output.pmtiles.enabled"] = True
-    if pmtiles is False:
-        overrides["output.pmtiles.enabled"] = False
-    if s3 is True:
-        overrides["output.s3.enabled"] = True
-    if s3 is False:
-        overrides["output.s3.enabled"] = False
+    toggles = {
+        "hdx.push": hdx_push,
+        "hdx.purge_existing_resources": hdx_purge,
+        "hdx.combine": hdx_combine,
+        "output.pmtiles.enabled": pmtiles,
+        "output.s3.enabled": s3,
+        "source.osm.auto_download_planet": download_if_missing,
+        "output.resume": resume,
+    }
+    overrides.update({key: value for key, value in toggles.items() if value is not None})
     if output_dir is not None:
         overrides["output.dir"] = str(output_dir)
     if osm_engine is not None:
         overrides["source.osm.engine"] = osm_engine
-    if download_if_missing is True:
-        overrides["source.osm.auto_download_planet"] = True
-    if download_if_missing is False:
-        overrides["source.osm.auto_download_planet"] = False
-    if resume is True:
-        overrides["output.resume"] = True
-    if resume is False:
-        overrides["output.resume"] = False
     return overrides
 
 
 def _summarise(results: list[ExportResult]) -> int:
-    log = get_logger("oex.cli")
-    total_fail = sum(r.failed for r in results)
-    for r in results:
-        log.info(
+    logger = get_logger("oex.cli")
+    failed_count = sum(result.failed for result in results)
+    for result in results:
+        logger.info(
             "%s/%s: %d ok, %d unchanged, %d empty, %d skipped, %d failed in %.1fs",
-            r.iso3,
-            r.source_name,
-            r.succeeded,
-            r.unchanged,
-            r.empty,
-            r.skipped,
-            r.failed,
-            r.total_duration_s,
+            result.iso3,
+            result.source_name,
+            result.succeeded,
+            result.unchanged,
+            result.empty,
+            result.skipped,
+            result.failed,
+            result.total_duration_s,
         )
-    return 0 if total_fail == 0 else 1
+    return 0 if failed_count == 0 else 1
 
 
 _RUNNERS = {"osm": OsmRunner, "overture": OvertureRunner, "file": FileRunner}
@@ -145,7 +207,7 @@ _SOURCE_ORDER = ("osm", "overture")
 
 def _load_with_overrides(yaml_path: Path | None, overrides: dict[str, object]) -> RootConfig:
     """CLI flags are merged before validation, so `--iso3` satisfies checks that need it."""
-    return load_config(yaml_path, [f"{key}={value}" for key, value in overrides.items()])
+    return load_config(yaml_path, overrides)
 
 
 def _run_one(
@@ -165,76 +227,43 @@ def _enabled_sources(yaml_path: Path | None, overrides: dict[str, object]) -> li
 
 
 def _resolve_args(
-    arg1: str | None,
-    arg2: str | None,
+    iso3_or_yaml: str | None,
+    theme: str | None,
     configs_dir: Path | None,
     config: Path | None,
 ) -> tuple[str | None, str | None]:
     if configs_dir is None and config is None:
-        return arg1, arg2
+        return iso3_or_yaml, theme
     # Uppercase 3-letter alpha is the ISO3 convention; everything else is theme.
-    if arg1 is not None and len(arg1) == 3 and arg1.isalpha() and arg1.isupper():
-        return arg1, arg2
-    return None, arg1 if arg2 is None else arg2
+    if (
+        iso3_or_yaml is not None
+        and len(iso3_or_yaml) == 3
+        and iso3_or_yaml.isalpha()
+        and iso3_or_yaml.isupper()
+    ):
+        return iso3_or_yaml, theme
+    return None, iso3_or_yaml if theme is None else theme
 
 
 @app.command("overture")
 def cmd_overture(
-    iso3_or_yaml: str | None = typer.Argument(
-        None, help="ISO3 like NPL, or name of a YAML in ./configs/ (prefer --iso3)"
-    ),
-    theme: str | None = typer.Argument(None, help="Optional theme override (e.g. buildings)"),
-    configs_dir: Path | None = typer.Option(
-        None, "--configs-dir", help="Run every YAML in this directory"
-    ),
-    config: Path | None = typer.Option(None, "--config", "-c", help="Explicit config YAML path"),
-    iso3: str | None = typer.Option(
-        None,
-        "--iso3",
-        help="ISO3 country code (e.g. NPL, COD). Overrides the positional argument and YAML.",
-    ),
-    dataset_name: str | None = typer.Option(
-        None,
-        "--dataset-name",
-        help=(
-            "Free-form area label used as the {country} substitution in hdx.title_template. "
-            "Set this to fix pycountry inversions (e.g. DRC) or for sub-national exports."
-        ),
-    ),
-    output_dir: Path | None = typer.Option(None, "--output-dir", "-o"),
-    hdx_push: bool | None = typer.Option(None, "--hdx-push/--no-hdx-push"),
-    hdx_purge: bool | None = typer.Option(
-        None,
-        "--hdx-purge/--no-hdx-purge",
-        help="Destructive: delete every existing resource on the dataset before upload.",
-    ),
-    hdx_combine: bool | None = typer.Option(
-        None,
-        "--hdx-combine/--no-hdx-combine",
-        help="Publish every category onto one HDX dataset instead of one per category.",
-    ),
-    pmtiles: bool | None = typer.Option(
-        None,
-        "--pmtiles/--no-pmtiles",
-        help="Generate PMTiles. With --hdx-combine, all layers merge into one tileset.",
-    ),
-    s3: bool | None = typer.Option(
-        None,
-        "--s3/--no-s3",
-        help="Upload artifacts to S3. Overrides output.s3.enabled.",
-    ),
-    resume: bool | None = typer.Option(
-        None,
-        "--resume/--no-resume",
-        help=(
-            "Skip categories already built and uploaded according to the "
-            "state file. Default: enabled (configurable via output.resume)."
-        ),
-    ),
+    iso3_or_yaml: Iso3OrYamlArgument = None,
+    theme: ThemeArgument = None,
+    configs_dir: ConfigsDirOption = None,
+    config: ConfigOption = None,
+    iso3: Iso3Option = None,
+    dataset_name: DatasetNameOption = None,
+    output_dir: OutputDirOption = None,
+    hdx_push: HdxPushOption = None,
+    hdx_purge: HdxPurgeOption = None,
+    hdx_combine: HdxCombineOption = None,
+    pmtiles: PmtilesOption = None,
+    s3: S3Option = None,
+    resume: ResumeOption = None,
 ) -> None:
     """Export Overture data."""
     iso3_resolved, theme_resolved = _resolve_args(iso3_or_yaml, theme, configs_dir, config)
-    yamls = _resolve_config(iso3 or iso3_resolved, configs_dir, config)
+    yaml_paths = _resolve_config(iso3 or iso3_resolved, configs_dir, config)
     overrides = _build_overrides(
         iso3_resolved,
         hdx_push,
@@ -247,78 +276,37 @@ def cmd_overture(
         s3=s3,
         resume=resume,
     )
-    results = [_run_one(y, overrides, theme_resolved, OvertureRunner) for y in yamls]
+    results = [
+        _run_one(yaml_path, overrides, theme_resolved, OvertureRunner) for yaml_path in yaml_paths
+    ]
     raise typer.Exit(code=_summarise(results))
 
 
 @app.command("osm")
 def cmd_osm(
-    iso3_or_yaml: str | None = typer.Argument(
-        None, help="ISO3 like NPL, or name of a YAML in ./configs/ (prefer --iso3)"
-    ),
-    theme: str | None = typer.Argument(None, help="Optional theme override (e.g. buildings)"),
-    configs_dir: Path | None = typer.Option(None, "--configs-dir"),
-    config: Path | None = typer.Option(None, "--config", "-c"),
-    iso3: str | None = typer.Option(
-        None,
-        "--iso3",
-        help="ISO3 country code (e.g. NPL, COD). Overrides the positional argument and YAML.",
-    ),
-    dataset_name: str | None = typer.Option(
-        None,
-        "--dataset-name",
-        help=(
-            "Free-form area label used as the {country} substitution in hdx.title_template. "
-            "Set this to fix pycountry inversions (e.g. DRC) or for sub-national exports."
-        ),
-    ),
-    output_dir: Path | None = typer.Option(None, "--output-dir", "-o"),
-    hdx_push: bool | None = typer.Option(None, "--hdx-push/--no-hdx-push"),
-    hdx_purge: bool | None = typer.Option(
-        None,
-        "--hdx-purge/--no-hdx-purge",
-        help="Destructive: delete every existing resource on the dataset before upload.",
-    ),
+    iso3_or_yaml: Iso3OrYamlArgument = None,
+    theme: ThemeArgument = None,
+    configs_dir: ConfigsDirOption = None,
+    config: ConfigOption = None,
+    iso3: Iso3Option = None,
+    dataset_name: DatasetNameOption = None,
+    output_dir: OutputDirOption = None,
+    hdx_push: HdxPushOption = None,
+    hdx_purge: HdxPurgeOption = None,
     engine: str | None = typer.Option(
         None,
         "--engine",
         help=("OSM engine: 'geofabrik' (default), 'planet', or 'postpass'/'rawdata' for live OSM."),
     ),
-    download_if_missing: bool | None = typer.Option(
-        None,
-        "--download-if-missing/--no-download-if-missing",
-        help=(
-            "When the planet path is missing, download the ~87 GB planet PBF "
-            "before running. Overrides source.osm.auto_download_planet."
-        ),
-    ),
-    resume: bool | None = typer.Option(
-        None,
-        "--resume/--no-resume",
-        help=(
-            "Skip categories already built and uploaded according to the "
-            "state file. Default: enabled (configurable via output.resume)."
-        ),
-    ),
-    hdx_combine: bool | None = typer.Option(
-        None,
-        "--hdx-combine/--no-hdx-combine",
-        help="Publish every category onto one HDX dataset instead of one per category.",
-    ),
-    pmtiles: bool | None = typer.Option(
-        None,
-        "--pmtiles/--no-pmtiles",
-        help="Generate PMTiles. With --hdx-combine, all layers merge into one tileset.",
-    ),
-    s3: bool | None = typer.Option(
-        None,
-        "--s3/--no-s3",
-        help="Upload artifacts to S3. Overrides output.s3.enabled.",
-    ),
+    download_if_missing: DownloadIfMissingOption = None,
+    resume: ResumeOption = None,
+    hdx_combine: HdxCombineOption = None,
+    pmtiles: PmtilesOption = None,
+    s3: S3Option = None,
 ) -> None:
     """Export OSM data via the configured engine."""
     iso3_resolved, theme_resolved = _resolve_args(iso3_or_yaml, theme, configs_dir, config)
-    yamls = _resolve_config(iso3 or iso3_resolved, configs_dir, config)
+    yaml_paths = _resolve_config(iso3 or iso3_resolved, configs_dir, config)
     overrides = _build_overrides(
         iso3_resolved,
         hdx_push,
@@ -333,23 +321,25 @@ def cmd_osm(
         pmtiles=pmtiles,
         s3=s3,
     )
-    results = [_run_one(y, overrides, theme_resolved, OsmRunner) for y in yamls]
+    results = [
+        _run_one(yaml_path, overrides, theme_resolved, OsmRunner) for yaml_path in yaml_paths
+    ]
     raise typer.Exit(code=_summarise(results))
 
 
 @app.command("file")
 def cmd_file(
-    configs_dir: Path | None = typer.Option(None, "--configs-dir"),
-    config: Path | None = typer.Option(None, "--config", "-c"),
+    configs_dir: ConfigsDirOption = None,
+    config: ConfigOption = None,
     iso3: str | None = typer.Option(
         None, "--iso3", help="ISO3 country code; required when pcode tagging is enabled."
     ),
-    dataset_name: str | None = typer.Option(None, "--dataset-name"),
-    output_dir: Path | None = typer.Option(None, "--output-dir", "-o"),
-    hdx_push: bool | None = typer.Option(None, "--hdx-push/--no-hdx-push"),
-    hdx_combine: bool | None = typer.Option(None, "--hdx-combine/--no-hdx-combine"),
-    pmtiles: bool | None = typer.Option(None, "--pmtiles/--no-pmtiles"),
-    s3: bool | None = typer.Option(None, "--s3/--no-s3"),
+    dataset_name: DatasetNameOption = None,
+    output_dir: OutputDirOption = None,
+    hdx_push: HdxPushOption = None,
+    hdx_combine: HdxCombineOption = None,
+    pmtiles: PmtilesOption = None,
+    s3: S3Option = None,
 ) -> None:
     """Export categories read from spatial data files.
 
@@ -357,7 +347,7 @@ def cmd_file(
     path as any other source: clipped to the boundary, pcode tagged, written to every
     configured format, and published with the metadata the config carries.
     """
-    yamls = _resolve_config(iso3, configs_dir, config)
+    yaml_paths = _resolve_config(iso3, configs_dir, config)
     overrides = _build_overrides(
         None,
         hdx_push,
@@ -368,74 +358,31 @@ def cmd_file(
         pmtiles=pmtiles,
         s3=s3,
     )
-    results = [_run_one(y, overrides, None, FileRunner) for y in yamls]
+    results = [_run_one(yaml_path, overrides, None, FileRunner) for yaml_path in yaml_paths]
     raise typer.Exit(code=_summarise(results))
 
 
 @app.command("all")
 def cmd_all(
-    iso3_or_yaml: str | None = typer.Argument(
-        None, help="ISO3 like NPL, or name of a YAML in ./configs/ (prefer --iso3)"
-    ),
-    theme: str | None = typer.Argument(None, help="Optional theme override (e.g. buildings)"),
-    configs_dir: Path | None = typer.Option(None, "--configs-dir"),
-    config: Path | None = typer.Option(None, "--config", "-c"),
-    iso3: str | None = typer.Option(
-        None,
-        "--iso3",
-        help="ISO3 country code (e.g. NPL, COD). Overrides the positional argument and YAML.",
-    ),
-    dataset_name: str | None = typer.Option(
-        None,
-        "--dataset-name",
-        help=(
-            "Free-form area label used as the {country} substitution in hdx.title_template. "
-            "Set this to fix pycountry inversions (e.g. DRC) or for sub-national exports."
-        ),
-    ),
-    output_dir: Path | None = typer.Option(None, "--output-dir", "-o"),
-    hdx_push: bool | None = typer.Option(None, "--hdx-push/--no-hdx-push"),
-    hdx_purge: bool | None = typer.Option(
-        None,
-        "--hdx-purge/--no-hdx-purge",
-        help="Destructive: delete every existing resource on the dataset before upload.",
-    ),
+    iso3_or_yaml: Iso3OrYamlArgument = None,
+    theme: ThemeArgument = None,
+    configs_dir: ConfigsDirOption = None,
+    config: ConfigOption = None,
+    iso3: Iso3Option = None,
+    dataset_name: DatasetNameOption = None,
+    output_dir: OutputDirOption = None,
+    hdx_push: HdxPushOption = None,
+    hdx_purge: HdxPurgeOption = None,
     engine: str | None = typer.Option(
         None,
         "--engine",
         help="OSM engine override for the OSM half of the run. Ignored by the Overture run.",
     ),
-    download_if_missing: bool | None = typer.Option(
-        None,
-        "--download-if-missing/--no-download-if-missing",
-        help=(
-            "When the planet path is missing, download the ~87 GB planet PBF "
-            "before running. Overrides source.osm.auto_download_planet."
-        ),
-    ),
-    resume: bool | None = typer.Option(
-        None,
-        "--resume/--no-resume",
-        help=(
-            "Skip categories already built and uploaded according to the "
-            "state file. Default: enabled (configurable via output.resume)."
-        ),
-    ),
-    hdx_combine: bool | None = typer.Option(
-        None,
-        "--hdx-combine/--no-hdx-combine",
-        help="Publish every category onto one HDX dataset instead of one per category.",
-    ),
-    pmtiles: bool | None = typer.Option(
-        None,
-        "--pmtiles/--no-pmtiles",
-        help="Generate PMTiles. With --hdx-combine, all layers merge into one tileset.",
-    ),
-    s3: bool | None = typer.Option(
-        None,
-        "--s3/--no-s3",
-        help="Upload artifacts to S3. Overrides output.s3.enabled.",
-    ),
+    download_if_missing: DownloadIfMissingOption = None,
+    resume: ResumeOption = None,
+    hdx_combine: HdxCombineOption = None,
+    pmtiles: PmtilesOption = None,
+    s3: S3Option = None,
 ) -> None:
     """Export every source the config enables, in order (OSM then Overture).
 
@@ -443,7 +390,7 @@ def cmd_all(
     second source accumulates onto the dataset the first published.
     """
     iso3_resolved, theme_resolved = _resolve_args(iso3_or_yaml, theme, configs_dir, config)
-    yamls = _resolve_config(iso3 or iso3_resolved, configs_dir, config)
+    yaml_paths = _resolve_config(iso3 or iso3_resolved, configs_dir, config)
     overrides = _build_overrides(
         iso3_resolved,
         hdx_push,
@@ -459,7 +406,7 @@ def cmd_all(
         s3=s3,
     )
     results: list[ExportResult] = []
-    for yaml_path in yamls:
+    for yaml_path in yaml_paths:
         sources = _enabled_sources(yaml_path, overrides)
         if not sources:
             raise typer.BadParameter(
@@ -472,10 +419,8 @@ def cmd_all(
 
 @app.command("metadata")
 def cmd_metadata(
-    configs_dir: Path | None = typer.Option(
-        None, "--configs-dir", help="Run every YAML in this directory"
-    ),
-    config: Path | None = typer.Option(None, "--config", "-c", help="Explicit config YAML path"),
+    configs_dir: ConfigsDirOption = None,
+    config: ConfigOption = None,
     iso3: str | None = typer.Option(None, "--iso3", help="ISO3 country code (e.g. NPL, COD)"),
     check: bool = typer.Option(
         False, "--check", help="Report what would change and write nothing."
@@ -494,24 +439,26 @@ def cmd_metadata(
     """
     from oex.hdx_publisher import HdxPublisher
 
-    yamls = _resolve_config(iso3, configs_dir, config)
+    yaml_paths = _resolve_config(iso3, configs_dir, config)
     overrides = _build_overrides(None, None, None, iso3=iso3)
     failed = 0
-    for yaml_path in yamls:
+    for yaml_path in yaml_paths:
         cfg = _load_with_overrides(yaml_path, overrides)
         if not cfg.hdx.combined.name:
             typer.echo(f"{yaml_path}: no hdx.combined.name, skipping")
             continue
         publisher = HdxPublisher(cfg.hdx)
         try:
-            dt_name, changed, pruned = publisher.update_metadata(cfg, dry_run=check, prune=prune)
+            hdx_dataset_name, changed, pruned = publisher.update_metadata(
+                cfg, dry_run=check, prune=prune
+            )
         except RuntimeError as error:
             typer.echo(f"{yaml_path}: {error}")
             failed += 1
             continue
         verb = "would change" if check else "changed"
         removed = f", {verb} {pruned} removed" if pruned else ""
-        typer.echo(f"{dt_name}: {verb} {changed} resource(s){removed}")
+        typer.echo(f"{hdx_dataset_name}: {verb} {changed} resource(s){removed}")
     raise typer.Exit(code=1 if failed else 0)
 
 
@@ -530,9 +477,9 @@ def cmd_osm_build_cache(
     from oex.osm.fetch_planet import download_pbf
 
     cfg: RootConfig = load_config(config)
-    src = cfg.source["osm"]
-    pbf_dir = Path(src.cache_dir) / "_pbf"
-    result = download_pbf(src.pbf_url, pbf_dir, md5_url=src.md5_url)
+    osm_config = cfg.source["osm"]
+    pbf_dir = Path(osm_config.cache_dir) / "_pbf"
+    result = download_pbf(osm_config.pbf_url, pbf_dir, md5_url=osm_config.md5_url)
     typer.echo(f"Planet PBF available at: {result.path}")
     typer.echo(
         "Set source.osm.pbf_path to that file to use the planet engine, "

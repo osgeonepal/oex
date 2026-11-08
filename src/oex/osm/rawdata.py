@@ -6,7 +6,7 @@ import json
 import shutil
 import time
 import zipfile
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 
 import requests
@@ -16,6 +16,7 @@ from oex.logging_setup import get_logger
 from oex.osm.category_filter import OsmTagsFilter
 from oex.osm.country_parquet import LiveSnapshot, write_country_parquet
 from oex.osm.errors import OsmEngineUnavailableError
+from oex.timestamps import parse_utc
 
 logger = get_logger(__name__)
 
@@ -58,7 +59,7 @@ def _data_timestamp(endpoint: str) -> datetime:
         raise OsmEngineUnavailableError(
             f"Raw Data API status returned HTTP {response.status_code}: {response.text[:300]}"
         )
-    return datetime.fromisoformat(response.json()["lastUpdated"]).astimezone(UTC)
+    return parse_utc(response.json()["lastUpdated"])
 
 
 def _submit(endpoint: str, boundary_geojson: str, tag_filter: OsmTagsFilter, timeout: int) -> str:
@@ -119,9 +120,9 @@ def _download(url: str, work_dir: Path, timeout: int) -> Path:
                 handle.write(chunk)
     with zipfile.ZipFile(archive) as bundle:
         names = [
-            n
-            for n in bundle.namelist()
-            if n.endswith(".geojson") and n != "clipping_boundary.geojson"
+            name
+            for name in bundle.namelist()
+            if name.endswith(".geojson") and name != "clipping_boundary.geojson"
         ]
         if len(names) != 1:
             raise RuntimeError(
@@ -181,7 +182,9 @@ def fetch_country_parquet(
             "boundary.geom and the category osm.filter blocks."
         )
     write_country_parquet(rows, out_path, "Raw Data API")
-    stamp = _data_timestamp(endpoint)
-    label = stamp.strftime("%Y-%m-%dT%H:%M:%SZ")
+    data_timestamp = _data_timestamp(endpoint)
+    label = data_timestamp.strftime("%Y-%m-%dT%H:%M:%SZ")
     logger.info("Raw Data API snapshot %s: %d features -> %s", label, len(rows), out_path)
-    return LiveSnapshot(parquet=out_path, timestamp=stamp, label=label, feature_count=len(rows))
+    return LiveSnapshot(
+        parquet=out_path, timestamp=data_timestamp, label=label, feature_count=len(rows)
+    )

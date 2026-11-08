@@ -41,11 +41,18 @@ hdx:
 For each category that succeeds:
 
 1. The HDX dataset is created or updated under `<key>_<iso3>_<category>`.
-2. Each format zip is uploaded as a resource (`.gpkg.zip`, `.shp.zip`,
-   `.geojson.zip`).
+2. Each format zip is uploaded as a resource (`_gpkg.zip`, `_shp.zip`,
+   `_geojson.zip`).
 3. The dataset's time period is set to the source snapshot date, or runs from
    `hdx.time_period_start` (YYYY-MM-DD) to the snapshot date when that is set. A category's
    `temporal.column`, when the data has it, sets the period from the data's own dates instead.
+
+HDX lists a dataset's resources in a fixed order: the Data Quality Report (the overview
+page on a combined dataset) first, then the downloads by format (GeoPackage, Shapefile,
+GeoJSON, KML, GeoParquet, PMTiles), with OSM before Overture and points, lines, polygons
+within a format, then the STAC Collections. A combined dataset keeps each category's files
+together, in `categories` order. Resources oex does not recognise follow, by name. Every
+publish, date refresh and `oex-cli metadata` update applies this order.
 
 Per-category metadata comes from each category's `hdx:` block:
 
@@ -108,8 +115,8 @@ TM/hotosm_project_1/buildings/polygons/hotosm_project_1_buildings_polygons_shp.z
 ```
 
 `nest_by_geometry` needs `split_by_geometry`. Without it one artifact holds every
-geometry type and cannot sit under a single segment, so the run fails rather than
-writing a misleading key.
+geometry type and cannot sit under a single segment, so the run fails when it starts,
+before any layer is exported.
 
 AWS credentials come from boto3's default chain: `AWS_ACCESS_KEY_ID` +
 `AWS_SECRET_ACCESS_KEY` (with optional `AWS_SESSION_TOKEN`), `AWS_PROFILE`,
@@ -178,9 +185,9 @@ Every value under `combined` is optional and falls back to what oex derives from
 the categories. Crisis tags can only be applied by an HDX sysadmin: publishing
 with one rejects the whole dataset.
 
-Layers appear in `categories` order. Running both sources into the same dataset
-**accumulates**: the Overture run adds to what the OSM run published rather than
-replacing it. `hdx.purge_existing_resources` clears the dataset first instead.
+The overview page lists layers in `categories` order. Running both sources into the
+same dataset **accumulates**: the Overture run adds to what the OSM run published rather
+than replacing it. `hdx.purge_existing_resources` clears the dataset first instead.
 
 `oex-cli all` runs every source the config enables in one command, OSM then
 Overture, into the same dataset:

@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from oex.pcodes import cache as cache_mod
-from oex.pcodes.cache import PcodeCacheError, ensure_admin_parquets
+from oex.pcodes.cache import PcodeCacheEntry, PcodeCacheError, ensure_admin_parquets
 
 
 class _FakeResponse:
@@ -76,21 +76,28 @@ def _manifest(group: str, level: int, date: str) -> dict[str, Any]:
     }
 
 
+FIELDMAPS_ADM = (
+    "https://data.fieldmaps.io/edge-matched/humanitarian/intl/adm{level}_polygons.parquet"
+)
+
+
+def _ensure(cache_dir: Path, levels: list[int]) -> dict[int, PcodeCacheEntry]:
+    return ensure_admin_parquets(
+        cache_dir=cache_dir,
+        levels=levels,
+        manifest_url="https://x/edge-matched.json",
+        parquet_url_template=FIELDMAPS_ADM,
+        manifest_group="humanitarian",
+    )
+
+
 def test_ensure_admin_parquets_downloads_when_absent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     manifest = [_manifest("humanitarian", 1, "2025-07-29")]
     log: list[str] = []
     with _patched_requests(monkeypatch, manifest=manifest, parquet_bytes=b"PARQ", download_log=log):
-        entries = ensure_admin_parquets(
-            cache_dir=tmp_path,
-            levels=[1],
-            manifest_url="https://x/edge-matched.json",
-            parquet_url_template=(
-                "https://data.fieldmaps.io/edge-matched/humanitarian/intl/adm{level}_polygons.parquet"
-            ),
-            manifest_group="humanitarian",
-        )
+        entries = _ensure(tmp_path, [1])
 
     assert set(entries) == {1}
     assert entries[1].path == tmp_path / "adm1_polygons.parquet"
@@ -108,20 +115,9 @@ def test_ensure_admin_parquets_skips_when_date_unchanged(
     manifest = [_manifest("humanitarian", 2, "2025-07-29")]
     log: list[str] = []
 
-    def call() -> None:
-        ensure_admin_parquets(
-            cache_dir=tmp_path,
-            levels=[2],
-            manifest_url="https://x/edge-matched.json",
-            parquet_url_template=(
-                "https://data.fieldmaps.io/edge-matched/humanitarian/intl/adm{level}_polygons.parquet"
-            ),
-            manifest_group="humanitarian",
-        )
-
     with _patched_requests(monkeypatch, manifest=manifest, parquet_bytes=b"v1", download_log=log):
-        call()
-        call()
+        _ensure(tmp_path, [2])
+        _ensure(tmp_path, [2])
 
     assert log == ["https://data.fieldmaps.io/edge-matched/humanitarian/intl/adm2_polygons.parquet"]
 
@@ -136,15 +132,7 @@ def test_ensure_admin_parquets_redownloads_when_date_moves(
         parquet_bytes=b"old",
         download_log=log,
     ):
-        ensure_admin_parquets(
-            cache_dir=tmp_path,
-            levels=[1],
-            manifest_url="https://x/edge-matched.json",
-            parquet_url_template=(
-                "https://data.fieldmaps.io/edge-matched/humanitarian/intl/adm{level}_polygons.parquet"
-            ),
-            manifest_group="humanitarian",
-        )
+        _ensure(tmp_path, [1])
     assert (tmp_path / "adm1_polygons.parquet").read_bytes() == b"old"
 
     with _patched_requests(
@@ -153,15 +141,7 @@ def test_ensure_admin_parquets_redownloads_when_date_moves(
         parquet_bytes=b"new",
         download_log=log,
     ):
-        ensure_admin_parquets(
-            cache_dir=tmp_path,
-            levels=[1],
-            manifest_url="https://x/edge-matched.json",
-            parquet_url_template=(
-                "https://data.fieldmaps.io/edge-matched/humanitarian/intl/adm{level}_polygons.parquet"
-            ),
-            manifest_group="humanitarian",
-        )
+        _ensure(tmp_path, [1])
     assert (tmp_path / "adm1_polygons.parquet").read_bytes() == b"new"
     assert len(log) == 2
 
@@ -177,12 +157,4 @@ def test_ensure_admin_parquets_raises_when_level_missing_from_manifest(
         download_log=log,
     ):
         with pytest.raises(PcodeCacheError, match="adm=4"):
-            ensure_admin_parquets(
-                cache_dir=tmp_path,
-                levels=[1, 4],
-                manifest_url="https://x/edge-matched.json",
-                parquet_url_template=(
-                    "https://data.fieldmaps.io/edge-matched/humanitarian/intl/adm{level}_polygons.parquet"
-                ),
-                manifest_group="humanitarian",
-            )
+            _ensure(tmp_path, [1, 4])

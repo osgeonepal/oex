@@ -6,7 +6,7 @@ HDX publication.
 
 ## Install
 
-One-line installer (picks `uv`, `pipx`, or `pip --user`, whichever you have):
+One-line installer (uses the first of `uv`, `pipx`, `conda`, `pip --user` or `docker` it finds):
 
 ```bash
 curl -LsSf https://raw.githubusercontent.com/osgeonepal/oex/main/scripts/install.sh | sh
@@ -27,14 +27,9 @@ docker run --rm -v "$PWD/output:/app/output" \
   ghcr.io/osgeonepal/oex:latest oex-cli osm npl
 ```
 
-For docker as a system command:
-
-```bash
-curl -LsSf https://raw.githubusercontent.com/osgeonepal/oex/main/scripts/install.sh | sh -s -- --docker
-```
-
-That writes `/usr/local/bin/oex-cli` wrapping the docker image so
-`oex-cli osm npl` runs the container.
+When docker is the only installer found, the one-line installer writes
+`/usr/local/bin/oex-cli` wrapping the docker image, so `oex-cli osm npl` runs the
+container.
 
 ## Export a country
 
@@ -86,7 +81,7 @@ git clone https://github.com/osgeonepal/oex
 cd oex
 just setup
 just test
-just osm nepal
+just run osm nepal
 ```
 
 ## Stack

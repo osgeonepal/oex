@@ -10,7 +10,7 @@ from oex.boundary import area_sq_km, resolve_boundary
 from oex.config.schema import BoundaryConfig
 
 
-def test_resolve_from_user_geom_polygon() -> None:
+def test_a_user_featurecollection_resolves_to_its_bbox_and_user_source() -> None:
     fc = {
         "type": "FeatureCollection",
         "features": [
@@ -71,28 +71,25 @@ def test_buffer_widens_bbox_and_changes_cache_key() -> None:
     buffered_cfg = BoundaryConfig(geom=json.dumps(fc), buffer_meters=1000.0)
     buffered = resolve_boundary("BUF", buffered_cfg)
 
-    # Buffered bbox should be a strict superset.
     assert buffered.bbox[0] < base.bbox[0]
     assert buffered.bbox[1] < base.bbox[1]
     assert buffered.bbox[2] > base.bbox[2]
     assert buffered.bbox[3] > base.bbox[3]
 
-    # 1 km buffer at the equator works out to about 0.009 deg in both axes.
-    # Allow generous slack so we just assert order of magnitude is right.
+    # 1 km at the equator is about 0.009 degrees; the bounds catch a metres/degrees mixup.
     dx = buffered.bbox[2] - base.bbox[2]
     dy = buffered.bbox[3] - base.bbox[3]
     assert 0.005 < dx < 0.02
     assert 0.005 < dy < 0.02
 
-    # Source string carries the buffer annotation, so users see it in README.
+    # The README shows the source, so the buffer has to be visible there.
     assert "buffered" in buffered.source
     assert "+1000m" in buffered.source
 
-    # Different buffers must produce distinct cached boundaries.
     assert buffered is not base
 
 
-def test_zero_buffer_is_identity() -> None:
+def test_a_zero_buffer_leaves_bbox_and_source_unchanged() -> None:
     fc = {
         "type": "Polygon",
         "coordinates": [[[20, 20], [21, 20], [21, 21], [20, 21], [20, 20]]],

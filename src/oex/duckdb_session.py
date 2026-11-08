@@ -31,7 +31,7 @@ def connect(
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
     conn = duckdb.connect(str(db_path))
-    for stmt in (
+    for statement in (
         "INSTALL spatial",
         "LOAD spatial",
         # Ignore CRS authority axis order across this session: GEOMETRY holds
@@ -53,9 +53,9 @@ def connect(
         f"SET http_timeout={http_timeout_s}",
         "SET http_keep_alive=true",
     ):
-        conn.execute(stmt)
+        conn.execute(statement)
 
-    # Overture's bucket serves anonymous requests only, so AWS creds in the
+    # Overture's bucket serves anonymous requests only, so AWS credentials in the
     # environment would make DuckDB sign requests to it and get HTTP 400.
     if anonymous_s3_bucket:
         conn.execute(

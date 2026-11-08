@@ -23,11 +23,11 @@ _INSTALL_HINTS = {
 
 
 class OsmiumNotInstalledError(RuntimeError):
-    """`osmium` binary not found on PATH."""
+    pass
 
 
 class OsmiumExtractError(RuntimeError):
-    """`osmium extract` exited non-zero."""
+    pass
 
 
 def osmium_polygon_extract(
@@ -56,11 +56,13 @@ def osmium_polygon_extract(
         "type": "FeatureCollection",
         "features": [{"type": "Feature", "geometry": polygon_geojson, "properties": {}}],
     }
-    with tempfile.NamedTemporaryFile("w", suffix=".geojson", delete=False, encoding="utf-8") as fh:
-        json.dump(feature_collection, fh)
-        geojson_path = Path(fh.name)
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".geojson", delete=False, encoding="utf-8"
+    ) as geojson_file:
+        json.dump(feature_collection, geojson_file)
+        geojson_path = Path(geojson_file.name)
     try:
-        cmd = [
+        command = [
             osmium,
             "extract",
             "-p",
@@ -71,12 +73,12 @@ def osmium_polygon_extract(
             str(out_pbf),
             str(pbf_path),
         ]
-        logger.info("osmium extract: %s", " ".join(cmd))
-        proc = subprocess.run(cmd, capture_output=True, text=True)
-        if proc.returncode != 0:
-            tail = proc.stderr.strip().splitlines()[-10:]
+        logger.info("osmium extract: %s", " ".join(command))
+        completed = subprocess.run(command, capture_output=True, text=True)
+        if completed.returncode != 0:
+            tail = completed.stderr.strip().splitlines()[-10:]
             raise OsmiumExtractError(
-                f"osmium extract failed (rc={proc.returncode}): " + " | ".join(tail)
+                f"osmium extract failed (rc={completed.returncode}): " + " | ".join(tail)
             )
     finally:
         geojson_path.unlink(missing_ok=True)

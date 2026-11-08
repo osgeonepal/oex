@@ -64,14 +64,95 @@ class MapEntry:
     """One toggleable, coloured layer on the map."""
 
     key: str  # unique id; also the MapLibre layer-id prefix
-    label: str  # legend text
+    label: str
     color: str
     tileset_url: str
     source_layer: str
     # Restricts this entry to part of a shared tileset, as `category|source`.
-    # None when the entry owns its whole tileset.
     match_key: str | None = None
     feature_count: int | None = None
+
+
+_MAP_CONTROLS_SCRIPT = """map.addControl(new maplibregl.NavigationControl());
+map.addControl(new maplibregl.FullscreenControl());
+
+// Each entry owns three style layers (polygon, line, point), so a checkbox is a
+// visibility flip on those three.
+const suffixes = ['fill', 'line', 'point'];
+const toggles = document.querySelectorAll('.legend input');
+
+function applyToggle(toggle) {
+  const visibility = toggle.checked ? 'visible' : 'none';
+  if (toggle.dataset.key === 'aoi') {
+    if (map.getLayer('aoi-line')) map.setLayoutProperty('aoi-line', 'visibility', visibility);
+    return;
+  }
+  for (const suffix of suffixes) {
+    const id = `${toggle.dataset.key}-${suffix}`;
+    if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', visibility);
+  }
+}
+toggles.forEach((t) => t.addEventListener('change', () => applyToggle(t)));
+document.querySelectorAll('.legend-actions button').forEach((button) => {
+  button.addEventListener('click', () => {
+    const on = button.dataset.all === 'on';
+    toggles.forEach((t) => { t.checked = on; applyToggle(t); });
+  });
+});
+
+"""
+
+_FEATURE_INSPECTION_SCRIPT = """const layerIds = Object.keys(labelOfLayer);
+const hovercard = document.getElementById('hovercard');
+
+// Hovering names the feature; clicking opens everything it carries.
+map.on('mousemove', layerIds, (event) => {
+  const hit = event.features && event.features[0];
+  if (!hit) return;
+  map.getCanvas().style.cursor = 'pointer';
+  const name = hit.properties.name || '(no name)';
+  hovercard.textContent = '';
+  const layerName = document.createElement('span');
+  layerName.className = 'hc-layer';
+  layerName.textContent = labelOfLayer[hit.layer.id];
+  const label = document.createElement('b');
+  label.textContent = name;
+  hovercard.append(layerName, label);
+  hovercard.style.display = 'block';
+  hovercard.style.left = (event.point.x + 14) + 'px';
+  hovercard.style.top = (event.point.y + 14) + 'px';
+});
+map.on('mouseleave', layerIds, () => {
+  map.getCanvas().style.cursor = '';
+  hovercard.style.display = 'none';
+});
+
+map.on('click', (event) => {
+  const hit = map.queryRenderedFeatures(event.point, { layers: layerIds })[0];
+  if (!hit) return;
+  // Tag values are editable by anyone, so they are written as text, never as markup.
+  const content = document.createElement('div');
+  const title = document.createElement('b');
+  title.textContent = labelOfLayer[hit.layer.id];
+  const table = document.createElement('table');
+  table.className = 'popup';
+  Object.entries(hit.properties)
+    .filter(([, value]) => value !== null && value !== '')
+    .forEach(([key, value]) => {
+      const row = table.insertRow();
+      const header = document.createElement('th');
+      header.textContent = key;
+      row.append(header);
+      row.insertCell().textContent = value;
+    });
+  content.append(title, table);
+  new maplibregl.Popup({ maxWidth: '320px' })
+    .setLngLat(event.lngLat)
+    .setDOMContent(content)
+    .addTo(map);
+});
+
+"""
 
 
 def head_scripts(assets: MapAssetsConfig | None = None) -> str:
@@ -108,6 +189,12 @@ def render_map(
     )
 
 
+def _js_literal(value: object) -> str:
+    """`value` as a JavaScript literal; escaping "</" keeps "</script>" in a value from
+    closing the inline script element."""
+    return json.dumps(value).replace("</", "<\\/")
+
+
 def _display_boundary(boundary_geojson: str) -> str:
     """The export boundary, thinned only when inlining it whole would bloat the page."""
     if len(boundary_geojson) <= _AOI_INLINE_LIMIT_BYTES:
@@ -125,36 +212,16 @@ def _map_script(
     theme: ThemeConfig,
     boundary_geojson: str | None = None,
 ) -> str:
-    tilesets = {e.tileset_url for e in entries}
-    sources = {f"src{i}": url for i, url in enumerate(sorted(tilesets))}
-    source_of = {url: name for name, url in sources.items()}
-
-    source_defs = ",\n      ".join(
-        f"{name}: {{ type: 'vector', url: 'pmtiles://{url}' }}" for name, url in sources.items()
+    source_definitions, layer_definitions = _style_definitions(entries, theme, boundary_geojson)
+    labels = _js_literal(
+        {
+            f"{entry.key}-{suffix}": entry.label
+            for entry in entries
+            for suffix in ("fill", "line", "point")
+        }
     )
-    layer_defs = ",\n      ".join(_layer_defs(e, source_of[e.tileset_url]) for e in entries)
-    if boundary_geojson:
-        source_defs += f",\n      aoi: {{ type: 'geojson', data: {boundary_geojson} }}"
-        # Drawn after the data layers so the outline stays readable over them.
-        layer_defs += (
-            ",\n      { id: 'aoi-line', type: 'line', source: 'aoi',"
-            f" paint: {{ 'line-color': '{theme.boundary_outline_color}', 'line-width': 2 }} }}"
-        )
-
-    labels = json.dumps(
-        {f"{e.key}-{suffix}": e.label for e in entries for suffix in ("fill", "line", "point")}
-    )
-
-    # Frame on the export boundary: features are selected whole, so a long road or
-    # river crossing the boundary would otherwise stretch the view past the export.
-    fit = (
-        f"map.fitBounds([[{boundary_bbox[0]},{boundary_bbox[1]}],"
-        f"[{boundary_bbox[2]},{boundary_bbox[3]}]], {{padding: 24, duration: 0}});"
-        if boundary_bbox
-        else ""
-    )
-
-    return f"""
+    return (
+        f"""
 const protocol = new pmtiles.Protocol();
 maplibregl.addProtocol('pmtiles', protocol.tile);
 const map = new maplibregl.Map({{
@@ -162,125 +229,91 @@ const map = new maplibregl.Map({{
   style: {{
     version: 8,
     sources: {{
-      basemap: {{ type: 'raster', tiles: ['{assets.basemap_tiles}'], tileSize: 256,
-                  attribution: '{assets.basemap_attribution}' }},
-      {source_defs}
+      basemap: {{ type: 'raster', tiles: [{_js_literal(assets.basemap_tiles)}], tileSize: 256,
+                  attribution: {_js_literal(assets.basemap_attribution)} }},
+      {source_definitions}
     }},
     layers: [
       {{ id: 'basemap', type: 'raster', source: 'basemap',
          paint: {{ 'raster-opacity': 0.55 }} }},
-      {layer_defs}
+      {layer_definitions}
     ]
   }}
 }});
-map.addControl(new maplibregl.NavigationControl());
-map.addControl(new maplibregl.FullscreenControl());
-
-// Each entry owns three style layers (polygon, line, point), so a checkbox is a
-// visibility flip on those three.
-const suffixes = ['fill', 'line', 'point'];
-const toggles = document.querySelectorAll('.legend input');
-
-function applyToggle(toggle) {{
-  const visibility = toggle.checked ? 'visible' : 'none';
-  if (toggle.dataset.key === 'aoi') {{
-    if (map.getLayer('aoi-line')) map.setLayoutProperty('aoi-line', 'visibility', visibility);
-    return;
-  }}
-  for (const suffix of suffixes) {{
-    const id = `${{toggle.dataset.key}}-${{suffix}}`;
-    if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', visibility);
-  }}
-}}
-toggles.forEach((t) => t.addEventListener('change', () => applyToggle(t)));
-document.querySelectorAll('.legend-actions button').forEach((button) => {{
-  button.addEventListener('click', () => {{
-    const on = button.dataset.all === 'on';
-    toggles.forEach((t) => {{ t.checked = on; applyToggle(t); }});
-  }});
-}});
-
-// Inspecting a feature is how you check the attribute coverage the table reports.
-const labelOfLayer = {labels};
-const layerIds = Object.keys(labelOfLayer);
-const hovercard = document.getElementById('hovercard');
-
-// Hovering names the feature; clicking opens everything it carries.
-map.on('mousemove', layerIds, (event) => {{
-  const hit = event.features && event.features[0];
-  if (!hit) return;
-  map.getCanvas().style.cursor = 'pointer';
-  const name = hit.properties.name || '(no name)';
-  hovercard.textContent = '';
-  const layerName = document.createElement('span');
-  layerName.className = 'hc-layer';
-  layerName.textContent = labelOfLayer[hit.layer.id];
-  const label = document.createElement('b');
-  label.textContent = name;
-  hovercard.append(layerName, label);
-  hovercard.style.display = 'block';
-  hovercard.style.left = (event.point.x + 14) + 'px';
-  hovercard.style.top = (event.point.y + 14) + 'px';
-}});
-map.on('mouseleave', layerIds, () => {{
-  map.getCanvas().style.cursor = '';
-  hovercard.style.display = 'none';
-}});
-
-map.on('click', (event) => {{
-  const hit = map.queryRenderedFeatures(event.point, {{ layers: layerIds }})[0];
-  if (!hit) return;
-  // Tag values are editable by anyone, so they are written as text, never as markup.
-  const content = document.createElement('div');
-  const title = document.createElement('b');
-  title.textContent = labelOfLayer[hit.layer.id];
-  const table = document.createElement('table');
-  table.className = 'popup';
-  Object.entries(hit.properties)
-    .filter(([, value]) => value !== null && value !== '')
-    .forEach(([key, value]) => {{
-      const row = table.insertRow();
-      const header = document.createElement('th');
-      header.textContent = key;
-      row.append(header);
-      row.insertCell().textContent = value;
-    }});
-  content.append(title, table);
-  new maplibregl.Popup({{ maxWidth: '320px' }})
-    .setLngLat(event.lngLat)
-    .setDOMContent(content)
-    .addTo(map);
-}});
-
-map.on('load', () => {{ {fit} toggles.forEach(applyToggle); }});
 """
+        + _MAP_CONTROLS_SCRIPT
+        + f"""// Inspecting a feature is how you check the attribute coverage the table reports.
+const labelOfLayer = {labels};
+"""
+        + _FEATURE_INSPECTION_SCRIPT
+        + f"""map.on('load', () => {{ {_fit_bounds_call(boundary_bbox)} toggles.forEach(applyToggle); }});
+"""
+    )
 
 
-def _layer_defs(entry: MapEntry, source: str) -> str:
-    common = f"source: '{source}', 'source-layer': '{entry.source_layer}'"
-    defs: list[str] = [
-        f"{{ id: '{entry.key}-fill', type: 'fill', {common},"
+def _style_definitions(
+    entries: list[MapEntry], theme: ThemeConfig, boundary_geojson: str | None
+) -> tuple[str, str]:
+    """The style's tileset sources and layers as JS object literals, one per line."""
+    tilesets = {entry.tileset_url for entry in entries}
+    sources = {f"src{index}": url for index, url in enumerate(sorted(tilesets))}
+    source_of = {url: name for name, url in sources.items()}
+
+    source_definitions = ",\n      ".join(
+        f"{name}: {{ type: 'vector', url: {_js_literal(f'pmtiles://{url}')} }}"
+        for name, url in sources.items()
+    )
+    layer_definitions = ",\n      ".join(
+        _layer_definitions(entry, source_of[entry.tileset_url]) for entry in entries
+    )
+    if boundary_geojson:
+        source_definitions += f",\n      aoi: {{ type: 'geojson', data: {boundary_geojson} }}"
+        # Drawn after the data layers so the outline stays readable over them.
+        layer_definitions += (
+            ",\n      { id: 'aoi-line', type: 'line', source: 'aoi',"
+            f" paint: {{ 'line-color': {_js_literal(theme.boundary_outline_color)},"
+            " 'line-width': 2 } }"
+        )
+    return source_definitions, layer_definitions
+
+
+def _fit_bounds_call(boundary_bbox: tuple[float, float, float, float] | None) -> str:
+    """Frame on the export boundary: features are selected whole, so a long road or river
+    crossing the boundary would otherwise stretch the view past the export."""
+    if not boundary_bbox:
+        return ""
+    return (
+        f"map.fitBounds([[{boundary_bbox[0]},{boundary_bbox[1]}],"
+        f"[{boundary_bbox[2]},{boundary_bbox[3]}]], {{padding: 24, duration: 0}});"
+    )
+
+
+def _layer_definitions(entry: MapEntry, source: str) -> str:
+    common = f"source: '{source}', 'source-layer': {_js_literal(entry.source_layer)}"
+    color = _js_literal(entry.color)
+    definitions: list[str] = [
+        f"{{ id: {_js_literal(f'{entry.key}-fill')}, type: 'fill', {common},"
         f" filter: {_filter(entry, 'Polygon')},"
-        f" paint: {{ 'fill-color': '{entry.color}', 'fill-opacity': 0.5,"
-        f" 'fill-outline-color': '{entry.color}' }} }}",
-        f"{{ id: '{entry.key}-line', type: 'line', {common},"
+        f" paint: {{ 'fill-color': {color}, 'fill-opacity': 0.5,"
+        f" 'fill-outline-color': {color} }} }}",
+        f"{{ id: {_js_literal(f'{entry.key}-line')}, type: 'line', {common},"
         f" filter: {_filter(entry, 'LineString')},"
-        f" paint: {{ 'line-color': '{entry.color}', 'line-width': 1.3 }} }}",
-        f"{{ id: '{entry.key}-point', type: 'circle', {common},"
+        f" paint: {{ 'line-color': {color}, 'line-width': 1.3 }} }}",
+        f"{{ id: {_js_literal(f'{entry.key}-point')}, type: 'circle', {common},"
         f" filter: {_filter(entry, 'Point')},"
-        f" paint: {{ 'circle-color': '{entry.color}', 'circle-radius': 3,"
+        f" paint: {{ 'circle-color': {color}, 'circle-radius': 3,"
         f" 'circle-stroke-width': 0.5, 'circle-stroke-color': '#ffffff' }} }}",
     ]
     separator: str = ",\n      "
-    return separator.join(defs)
+    return separator.join(definitions)
 
 
 def _filter(entry: MapEntry, geometry: str) -> str:
     geometry_test = f"['==', ['geometry-type'], '{geometry}']"
     if entry.match_key is None:
         return geometry_test
-    key_expr = "['concat', ['get', 'category'], '|', ['get', 'source']]"
-    return f"['all', {geometry_test}, ['==', {key_expr}, '{entry.match_key}']]"
+    key_expression = "['concat', ['get', 'category'], '|', ['get', 'source']]"
+    return f"['all', {geometry_test}, ['==', {key_expression}, {_js_literal(entry.match_key)}]]"
 
 
 def _render_legend(entries: list[MapEntry], *, show_aoi: bool = False) -> str:
@@ -295,11 +328,11 @@ def _render_legend(entries: list[MapEntry], *, show_aoi: bool = False) -> str:
     )
     items = aoi_item + "".join(
         "<li><label>"
-        f'<input type="checkbox" checked data-key="{escape(e.key)}">'
-        f'<span class="sw" style="background:{e.color}"></span>{escape(e.label)}'
-        f"{_count_label(e.feature_count)}"
+        f'<input type="checkbox" checked data-key="{escape(entry.key)}">'
+        f'<span class="sw" style="background:{escape(entry.color)}"></span>{escape(entry.label)}'
+        f"{_count_label(entry.feature_count)}"
         "</label></li>"
-        for e in entries
+        for entry in entries
     )
     return (
         '<details class="legend" open>'

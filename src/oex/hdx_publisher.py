@@ -5,7 +5,7 @@ import os
 import re
 import time
 import urllib.parse
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -17,17 +17,19 @@ from oex import http
 from oex.config.schema import CategoryConfig, HdxConfig, RootConfig, S3Config
 from oex.logging_setup import get_logger
 from oex.naming import (
+    ASSET_TITLES,
     COMBINED_SLUG,
     category_dataset_name,
     category_label,
+    combined_dataset_name,
     slugify,
     split_artifact_filename,
 )
 from oex.palette import DEFAULT_PALETTE
-from oex.s3 import artifact_key
-from oex.s3 import resolve as s3_resolve
+from oex.s3 import category_artifact_key, resolve_with_bucket
 from oex.s3 import upload as s3_upload
-from oex.sources.labels import SOURCE_LABELS, short_label
+from oex.sources.labels import SOURCE_LABELS, long_label, short_label
+from oex.writers import GEOMETRY_LABELS
 
 if TYPE_CHECKING:
     from oex.report import SourceMetadata
@@ -70,11 +72,6 @@ def related_dataset_links(cfg: RootConfig, current: CategoryConfig) -> list[tupl
     return links
 
 
-HDX_SHORT_SOURCE = {name: long for name, (_short, long) in SOURCE_LABELS.items()}
-# Names read as a layer and a source; the format is in the name because
-# ResourceMatcher merges same-named resources that differ only by format.
-RESOURCE_SOURCE = {name: short for name, (short, _long) in SOURCE_LABELS.items()}
-
 _SUMMARY_CHARS = 240
 
 
@@ -92,8 +89,7 @@ FORMAT_LABEL = {
 
 
 def country_name(iso3: str, *, dataset_name: str | None = None) -> str:
-    # dataset_name wins: it fixes ISO inversions like DRC and names sub-national
-    # exports.
+    # dataset_name fixes ISO inversions like DRC and names sub-national exports.
     if dataset_name:
         return dataset_name
     import pycountry
@@ -134,14 +130,13 @@ def dataset_title(cfg: RootConfig, category: CategoryConfig) -> str:
 
 @dataclass
 class PublishContext:
-    dataset_source: str
     snapshot_date: datetime
     source_name: str = ""
     metadata_json_path: Path | None = None
-    combined_report_enabled: bool = False
+    category_report_enabled: bool = False
     output_dir: Path | None = None
     s3: S3Config | None = None
-    # When both set, override snapshot_date for HDX dataset time period.
+    # When both are set, they replace snapshot_date as the HDX time period.
     temporal_min: datetime | None = None
     temporal_max: datetime | None = None
     # Export boundary as (min_lon, min_lat, max_lon, max_lat), used to frame the map.
@@ -149,18 +144,18 @@ class PublishContext:
     boundary_geojson: str | None = None
 
 
-def apply_time_period(dataset, ctx: PublishContext, start: str | None) -> None:  # noqa: ANN001 - hdx Dataset
-    if ctx.temporal_min is not None and ctx.temporal_max is not None:
-        dataset.set_time_period(ctx.temporal_min, ctx.temporal_max)
+def apply_time_period(dataset, publish_context: PublishContext, start: str | None) -> None:  # noqa: ANN001 - hdx Dataset
+    if publish_context.temporal_min is not None and publish_context.temporal_max is not None:
+        dataset.set_time_period(publish_context.temporal_min, publish_context.temporal_max)
     elif start is not None:
         first_day = datetime.fromisoformat(start)
-        if first_day.date() > ctx.snapshot_date.date():
+        if first_day.date() > publish_context.snapshot_date.date():
             raise ValueError(
-                f"hdx.time_period_start {start} is after the snapshot {ctx.snapshot_date.date()}"
+                f"hdx.time_period_start {start} is after the snapshot {publish_context.snapshot_date.date()}"
             )
-        dataset.set_time_period(first_day, ctx.snapshot_date)
+        dataset.set_time_period(first_day, publish_context.snapshot_date)
     else:
-        dataset.set_time_period(ctx.snapshot_date)
+        dataset.set_time_period(publish_context.snapshot_date)
 
 
 def _category_summary(category: CategoryConfig) -> str:
@@ -182,17 +177,19 @@ def _category_summary(category: CategoryConfig) -> str:
 
 def _strip_tag_names(notes: str, category: CategoryConfig) -> str:
     """Drop the OSM keys a layer selects on; a reader wants the subject, not the query."""
-    keys = {k.split(":")[-1] for k in category.osm.filter} | set(category.osm.filter)
+    keys = {key.split(":")[-1] for key in category.osm.filter} | set(category.osm.filter)
     span = re.compile(r"`([^`]+)`")
     kept = span.sub(
-        lambda m: "" if m.group(1).split("=")[0].strip(":") in keys else m.group(0), notes
+        lambda match: "" if match.group(1).split("=")[0].strip(":") in keys else match.group(0),
+        notes,
     )
     kept = re.sub(r"\s*(tagged(\s+via| with| as)?|via)\s*(([,]|or|and)\s*)*(?=[.,:;]|$)", "", kept)
     return re.sub(r"[ ]*(,\s*)+(?=[.,:;])|(?<=\s)(,\s*)+", "", kept)
 
 
-def _aoi_payload(boundary_geojson: str, buffer_meters: float) -> tuple[str, str]:
-    """The area of interest as a FeatureCollection, plus a description naming its size."""
+def _area_of_interest_payload(boundary_geojson: str, buffer_meters: float) -> tuple[str, str]:
+    """The area of interest as a FeatureCollection carrying its area, plus the resource
+    description."""
     from oex.boundary import area_sq_km
 
     geometry = json.loads(boundary_geojson)
@@ -218,7 +215,7 @@ def _aoi_payload(boundary_geojson: str, buffer_meters: float) -> tuple[str, str]
 @dataclass
 class ExtraResource:
     path: Path
-    fmt: str
+    format_name: str
     description: str
 
 
@@ -232,19 +229,19 @@ class CombinedCategory:
 
 
 class HdxPublisher:
-    def __init__(self, hdx_cfg: HdxConfig):
-        if not hdx_cfg.push:
+    def __init__(self, hdx_config: HdxConfig):
+        if not hdx_config.push:
             raise ValueError("HdxPublisher constructed but hdx.push is false")
-        api_key = hdx_cfg.api_key or os.environ.get("HDX_API_KEY")
-        owner_org = hdx_cfg.owner_org or os.environ.get("HDX_OWNER_ORG")
-        maintainer = hdx_cfg.maintainer or os.environ.get("HDX_MAINTAINER")
+        api_key = hdx_config.api_key or os.environ.get("HDX_API_KEY")
+        owner_org = hdx_config.owner_org or os.environ.get("HDX_OWNER_ORG")
+        maintainer = hdx_config.maintainer or os.environ.get("HDX_MAINTAINER")
         if not (api_key and owner_org and maintainer):
             raise ValueError(
                 "hdx.push is enabled but HDX credentials (api_key, owner_org, "
                 "maintainer) are missing. Set them in the YAML or environment."
             )
 
-        _preflight_check(api_key, owner_org, maintainer, hdx_cfg.site)
+        _preflight_check(api_key, owner_org, maintainer, hdx_config.site)
 
         from hdx.api.configuration import Configuration
 
@@ -252,143 +249,173 @@ class HdxPublisher:
         # can build several publishers, one per source or config.
         Configuration.delete()
         Configuration.create(
-            hdx_site=hdx_cfg.site,
+            hdx_site=hdx_config.site,
             hdx_key=api_key,
-            user_agent=hdx_cfg.user_agent,
+            user_agent=hdx_config.user_agent,
         )
         self._owner_org = owner_org
         self._maintainer = maintainer
-        logger.info("HDX session ready: site=%s org=%s", hdx_cfg.site, owner_org)
+        logger.info("HDX session ready: site=%s org=%s", hdx_config.site, owner_org)
 
     def publish(
         self,
         cfg: RootConfig,
         category: CategoryConfig,
         zip_paths: list[Path],
-        ctx: PublishContext,
+        publish_context: PublishContext,
         extra_resources: list[ExtraResource] | None = None,
         geoparquet_url: str | None = None,
         geoparquet_path: Path | None = None,
     ) -> str:
         category_slug = slugify(category.name)
-        dt_name = category_dataset_name(cfg, category)
-        dataset = self._build_dataset_object(cfg, category, dt_name, ctx)
+        hdx_dataset_name = category_dataset_name(cfg, category)
+        dataset = self._build_dataset_object(cfg, category, hdx_dataset_name, publish_context)
+        self._add_layer_resources(
+            dataset, cfg.iso3, category, zip_paths, publish_context, geoparquet_url, geoparquet_path
+        )
+        self._add_category_file_resources(
+            dataset, cfg.iso3, category, publish_context, extra_resources
+        )
 
-        # Largest resource first so HDX's default-resource preview lands on
-        # the richest format instead of a sparse one (e.g., lines over points).
-        sorted_zips = sorted(zip_paths, key=lambda p: p.stat().st_size, reverse=True)
-        for zip_path in sorted_zips:
-            res = self._make_resource_for_zip(zip_path, category, ctx, cfg.iso3, category_slug)
-            dataset.add_update_resource(res)
+        # A category's dataset holds every source that publishes it, so an OSM run
+        # must not delete the Overture resources already there. Pruning is opt-in.
+        rebuilt = publish_context.category_report_enabled and publish_context.output_dir is not None
+        self._create_or_update(
+            dataset,
+            hdx_dataset_name,
+            remove_additional=cfg.hdx.purge_existing_resources,
+            keep_files=frozenset({f"{hdx_dataset_name}_report.html"} if rebuilt else ()),
+        )
 
+        if rebuilt:
+            self._build_and_publish_category_report(
+                hdx_dataset_name=hdx_dataset_name,
+                category=category,
+                cfg=cfg,
+                category_slug=category_slug,
+                output_dir=publish_context.output_dir,
+                s3_config=publish_context.s3,
+                boundary_bbox=publish_context.boundary_bbox,
+            )
+        return hdx_dataset_name
+
+    def _add_layer_resources(  # noqa: ANN001 - hdx Dataset
+        self,
+        dataset,
+        iso3: str,
+        category: CategoryConfig,
+        zip_paths: list[Path],
+        publish_context: PublishContext,
+        geoparquet_url: str | None,
+        geoparquet_path: Path | None,
+    ) -> None:
+        """A layer's download artifacts, and its staged GeoParquet when it has one."""
+        category_slug = slugify(category.name)
+        for zip_path in zip_paths:
+            resource = self._make_resource_for_zip(
+                zip_path, category, publish_context, iso3, category_slug
+            )
+            dataset.add_update_resource(resource)
         if geoparquet_url:
             dataset.add_update_resource(
-                self._make_resource_for_geoparquet(category, geoparquet_url, ctx, geoparquet_path)
+                self._make_resource_for_geoparquet(
+                    category, geoparquet_url, publish_context, geoparquet_path
+                )
             )
 
-        layer_title = (
-            f"{category_label(category)} ({RESOURCE_SOURCE.get(ctx.source_name, ctx.source_name)})"
-        )
+    def _add_category_file_resources(  # noqa: ANN001 - hdx Dataset
+        self,
+        dataset,
+        iso3: str,
+        category: CategoryConfig,
+        publish_context: PublishContext,
+        extra_resources: list[ExtraResource] | None,
+    ) -> None:
+        """The category's tiles and STAC Collection, uploaded beside its artifacts."""
+        category_slug = slugify(category.name)
+        layer_title = f"{category_label(category)} ({short_label(publish_context.source_name)})"
         for extra in extra_resources or []:
-            res = self._make_resource_for_path(
+            resource = self._make_resource_for_path(
                 path=extra.path,
-                fmt=extra.fmt,
+                format_name=extra.format_name,
                 description=extra.description,
-                ctx=ctx,
-                iso3=cfg.iso3,
+                publish_context=publish_context,
+                iso3=iso3,
                 category_slug=category_slug,
-                name=f"{layer_title}, Vector Tiles ({FORMAT_LABEL.get(extra.fmt, extra.fmt.upper())})",
+                name=f"{layer_title}, Vector Tiles ({FORMAT_LABEL.get(extra.format_name, extra.format_name.upper())})",
             )
-            dataset.add_update_resource(res)
+            dataset.add_update_resource(resource)
 
-        if ctx.metadata_json_path is not None:
-            res = self._make_resource_for_path(
-                path=ctx.metadata_json_path,
-                fmt="json",
+        if publish_context.metadata_json_path is not None:
+            resource = self._make_resource_for_path(
+                path=publish_context.metadata_json_path,
+                format_name="json",
                 description=(
                     f"STAC Collection for {category_label(category)}: its layers, columns "
                     "and downloads, for STAC clients and code."
                 ),
-                ctx=ctx,
-                iso3=cfg.iso3,
+                publish_context=publish_context,
+                iso3=iso3,
                 category_slug=category_slug,
                 name=f"{layer_title}, STAC Collection",
             )
-            dataset.add_update_resource(res)
-
-        # A category's dataset holds every source that publishes it, so an OSM run
-        # must not delete the Overture resources already there. Pruning is opt-in.
-        rebuilt = ctx.combined_report_enabled and ctx.output_dir is not None
-        self._create_or_update(
-            dataset,
-            dt_name,
-            remove_additional=cfg.hdx.purge_existing_resources,
-            keep_files=frozenset({f"{dt_name}_report.html"} if rebuilt else ()),
-        )
-
-        if rebuilt:
-            self._build_and_publish_combined_report(
-                dt_name=dt_name,
-                category=category,
-                cfg=cfg,
-                category_slug=category_slug,
-                output_dir=ctx.output_dir,
-                s3_cfg=ctx.s3,
-                boundary_bbox=ctx.boundary_bbox,
-            )
-        return dt_name
+            dataset.add_update_resource(resource)
 
     def refresh_metadata(
         self,
         cfg: RootConfig,
         category: CategoryConfig,
-        ctx: PublishContext,
+        publish_context: PublishContext,
     ) -> str | None:
         """Restate the snapshot date on a dataset whose files stay as they are, so it does not
         drift past the frequency it advertises. None when nothing is published yet."""
         from hdx.data.dataset import Dataset
 
-        dt_name = category_dataset_name(cfg, category)
-        existing = Dataset.read_from_hdx(dt_name)
+        hdx_dataset_name = category_dataset_name(cfg, category)
+        existing = Dataset.read_from_hdx(hdx_dataset_name)
         if existing is None:
-            logger.info("%s not on HDX; nothing to refresh", dt_name)
+            logger.info("%s not on HDX; nothing to refresh", hdx_dataset_name)
             return None
 
         existing_org = existing.get("owner_org")
         if existing_org and existing_org != self._owner_org:
             raise RuntimeError(
-                f"HDX dataset {dt_name} exists under a different organisation "
+                f"HDX dataset {hdx_dataset_name} exists under a different organisation "
                 f"(owner_org={existing_org!r}; you are publishing as {self._owner_org!r})."
             )
 
-        apply_time_period(existing, ctx, cfg.hdx.time_period_start)
+        apply_time_period(existing, publish_context, cfg.hdx.time_period_start)
         _hdx_publish_with_retry(
             lambda: existing.update_in_hdx(
                 update_resources=False,
                 match_resources_by_metadata=True,
                 hxl_update=False,
             ),
-            label=f"refresh {dt_name}",
+            label=f"refresh {hdx_dataset_name}",
         )
-        logger.info("%s refreshed snapshot date to %s", dt_name, ctx.snapshot_date)
-        return dt_name
+        self._order_resources(existing, hdx_dataset_name)
+        logger.info(
+            "%s refreshed snapshot date to %s", hdx_dataset_name, publish_context.snapshot_date
+        )
+        return hdx_dataset_name
 
     def _create_or_update(  # noqa: ANN001 - hdx Dataset
         self,
         dataset,
-        dt_name: str,
+        hdx_dataset_name: str,
         *,
         remove_additional: bool,
         keep_files: frozenset[str] = frozenset(),
+        category_labels: Sequence[str] = (),
     ) -> None:
         from hdx.data.dataset import Dataset
 
-        existing = Dataset.read_from_hdx(dt_name)
+        existing = Dataset.read_from_hdx(hdx_dataset_name)
         if existing is not None:
             existing_org = existing.get("owner_org")
             if existing_org and existing_org != self._owner_org:
                 raise RuntimeError(
-                    f"HDX dataset {dt_name} exists under a different organisation "
+                    f"HDX dataset {hdx_dataset_name} exists under a different organisation "
                     f"(owner_org={existing_org!r}; you are publishing as "
                     f"{self._owner_org!r}). Pick a different `key` in your config "
                     "to namespace your datasets, or have HDX transfer ownership."
@@ -403,7 +430,7 @@ class HdxPublisher:
             _reuse_resource_ids(dataset.get_resources(), existing.get_resources())
             logger.info(
                 "Updating HDX dataset %s with %d resources",
-                dt_name,
+                hdx_dataset_name,
                 len(dataset.get_resources()),
             )
             _hdx_publish_with_retry(
@@ -412,12 +439,12 @@ class HdxPublisher:
                     match_resources_by_metadata=True,
                     hxl_update=False,
                 ),
-                label=f"update {dt_name}",
+                label=f"update {hdx_dataset_name}",
             )
         else:
             logger.info(
                 "Creating HDX dataset %s with %d resources",
-                dt_name,
+                hdx_dataset_name,
                 len(dataset.get_resources()),
             )
             _hdx_publish_with_retry(
@@ -425,31 +452,35 @@ class HdxPublisher:
                     allow_no_resources=False,
                     hxl_update=False,
                 ),
-                label=f"create {dt_name}",
+                label=f"create {hdx_dataset_name}",
             )
-        self._sort_resources_by_name(dataset, dt_name)
+        self._order_resources(dataset, hdx_dataset_name, category_labels)
 
     @staticmethod
-    def _sort_resources_by_name(dataset, dt_name: str) -> None:  # noqa: ANN001 - hdx Dataset
-        """Order resources by name for scanning. A resource updated in place keeps its old
-        position, so the order is set after the write."""
+    def _order_resources(  # noqa: ANN001 - hdx Dataset
+        dataset, hdx_dataset_name: str, category_labels: Sequence[str] = ()
+    ) -> None:
+        """Put resources in `_resource_order_key` order. A resource updated in place keeps its
+        old position, so the order is set after the write."""
         resources = dataset.get_resources() or []
         if len(resources) < 2:
             return
-        ordered = sorted(resources, key=lambda r: (r.get("name") or "").casefold())
-        if [r["id"] for r in ordered] == [r["id"] for r in resources]:
+        ordered = sorted(
+            resources, key=lambda resource: _resource_order_key(resource, category_labels)
+        )
+        if [resource["id"] for resource in ordered] == [resource["id"] for resource in resources]:
             return
         _hdx_publish_with_retry(
-            lambda: dataset.reorder_resources([r["id"] for r in ordered]),
-            label=f"reorder {dt_name}",
+            lambda: dataset.reorder_resources([resource["id"] for resource in ordered]),
+            label=f"reorder {hdx_dataset_name}",
         )
-        logger.info("%s: ordered %d resources by name", dt_name, len(ordered))
+        logger.info("%s: ordered %d resources", hdx_dataset_name, len(ordered))
 
     def publish_combined(
         self,
         cfg: RootConfig,
         entries: list[CombinedCategory],
-        ctx: PublishContext,
+        publish_context: PublishContext,
         *,
         pmtiles_path: Path | None = None,
         metadata_path: Path | None = None,
@@ -457,170 +488,160 @@ class HdxPublisher:
     ) -> str:
         if not entries:
             raise ValueError("publish_combined called with no categories")
-        dt_name = cfg.hdx.combined.name or f"{cfg.key}_{cfg.iso3.lower()}"
-        dataset = self._build_combined_dataset_object(cfg, entries, dt_name, ctx)
-
-        pmtiles_layer: str | None = None
+        hdx_dataset_name = combined_dataset_name(cfg)
+        dataset = self._build_combined_dataset_object(
+            cfg, entries, hdx_dataset_name, publish_context
+        )
         if pmtiles_path is not None:
-            pmtiles_layer = pmtiles_path.stem
-            res = self._make_resource_for_path(
-                path=pmtiles_path,
-                fmt="pmtiles",
-                description=(
-                    "Every layer in one tile archive, with a category and source "
-                    "attribute per feature. For web maps."
-                ),
-                ctx=ctx,
-                iso3=cfg.iso3,
-                category_slug=COMBINED_SLUG,
-                name="Vector Tiles, All Layers (PMTiles)",
+            dataset.add_update_resource(
+                self._combined_tiles_resource(cfg.iso3, pmtiles_path, publish_context)
             )
-            dataset.add_update_resource(res)
-
         # The map preview draws this outline, so the geometry behind it is published
         # alongside rather than left as something only the picture shows.
-        if ctx.boundary_geojson and ctx.output_dir is not None:
-            payload, description = _aoi_payload(ctx.boundary_geojson, cfg.boundary.buffer_meters)
-            aoi_path = ctx.output_dir / f"{dt_name}_aoi.geojson"
-            aoi_path.write_text(payload, encoding="utf-8")
+        if publish_context.boundary_geojson and publish_context.output_dir is not None:
             dataset.add_update_resource(
-                self._make_resource_for_path(
-                    path=aoi_path,
-                    fmt="geojson",
-                    description=description,
-                    ctx=ctx,
-                    iso3=cfg.iso3,
-                    category_slug=COMBINED_SLUG,
-                    name="Area of Interest, GeoJSON",
+                self._area_of_interest_resource(
+                    cfg,
+                    publish_context.boundary_geojson,
+                    publish_context.output_dir / f"{hdx_dataset_name}_aoi.geojson",
+                    publish_context,
                 )
             )
-
         for entry in entries:
-            slug = slugify(entry.category.name)
-            sorted_zips = sorted(entry.zip_paths, key=lambda p: p.stat().st_size, reverse=True)
-            for zip_path in sorted_zips:
-                res = self._make_resource_for_zip(zip_path, entry.category, ctx, cfg.iso3, slug)
-                dataset.add_update_resource(res)
-            if entry.geoparquet_url:
-                dataset.add_update_resource(
-                    self._make_resource_for_geoparquet(
-                        entry.category, entry.geoparquet_url, ctx, entry.geoparquet_path
-                    )
-                )
-
-        if metadata_path is not None:
-            res = self._make_resource_for_path(
-                path=metadata_path,
-                fmt="json",
-                description=(
-                    "Field-level metadata for every "
-                    f"{HDX_SHORT_SOURCE.get(ctx.source_name, ctx.source_name)} layer: "
-                    "feature counts, geometry types, columns and value distributions."
-                ),
-                ctx=ctx,
-                iso3=cfg.iso3,
-                category_slug=COMBINED_SLUG,
-                name=f"STAC Collection ({RESOURCE_SOURCE.get(ctx.source_name, ctx.source_name)})",
+            self._add_layer_resources(
+                dataset,
+                cfg.iso3,
+                entry.category,
+                entry.zip_paths,
+                publish_context,
+                entry.geoparquet_url,
+                entry.geoparquet_path,
             )
-            dataset.add_update_resource(res)
+        if metadata_path is not None:
+            dataset.add_update_resource(
+                self._combined_metadata_resource(cfg.iso3, metadata_path, publish_context)
+            )
 
         # A combined dataset accumulates across sources: an Overture run must not
         # delete the resources an earlier OSM run put here. Pruning is opt-in.
-        rebuilt = page_enabled and ctx.output_dir is not None
+        rebuilt = page_enabled and publish_context.output_dir is not None
         self._create_or_update(
             dataset,
-            dt_name,
+            hdx_dataset_name,
             remove_additional=cfg.hdx.purge_existing_resources,
-            keep_files=frozenset({f"{dt_name}_overview.html"} if rebuilt else ()),
+            keep_files=frozenset({f"{hdx_dataset_name}_overview.html"} if rebuilt else ()),
+            category_labels=[category_label(category) for category in cfg.categories],
         )
 
         if rebuilt:
             self._build_and_publish_page(
-                dt_name=dt_name,
+                hdx_dataset_name=hdx_dataset_name,
                 cfg=cfg,
                 entries=entries,
-                pmtiles_layer=pmtiles_layer,
-                ctx=ctx,
+                pmtiles_layer=pmtiles_path.stem if pmtiles_path is not None else None,
+                publish_context=publish_context,
             )
-        return dt_name
+        return hdx_dataset_name
+
+    def _combined_tiles_resource(  # noqa: ANN202 - hdx-python-api Resource
+        self, iso3: str, pmtiles_path: Path, publish_context: PublishContext
+    ):
+        return self._make_resource_for_path(
+            path=pmtiles_path,
+            format_name="pmtiles",
+            description=(
+                "Every layer in one tile archive, with a category and source "
+                "attribute per feature. For web maps."
+            ),
+            publish_context=publish_context,
+            iso3=iso3,
+            category_slug=COMBINED_SLUG,
+            name="Vector Tiles, All Layers (PMTiles)",
+        )
+
+    def _area_of_interest_resource(  # noqa: ANN202 - hdx-python-api Resource
+        self,
+        cfg: RootConfig,
+        boundary_geojson: str,
+        aoi_path: Path,
+        publish_context: PublishContext,
+    ):
+        payload, description = _area_of_interest_payload(
+            boundary_geojson, cfg.boundary.buffer_meters
+        )
+        aoi_path.write_text(payload, encoding="utf-8")
+        return self._make_resource_for_path(
+            path=aoi_path,
+            format_name="geojson",
+            description=description,
+            publish_context=publish_context,
+            iso3=cfg.iso3,
+            category_slug=COMBINED_SLUG,
+            name="Area of Interest, GeoJSON",
+        )
+
+    def _combined_metadata_resource(  # noqa: ANN202 - hdx-python-api Resource
+        self, iso3: str, metadata_path: Path, publish_context: PublishContext
+    ):
+        return self._make_resource_for_path(
+            path=metadata_path,
+            format_name="json",
+            description=(
+                "Field-level metadata for every "
+                f"{long_label(publish_context.source_name)} layer: "
+                "feature counts, geometry types, columns and value distributions."
+            ),
+            publish_context=publish_context,
+            iso3=iso3,
+            category_slug=COMBINED_SLUG,
+            name=f"STAC Collection ({short_label(publish_context.source_name)})",
+        )
 
     def update_metadata(
         self, cfg: RootConfig, *, dry_run: bool = False, prune: bool = False
     ) -> tuple[str, int, int]:
-        """Rewrite dataset and resource text from the config, leaving files and ids alone.
-
-        Returns the dataset name, how many resources changed and how many were pruned.
-        """
+        """Rewrite dataset and resource text from the config, leaving files and ids alone;
+        returns the dataset name, how many resources changed and how many were pruned."""
         from hdx.data.dataset import Dataset
 
-        dt_name = cfg.hdx.combined.name or f"{cfg.key}_{cfg.iso3.lower()}"
-        dataset = Dataset.read_from_hdx(dt_name)
+        hdx_dataset_name = combined_dataset_name(cfg)
+        dataset = Dataset.read_from_hdx(hdx_dataset_name)
         if dataset is None:
-            raise RuntimeError(f"HDX dataset {dt_name} not found; publish it before updating text")
+            raise RuntimeError(
+                f"HDX dataset {hdx_dataset_name} not found; publish it before updating text"
+            )
 
-        place = country_name(cfg.iso3, dataset_name=cfg.dataset_name)
-        hdx_source = cfg.hdx.combined.source or HDX_SHORT_SOURCE.get("osm", "OpenStreetMap")
-        if cfg.hdx.combined.title:
-            dataset["title"] = combined_title(cfg, place, hdx_source)
-        for field, value in (
-            ("notes", cfg.hdx.combined.notes),
-            ("caveats", cfg.hdx.combined.caveats),
-            ("dataset_source", cfg.hdx.combined.source),
-            ("methodology_other", cfg.hdx.methodology_other),
-        ):
-            if value:
-                dataset[field] = value
-        if cfg.hdx.combined.tags:
-            dataset.add_tags(list(cfg.hdx.combined.tags))
-        dataset.set_expected_update_frequency(cfg.frequency)
-
-        by_slug = {slugify(c.name): c for c in cfg.categories}
-        changed = 0
-        pruned = 0
-        for resource in list(dataset.get_resources() or []):
-            layer = _resource_slug(resource, dt_name, by_slug)
-            if prune and layer is not None and _is_dropped(layer, by_slug):
-                logger.info("%s: removing %s, no longer in the config", dt_name, resource["name"])
-                pruned += 1
-                if not dry_run:
-                    resource.delete_from_hdx()
-                continue
-            wanted = _resource_text(resource, dt_name, by_slug)
-            if wanted is None:
-                continue
-            name, description = wanted
-            if resource["name"] == name and resource.get("description") == description:
-                continue
-            changed += 1
-            if dry_run:
-                continue
-            resource["name"] = name
-            resource["description"] = description
-            resource.update_in_hdx()
+        _apply_dataset_text(dataset, cfg)
+        by_slug = {slugify(category.name): category for category in cfg.categories}
+        changed, pruned = _sync_resource_text(
+            dataset, hdx_dataset_name, by_slug, dry_run=dry_run, prune=prune
+        )
 
         if dry_run:
-            return dt_name, changed, pruned
+            return hdx_dataset_name, changed, pruned
         _hdx_publish_with_retry(
             lambda: dataset.update_in_hdx(
                 update_resources=False, hxl_update=False, remove_additional_resources=False
             ),
-            label=f"metadata {dt_name}",
+            label=f"metadata {hdx_dataset_name}",
         )
-        self._sort_resources_by_name(dataset, dt_name)
-        logger.info("%s: metadata updated, %d resource(s) changed", dt_name, changed)
-        return dt_name, changed, pruned
+        self._order_resources(
+            dataset, hdx_dataset_name, [category_label(category) for category in cfg.categories]
+        )
+        logger.info("%s: metadata updated, %d resource(s) changed", hdx_dataset_name, changed)
+        return hdx_dataset_name, changed, pruned
 
     def _make_resource_for_geoparquet(
         self,
         category: CategoryConfig,
         url: str,
-        ctx: PublishContext,
+        publish_context: PublishContext,
         path: Path | None,
     ):  # noqa: ANN202 - hdx-python-api Resource
         """Point at the layer GeoParquet already staged on S3, unzipped and read in place."""
         from hdx.data.resource import Resource
 
-        payload = geoparquet_resource_payload(category, url, ctx.source_name)
+        payload = geoparquet_resource_payload(category, url, publish_context.source_name)
         if path is not None:
             payload["size"] = path.stat().st_size
         resource = Resource(payload)
@@ -631,16 +652,16 @@ class HdxPublisher:
         self,
         cfg: RootConfig,
         entries: list[CombinedCategory],
-        dt_name: str,
-        ctx: PublishContext,
+        hdx_dataset_name: str,
+        publish_context: PublishContext,
     ):  # noqa: ANN202 - hdx-python-api Dataset
         from hdx.data.dataset import Dataset
 
         place = country_name(cfg.iso3, dataset_name=cfg.dataset_name)
-        hdx_source = HDX_SHORT_SOURCE.get(ctx.source_name, ctx.dataset_source)
+        hdx_source = long_label(publish_context.source_name)
         title = combined_title(cfg, place, hdx_source)
 
-        labels = [category_label(e.category) for e in entries]
+        labels = [category_label(entry.category) for entry in entries]
         notes = cfg.hdx.combined.notes or (
             f"Combined {hdx_source} vector export for {place}. "
             f"Layers: {', '.join(labels)}. Each layer is provided as GIS downloads; "
@@ -648,7 +669,7 @@ class HdxPublisher:
         )
         dataset_args: dict[str, object] = {
             "title": title,
-            "name": dt_name,
+            "name": hdx_dataset_name,
             "notes": notes,
             "caveats": cfg.hdx.combined.caveats or entries[0].category.hdx.caveats,
             "private": False,
@@ -659,7 +680,7 @@ class HdxPublisher:
             "maintainer": self._maintainer,
             "subnational": cfg.subnational,
         }
-        licenses = {e.category.hdx.license for e in entries}
+        licenses = {entry.category.hdx.license for entry in entries}
         if len(licenses) == 1 and next(iter(licenses)) == "hdx-odc-odbl":
             dataset_args["license_id"] = "hdx-odc-odbl"
         elif len(licenses) == 1:
@@ -672,7 +693,7 @@ class HdxPublisher:
             )
 
         dataset = Dataset(dataset_args)
-        apply_time_period(dataset, ctx, cfg.hdx.time_period_start)
+        apply_time_period(dataset, publish_context, cfg.hdx.time_period_start)
         dataset.set_expected_update_frequency(cfg.frequency)
         dataset.add_other_location(cfg.iso3.upper())
         seen_tags: set[str] = set()
@@ -683,38 +704,39 @@ class HdxPublisher:
                 seen_tags.add(tag)
         return dataset
 
-    def _read_dataset(self, dt_name: str, purpose: str):  # noqa: ANN202 - hdx Dataset
+    def _read_dataset(self, hdx_dataset_name: str, purpose: str):  # noqa: ANN202 - hdx Dataset
         from hdx.data.dataset import Dataset
 
-        dataset = Dataset.read_from_hdx(dt_name)
+        dataset = Dataset.read_from_hdx(hdx_dataset_name)
         if dataset is None:
-            raise RuntimeError(f"HDX dataset {dt_name} not visible before {purpose} build")
+            raise RuntimeError(f"HDX dataset {hdx_dataset_name} not visible before {purpose} build")
         return dataset
 
     def _publish_html_viz(
         self,
         *,
         dataset,  # noqa: ANN001 - hdx Dataset
-        dt_name: str,
+        hdx_dataset_name: str,
         html_path: Path,
         description: str,
         iso3: str,
         category_slug: str,
-        s3_cfg: S3Config | None,
+        s3_config: S3Config | None,
         name: str | None = None,
+        category_labels: Sequence[str] = (),
     ) -> None:
-        """Attach an HTML page to the dataset and make it the custom visualisation."""
-        viz_ctx = PublishContext(
-            dataset_source="",
+        """Attach an HTML page to the dataset and make it the custom visualisation. HDX serves
+        uploaded HTML as text/html with SAMEORIGIN, so the resource URL can be iframed."""
+        viz_context = PublishContext(
             snapshot_date=datetime.now(),
             source_name=category_slug,
-            s3=s3_cfg,
+            s3=s3_config,
         )
         resource = self._make_resource_for_path(
             path=html_path,
-            fmt="html",
+            format_name="html",
             description=description,
-            ctx=viz_ctx,
+            publish_context=viz_context,
             iso3=iso3,
             category_slug=category_slug,
             name=name,
@@ -731,35 +753,36 @@ class HdxPublisher:
                 match_resources_by_metadata=True,
                 hxl_update=False,
             ),
-            label=f"{category_slug} update {dt_name}",
+            label=f"{category_slug} update {hdx_dataset_name}",
         )
+        # A page uploaded for the first time lands last, after the order was set.
+        self._order_resources(dataset, hdx_dataset_name, category_labels)
         # An uploaded resource only gets its URL from HDX after the update above.
         if url is None:
-            self._set_customviz_after_upload(dt_name, html_path.name)
+            self._set_customviz_after_upload(hdx_dataset_name, html_path.name)
 
     def _build_and_publish_page(
         self,
         *,
-        dt_name: str,
+        hdx_dataset_name: str,
         cfg: RootConfig,
         entries: list[CombinedCategory],
         pmtiles_layer: str | None,
-        ctx: PublishContext,
+        publish_context: PublishContext,
     ) -> None:
         from oex.report.page import render_dataset_page
 
-        dataset = self._read_dataset(dt_name, "page")
+        dataset = self._read_dataset(hdx_dataset_name, "page")
         resources = dataset.get_resources() or []
         pmtiles_url = (
             _resource_url(resources, f"{pmtiles_layer}.pmtiles") if pmtiles_layer else None
         )
         tileset = (pmtiles_url, pmtiles_layer) if pmtiles_url and pmtiles_layer else None
 
-        # Resources are named from the dataset name, which `hdx.combined.name` can
-        # override, so the slug prefix has to come from there rather than key + iso3.
-        prefix = f"{dt_name}_"
+        # Resource filenames start with the dataset name, which `hdx.combined.name` can set.
+        prefix = f"{hdx_dataset_name}_"
         by_slug: dict[str, list[PublishedLayer]] = {}
-        for published in _load_source_metadata(resources, dt_name):
+        for published in _load_source_metadata(resources, hdx_dataset_name):
             # Every category on the dataset, not just this run's: a later run of the
             # other source must describe the layers the tileset already carries.
             slug = _slug_from_metadata_name(published.name, prefix, cfg.categories)
@@ -769,28 +792,28 @@ class HdxPublisher:
         layers = _page_layers(cfg, by_slug, tileset)
         if not layers:
             raise RuntimeError(
-                f"HDX dataset {dt_name}: dataset page requested but no metadata.json resources found"
+                f"HDX dataset {hdx_dataset_name}: dataset page requested but no metadata.json resources found"
             )
 
         place = country_name(cfg.iso3, dataset_name=cfg.dataset_name)
-        hdx_source = HDX_SHORT_SOURCE.get(ctx.source_name, ctx.dataset_source)
+        hdx_source = long_label(publish_context.source_name)
         html = render_dataset_page(
             title=combined_title(cfg, place, hdx_source),
             layers=layers,
             theme=cfg.output.report.theme,
-            boundary_bbox=ctx.boundary_bbox,
-            boundary_geojson=ctx.boundary_geojson,
+            boundary_bbox=publish_context.boundary_bbox,
+            boundary_geojson=publish_context.boundary_geojson,
             map_assets=cfg.output.report.map_assets,
-            dataset_url=hdx_dataset_url(cfg.hdx.site, dt_name),
+            dataset_url=hdx_dataset_url(cfg.hdx.site, hdx_dataset_name),
         )
-        assert ctx.output_dir is not None
-        page_path = ctx.output_dir / f"{dt_name}_overview.html"
+        assert publish_context.output_dir is not None
+        page_path = publish_context.output_dir / f"{hdx_dataset_name}_overview.html"
         page_path.write_text(html, encoding="utf-8")
         logger.info("Built dataset page (%d layers) -> %s", len(layers), page_path)
 
         self._publish_html_viz(
             dataset=dataset,
-            dt_name=dt_name,
+            hdx_dataset_name=hdx_dataset_name,
             html_path=page_path,
             description=(
                 f"Interactive map and data quality report for {place}: every layer on one "
@@ -799,23 +822,31 @@ class HdxPublisher:
             ),
             iso3=cfg.iso3,
             category_slug="overview",
-            s3_cfg=ctx.s3,
+            s3_config=publish_context.s3,
             name="Data Quality Report and Interactive Map",
+            category_labels=[category_label(category) for category in cfg.categories],
         )
 
-    def _set_customviz_after_upload(self, dt_name: str, resource_name: str) -> None:
+    def _set_customviz_after_upload(self, hdx_dataset_name: str, resource_name: str) -> None:
         from hdx.data.dataset import Dataset
 
-        dataset = Dataset.read_from_hdx(dt_name)
+        dataset = Dataset.read_from_hdx(hdx_dataset_name)
         if dataset is None:
             return
         resource = next(
-            (r for r in (dataset.get_resources() or []) if r["name"] == resource_name), None
+            (
+                candidate
+                for candidate in (dataset.get_resources() or [])
+                if candidate["name"] == resource_name
+            ),
+            None,
         )
         url = resource.get("url") if resource else None
         if not url:
             logger.warning(
-                "customviz: overview resource %s has no URL yet on %s", resource_name, dt_name
+                "customviz: overview resource %s has no URL yet on %s",
+                resource_name,
+                hdx_dataset_name,
             )
             return
         logger.info("Setting customviz (post-upload): %s", url)
@@ -826,25 +857,23 @@ class HdxPublisher:
                 match_resources_by_metadata=True,
                 hxl_update=False,
             ),
-            label=f"customviz {dt_name}",
+            label=f"customviz {hdx_dataset_name}",
         )
 
     def _build_dataset_object(
         self,
         cfg: RootConfig,
         category: CategoryConfig,
-        dt_name: str,
-        ctx: PublishContext,
+        hdx_dataset_name: str,
+        publish_context: PublishContext,
     ):  # noqa: ANN202 - hdx-python-api Dataset, imported lazily
         from hdx.data.dataset import Dataset
 
         title = dataset_title(cfg, category)
-        hdx_source = category.hdx.dataset_source or HDX_SHORT_SOURCE.get(
-            ctx.source_name, ctx.dataset_source
-        )
+        hdx_source = category.hdx.dataset_source or long_label(publish_context.source_name)
         dataset_args: dict[str, object] = {
             "title": title,
-            "name": dt_name,
+            "name": hdx_dataset_name,
             "notes": category.hdx.notes,
             "caveats": category.hdx.caveats,
             "private": False,
@@ -864,7 +893,7 @@ class HdxPublisher:
             dataset_args["license_url"] = category.hdx.license_url
 
         dataset = Dataset(dataset_args)
-        apply_time_period(dataset, ctx, cfg.hdx.time_period_start)
+        apply_time_period(dataset, publish_context, cfg.hdx.time_period_start)
         dataset.set_expected_update_frequency(cfg.frequency)
         dataset.add_other_location(cfg.iso3.upper())
         for tag in category.hdx.tags:
@@ -875,25 +904,17 @@ class HdxPublisher:
         self,
         zip_path: Path,
         category: CategoryConfig,
-        ctx: PublishContext,
+        publish_context: PublishContext,
         iso3: str,
         category_slug: str,
     ):  # noqa: ANN202 - hdx-python-api Resource
-        _, source, fmt = split_artifact_filename(zip_path.name)
-        label = category_label(category)
-        fmt_label = FORMAT_LABEL.get(fmt, fmt.upper())
-        summary = _category_summary(category)
-        if source:
-            name = f"{label} ({RESOURCE_SOURCE.get(source, source)}), {fmt_label}"
-            description = f"{summary} From {HDX_SHORT_SOURCE.get(source, source)}, as {fmt_label}."
-        else:
-            name = f"{label}, {fmt_label}"
-            description = f"{summary} As {fmt_label}."
+        _, source, format_name = split_artifact_filename(zip_path.name)
+        name, description = layer_resource_text(category, source, format_name)
         return self._make_resource_for_path(
             path=zip_path,
-            fmt=fmt,
+            format_name=format_name,
             description=description,
-            ctx=ctx,
+            publish_context=publish_context,
             iso3=iso3,
             category_slug=category_slug,
             name=name,
@@ -903,9 +924,9 @@ class HdxPublisher:
         self,
         *,
         path: Path,
-        fmt: str,
+        format_name: str,
         description: str,
-        ctx: PublishContext,
+        publish_context: PublishContext,
         iso3: str,
         category_slug: str,
         name: str | None = None,
@@ -916,24 +937,12 @@ class HdxPublisher:
         resource_data: dict[str, object] = {
             "name": name or path.name,
             "description": description,
-            "format": fmt,
+            "format": format_name,
             "size": int(size_bytes),
         }
-        if ctx.s3 is not None and ctx.s3.enabled:
-            bucket, prefix, region, endpoint_url, acl = s3_resolve(ctx.s3)
-            if not bucket:
-                raise ValueError(
-                    "output.s3.enabled is true but no bucket given via "
-                    "output.s3.bucket or OEX_S3_BUCKET"
-                )
-            key = artifact_key(
-                prefix,
-                iso3,
-                category_slug,
-                path.name,
-                folder=ctx.s3.folder,
-                nest_by_category=ctx.s3.nest_by_category,
-            )
+        if publish_context.s3 is not None and publish_context.s3.enabled:
+            bucket, prefix, region, endpoint_url, acl = resolve_with_bucket(publish_context.s3)
+            key = category_artifact_key(publish_context.s3, prefix, iso3, category_slug, path.name)
             url = s3_upload(
                 path,
                 bucket=bucket,
@@ -950,34 +959,33 @@ class HdxPublisher:
                 size_bytes / (1024 * 1024),
             )
             resource_data["url"] = url
-            res = Resource(resource_data)
+            resource = Resource(resource_data)
         else:
-            res = Resource(resource_data)
-            res.set_file_to_upload(str(path))
-        res.mark_data_updated()
-        return res
+            resource = Resource(resource_data)
+            resource.set_file_to_upload(str(path))
+        resource.mark_data_updated()
+        return resource
 
-    def _build_and_publish_combined_report(
+    def _build_and_publish_category_report(
         self,
         *,
-        dt_name: str,
+        hdx_dataset_name: str,
         category: CategoryConfig,
         cfg: RootConfig,
         category_slug: str,
         output_dir: Path,
-        s3_cfg: S3Config | None,
+        s3_config: S3Config | None,
         boundary_bbox: tuple[float, float, float, float] | None = None,
     ) -> None:
-        # HDX serves uploaded HTML with text/html + SAMEORIGIN, so the resource URL self-iframes.
         from oex.report.page import render_dataset_page
 
-        dataset = self._read_dataset(dt_name, "report")
+        dataset = self._read_dataset(hdx_dataset_name, "report")
         resources = dataset.get_resources() or []
 
-        published = _load_source_metadata(resources, dt_name)
+        published = _load_source_metadata(resources, hdx_dataset_name)
         if not published:
             raise RuntimeError(
-                f"HDX dataset {dt_name}: combined report requested but no "
+                f"HDX dataset {hdx_dataset_name}: category report requested but no "
                 "metadata.json resources found"
             )
         tilesets = _category_tilesets(resources, category_slug)
@@ -986,7 +994,7 @@ class HdxPublisher:
             replace(layer, tileset=tilesets.get(layer.source.source_name)) for layer in layers
         ]
 
-        report_path = output_dir / f"{dt_name}_report.html"
+        report_path = output_dir / f"{hdx_dataset_name}_report.html"
         report_path.write_text(
             render_dataset_page(
                 title=dataset_title(cfg, category),
@@ -994,13 +1002,13 @@ class HdxPublisher:
                 theme=cfg.output.report.theme,
                 boundary_bbox=boundary_bbox,
                 map_assets=cfg.output.report.map_assets,
-                dataset_url=hdx_dataset_url(cfg.hdx.site, dt_name),
+                dataset_url=hdx_dataset_url(cfg.hdx.site, hdx_dataset_name),
                 related=related_dataset_links(cfg, category),
             ),
             encoding="utf-8",
         )
         logger.info(
-            "Built combined report (%d source%s) -> %s",
+            "Built category report (%d source%s) -> %s",
             len(layers),
             "" if len(layers) == 1 else "s",
             report_path,
@@ -1008,7 +1016,7 @@ class HdxPublisher:
 
         self._publish_html_viz(
             dataset=dataset,
-            dt_name=dt_name,
+            hdx_dataset_name=hdx_dataset_name,
             html_path=report_path,
             description=(
                 f"Interactive map and data quality report for {category_label(category)}: "
@@ -1016,23 +1024,24 @@ class HdxPublisher:
             ),
             iso3=cfg.iso3,
             category_slug=category_slug,
-            s3_cfg=s3_cfg,
+            s3_config=s3_config,
             name=f"{category_label(category)}, Data Quality Report",
         )
 
 
 def _hdx_publish_with_retry(call, label: str):  # noqa: ANN001 - lambda
-    """Run an HDX publish call with backoff on 429/5xx/connection-style errors."""
+    """Run an HDX publish call, backing off on connection errors and the statuses in
+    _HDX_TRANSIENT_HTTP_STATUSES."""
     from hdx.data.hdxobject import HDXError
 
-    last_exc: Exception | None = None
-    for attempt, sleep_s in enumerate(_HDX_PUBLISH_BACKOFF_SECONDS, start=1):
+    last_error: Exception | None = None
+    for attempt, delay_seconds in enumerate(_HDX_PUBLISH_BACKOFF_SECONDS, start=1):
         try:
             return call()
         except HDXError as exc:
             if not _is_transient_hdx_error(exc):
                 raise
-            last_exc = exc
+            last_error = exc
             if attempt < len(_HDX_PUBLISH_BACKOFF_SECONDS):
                 logger.warning(
                     "HDX %s attempt %d/%d hit transient error (%s); retrying in %ds",
@@ -1040,48 +1049,50 @@ def _hdx_publish_with_retry(call, label: str):  # noqa: ANN001 - lambda
                     attempt,
                     len(_HDX_PUBLISH_BACKOFF_SECONDS),
                     _summarise_hdx_error(exc),
-                    sleep_s,
+                    delay_seconds,
                 )
-                time.sleep(sleep_s)
-    assert last_exc is not None
-    raise last_exc
+                time.sleep(delay_seconds)
+    assert last_error is not None
+    raise last_error
 
 
 def _is_transient_hdx_error(exc: BaseException) -> bool:
-    cur: BaseException | None = exc
-    while cur is not None:
-        if isinstance(cur, requests.exceptions.RetryError):
+    current: BaseException | None = exc
+    while current is not None:
+        if isinstance(current, requests.exceptions.RetryError):
             return True
-        if isinstance(cur, requests.exceptions.ConnectionError):
+        if isinstance(current, requests.exceptions.ConnectionError):
             return True
-        if isinstance(cur, requests.exceptions.Timeout):
+        if isinstance(current, requests.exceptions.Timeout):
             return True
-        if isinstance(cur, requests.exceptions.HTTPError):
-            response = getattr(cur, "response", None)
+        if isinstance(current, requests.exceptions.HTTPError):
+            response = getattr(current, "response", None)
             if response is not None and response.status_code in _HDX_TRANSIENT_HTTP_STATUSES:
                 return True
-        cur = cur.__cause__
+        current = current.__cause__
     return False
 
 
 def _summarise_hdx_error(exc: BaseException) -> str:
-    cur: BaseException | None = exc
-    while cur is not None:
-        if isinstance(cur, requests.exceptions.RequestException):
-            return f"{type(cur).__name__}: {cur}"
-        cur = cur.__cause__
+    current: BaseException | None = exc
+    while current is not None:
+        if isinstance(current, requests.exceptions.RequestException):
+            return f"{type(current).__name__}: {current}"
+        current = current.__cause__
     return f"{type(exc).__name__}: {exc}"
 
 
 def _download_json(url: str, *, timeout: float = 60.0) -> dict:
-    resp = http.session.get(url, timeout=timeout)
-    resp.raise_for_status()
-    return resp.json()
+    response = http.session.get(url, timeout=timeout)
+    response.raise_for_status()
+    return response.json()
 
 
 def _resource_url(resources: list, filename: str) -> str | None:  # noqa: ANN001 - hdx Resource
     """Look up by uploaded filename: resource names are human-readable titles."""
-    resource = next((r for r in resources if _resource_filename(r) == filename), None)
+    resource = next(
+        (candidate for candidate in resources if _resource_filename(candidate) == filename), None
+    )
     return resource.get("url") if resource else None
 
 
@@ -1106,14 +1117,14 @@ def _layer_parquet_slug(resource) -> tuple[str, str] | None:  # noqa: ANN001
     """(slug, source) for a staged GeoParquet, whose key carries no dataset prefix."""
     url = resource.get("url") or ""
     match = re.search(r"/_layers/([^/]+)/([^/]+)\.parquet$", urllib.parse.unquote(url))
-    if match and match.group(1) in RESOURCE_SOURCE:
+    if match and match.group(1) in SOURCE_LABELS:
         return match.group(2), match.group(1)
     return None
 
 
 def _resource_slug(
     resource,  # noqa: ANN001
-    dt_name: str,
+    hdx_dataset_name: str,
     known_slugs: Iterable[str] = (),
 ) -> tuple[str, str] | None:
     """(category slug, source) a layer resource belongs to, or None when it is not a layer."""
@@ -1121,9 +1132,9 @@ def _resource_slug(
     if layer_parquet is not None:
         return layer_parquet
     filename = _resource_filename(resource)
-    if not filename.startswith(f"{dt_name}_"):
+    if not filename.startswith(f"{hdx_dataset_name}_"):
         return None
-    slug, source, _ = split_artifact_filename(filename[len(dt_name) + 1 :], known_slugs)
+    slug, source, _ = split_artifact_filename(filename[len(hdx_dataset_name) + 1 :], known_slugs)
     if not slug or not source:
         return None
     return slug, source
@@ -1139,10 +1150,24 @@ def _is_dropped(layer: tuple[str, str], by_slug: dict) -> bool:
     return block is not None and not block.enabled
 
 
+def layer_resource_text(category: CategoryConfig, source: str, format_name: str) -> tuple[str, str]:
+    """HDX name and description for one artifact of a layer; `source` may be empty."""
+    label = category_label(category)
+    format_label = FORMAT_LABEL.get(format_name, format_name.upper())
+    summary = _category_summary(category)
+    # The format is in the name because ResourceMatcher merges same-named resources.
+    if not source:
+        return f"{label}, {format_label}", f"{summary} As {format_label}."
+    return (
+        f"{label} ({short_label(source)}), {format_label}",
+        f"{summary} From {long_label(source)}, as {format_label}.",
+    )
+
+
 def geoparquet_resource_payload(category: CategoryConfig, url: str, source_name: str) -> dict:
     """Resource fields for a layer GeoParquet, which is published unzipped at its staged URL."""
     label = category_label(category)
-    source = RESOURCE_SOURCE.get(source_name, source_name)
+    source = short_label(source_name)
     return {
         "name": f"{label} ({source}), GeoParquet",
         "description": (
@@ -1154,7 +1179,7 @@ def geoparquet_resource_payload(category: CategoryConfig, url: str, source_name:
     }
 
 
-def _resource_text(resource, dt_name: str, by_slug: dict) -> tuple[str, str] | None:  # noqa: ANN001
+def _resource_text(resource, hdx_dataset_name: str, by_slug: dict) -> tuple[str, str] | None:  # noqa: ANN001
     """Name and description for a layer resource, keyed off the filename rather than
     the display name, which is not an identifier."""
     layer_parquet = _layer_parquet_slug(resource)
@@ -1167,19 +1192,15 @@ def _resource_text(resource, dt_name: str, by_slug: dict) -> tuple[str, str] | N
         return payload["name"], payload["description"]
 
     filename = _resource_filename(resource)
-    if not filename.startswith(f"{dt_name}_"):
+    if not filename.startswith(f"{hdx_dataset_name}_"):
         return None
-    slug, source, fmt = split_artifact_filename(filename[len(dt_name) + 1 :], by_slug)
+    slug, source, format_name = split_artifact_filename(
+        filename[len(hdx_dataset_name) + 1 :], by_slug
+    )
     category = by_slug.get(slug)
     if category is None or not source:
         return None
-    fmt_label = FORMAT_LABEL.get(fmt, fmt.upper())
-    name = f"{category_label(category)} ({RESOURCE_SOURCE[source]}), {fmt_label}"
-    description = (
-        f"{_category_summary(category)} From {HDX_SHORT_SOURCE.get(source, source)}, "
-        f"as {fmt_label}."
-    )
-    return name, description
+    return layer_resource_text(category, source, format_name)
 
 
 def _reuse_resource_ids(new: list, existing: list) -> None:  # noqa: ANN001 - hdx Resources
@@ -1194,10 +1215,12 @@ def _reuse_resource_ids(new: list, existing: list) -> None:  # noqa: ANN001 - hd
         location = _resource_location(resource)
         if resource.get("id") or location is None:
             continue
-        candidates = [r for r in by_location.get(location, []) if r["id"] not in taken]
+        candidates = [
+            candidate for candidate in by_location.get(location, []) if candidate["id"] not in taken
+        ]
         if not candidates:
             continue
-        same_name = [r for r in candidates if r["name"] == resource["name"]]
+        same_name = [candidate for candidate in candidates if candidate["name"] == resource["name"]]
         match = (same_name or candidates)[0]
         resource["id"] = match["id"]
         taken.add(match["id"])
@@ -1212,6 +1235,44 @@ def _resource_location(resource) -> str | None:  # noqa: ANN001 - hdx Resource
     upload = getattr(resource, "get_file_to_upload", lambda: None)()
     name = Path(upload).name if upload else urllib.parse.unquote(url.rsplit("/", 1)[-1])
     return f"upload:{name}" if name else None
+
+
+def _resource_order_key(  # noqa: ANN001 - hdx Resource
+    resource, category_labels: Sequence[str] = ()
+) -> tuple[int, int, int, int, int, str]:
+    """The report or overview page first, then downloads in ASSET_TITLES order by source and
+    geometry, then STAC Collections, then the rest; a combined dataset groups each category."""
+    filename = _resource_filename(resource)
+    name = (resource.get("name") or "").casefold()
+    category = _category_rank(resource, category_labels)
+    if filename.endswith(("_report.html", "_overview.html")):
+        return 0, 0, 0, 0, 0, name
+    if filename.endswith("_metadata.json"):
+        return 2, category, 0, 0, 0, name
+    head, source, format_name = split_artifact_filename(filename)
+    if format_name == "parquet":
+        format_name = "geoparquet"
+    if format_name not in ASSET_TITLES:
+        return 3, 0, 0, 0, 0, name
+    if (layer_parquet := _layer_parquet_slug(resource)) is not None:
+        source = layer_parquet[1]
+    geometry = head.rpartition("_")[2]
+    return (
+        1,
+        category,
+        list(ASSET_TITLES).index(format_name),
+        SOURCE_RANK.get(source, len(SOURCE_RANK)),
+        GEOMETRY_LABELS.index(geometry) if geometry in GEOMETRY_LABELS else len(GEOMETRY_LABELS),
+        name,
+    )
+
+
+def _category_rank(resource, category_labels: Sequence[str]) -> int:  # noqa: ANN001 - hdx Resource
+    """Position of the category a resource belongs to, read from the label that starts the
+    name `layer_resource_text` gives it."""
+    name = resource.get("name") or ""
+    label = name.split(" (", 1)[0].split(",", 1)[0]
+    return category_labels.index(label) if label in category_labels else len(category_labels)
 
 
 def _resource_filename(resource) -> str:  # noqa: ANN001 - hdx Resource
@@ -1235,7 +1296,7 @@ def _page_layers(
         published = by_slug.get(slug)
         if not published:
             continue
-        published.sort(key=lambda p: SOURCE_RANK.get(p.source.source_name, 99))
+        published.sort(key=lambda layer: SOURCE_RANK.get(layer.source.source_name, 99))
         for entry in published:
             source_name = entry.source.source_name
             label = category_label(category)
@@ -1265,7 +1326,7 @@ class PublishedLayer:
 
 
 def _load_source_metadata(  # noqa: ANN001 - hdx Resource
-    resources: list, dt_name: str
+    resources: list, hdx_dataset_name: str
 ) -> "list[PublishedLayer]":
     """Every layer on the dataset, earlier runs included, read through its `*_metadata.json`
     Collections; matched on filename because a resource's name is only a title."""
@@ -1290,7 +1351,9 @@ def _load_source_metadata(  # noqa: ANN001 - hdx Resource
                     )
                 )
         except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
-            raise RuntimeError(f"HDX dataset {dt_name}: could not parse {name}: {exc}") from exc
+            raise RuntimeError(
+                f"HDX dataset {hdx_dataset_name}: could not parse {name}: {exc}"
+            ) from exc
     return loaded
 
 
@@ -1305,8 +1368,10 @@ def _item_hrefs(collection: dict, collection_url: str) -> list[str]:
 
 def _entry_name(collection: dict, item: dict) -> str:
     """`<dataset>_<category>_<source>_metadata.json`, which the slug matcher resolves."""
-    props = item["properties"]
-    return f"{collection['id']}_{props['oex:category']}_{props['oex:source']}_metadata.json"
+    properties = item["properties"]
+    return (
+        f"{collection['id']}_{properties['oex:category']}_{properties['oex:source']}_metadata.json"
+    )
 
 
 def _slug_from_metadata_name(
@@ -1323,42 +1388,40 @@ def _slug_from_metadata_name(
 
 
 def _preflight_check(api_key: str, owner_org: str, maintainer: str, site: str) -> None:
-    """Fail fast with a precise message if HDX credentials cannot publish to owner_org.
-    This runs three cheap CKAN action calls before any export work begins.
-    """
+    """Fail fast when the token cannot edit owner_org or the maintainer does not exist."""
     base = _HDX_SITE_URLS.get(site)
     if base is None:
         raise ValueError(f"Unknown hdx.site={site!r}. Expected one of {sorted(_HDX_SITE_URLS)}.")
     headers = {"Authorization": api_key, "User-Agent": "oex-preflight"}
 
-    def _post(action: str, payload: dict) -> dict:
+    def post(action: str, payload: dict) -> dict:
         url = f"{base}/api/3/action/{action}"
         try:
-            r = requests.post(url, json=payload, headers=headers, timeout=15)
+            response = requests.post(url, json=payload, headers=headers, timeout=15)
         except requests.RequestException as exc:
             raise ValueError(f"HDX preflight: network error reaching {url}: {exc}") from exc
         try:
-            body = r.json()
+            body = response.json()
         except ValueError as exc:
             raise ValueError(
-                f"HDX preflight: non-JSON response from {url} (status {r.status_code}): "
-                f"{r.text[:200]}"
+                f"HDX preflight: non-JSON response from {url} (status {response.status_code}): "
+                f"{response.text[:200]}"
             ) from exc
         return body
 
-    orgs_body = _post("organization_list_for_user", {"permission": "update_dataset"})
-    if not orgs_body.get("success"):
-        err = orgs_body.get("error", {})
+    organisations_body = post("organization_list_for_user", {"permission": "update_dataset"})
+    if not organisations_body.get("success"):
+        error_detail = organisations_body.get("error", {})
         raise ValueError(
             f"HDX preflight failed at {base}: API key did not authenticate. "
-            f"CKAN says: {err}. Check that HDX_API_KEY is set in this shell "
+            f"CKAN says: {error_detail}. Check that HDX_API_KEY is set in this shell "
             f"(echo $HDX_API_KEY) and is valid at {base}/user/<you>/api-tokens."
         )
-    orgs = orgs_body.get("result") or []
-    org_names = {o.get("name") for o in orgs}
-    org_ids = {o.get("id") for o in orgs}
-    if owner_org not in org_names and owner_org not in org_ids:
-        editable = sorted(n for n in org_names if n)
+    organisations = organisations_body.get("result") or []
+    organisation_names = {organisation.get("name") for organisation in organisations}
+    organisation_ids = {organisation.get("id") for organisation in organisations}
+    if owner_org not in organisation_names and owner_org not in organisation_ids:
+        editable = sorted(name for name in organisation_names if name)
         raise ValueError(
             f"HDX preflight failed at {base}: token user has no edit rights on "
             f"{owner_org!r}. Orgs with update_dataset permission for this token: "
@@ -1367,12 +1430,12 @@ def _preflight_check(api_key: str, owner_org: str, maintainer: str, site: str) -
             f"account."
         )
 
-    user_body = _post("user_show", {"id": maintainer})
+    user_body = post("user_show", {"id": maintainer})
     if not user_body.get("success"):
-        err = user_body.get("error", {})
+        error_detail = user_body.get("error", {})
         raise ValueError(
             f"HDX preflight failed at {base}: maintainer {maintainer!r} not found. "
-            f"CKAN says: {err}. Set HDX_MAINTAINER (or hdx.maintainer in YAML) to "
+            f"CKAN says: {error_detail}. Set HDX_MAINTAINER (or hdx.maintainer in YAML) to "
             f"your HDX profile slug from {base}/dashboard."
         )
 
@@ -1383,3 +1446,59 @@ def _preflight_check(api_key: str, owner_org: str, maintainer: str, site: str) -
         fullname,
         maintainer,
     )
+
+
+def _apply_dataset_text(dataset, cfg: RootConfig) -> None:  # noqa: ANN001 - hdx Dataset
+    """The combined dataset's title, notes, tags and frequency as the config states them."""
+    place = country_name(cfg.iso3, dataset_name=cfg.dataset_name)
+    hdx_source = cfg.hdx.combined.source or long_label("osm")
+    if cfg.hdx.combined.title:
+        dataset["title"] = combined_title(cfg, place, hdx_source)
+    for field, value in (
+        ("notes", cfg.hdx.combined.notes),
+        ("caveats", cfg.hdx.combined.caveats),
+        ("dataset_source", cfg.hdx.combined.source),
+        ("methodology_other", cfg.hdx.methodology_other),
+    ):
+        if value:
+            dataset[field] = value
+    if cfg.hdx.combined.tags:
+        dataset.add_tags(list(cfg.hdx.combined.tags))
+    dataset.set_expected_update_frequency(cfg.frequency)
+
+
+def _sync_resource_text(  # noqa: ANN001 - hdx Dataset
+    dataset,
+    hdx_dataset_name: str,
+    by_slug: dict[str, CategoryConfig],
+    *,
+    dry_run: bool,
+    prune: bool,
+) -> tuple[int, int]:
+    """Rename and redescribe each resource from the config, pruning dropped layers when asked;
+    returns how many changed and how many were pruned."""
+    changed = 0
+    pruned = 0
+    for resource in list(dataset.get_resources() or []):
+        layer = _resource_slug(resource, hdx_dataset_name, by_slug)
+        if prune and layer is not None and _is_dropped(layer, by_slug):
+            logger.info(
+                "%s: removing %s, no longer in the config", hdx_dataset_name, resource["name"]
+            )
+            pruned += 1
+            if not dry_run:
+                resource.delete_from_hdx()
+            continue
+        wanted = _resource_text(resource, hdx_dataset_name, by_slug)
+        if wanted is None:
+            continue
+        name, description = wanted
+        if resource["name"] == name and resource.get("description") == description:
+            continue
+        changed += 1
+        if dry_run:
+            continue
+        resource["name"] = name
+        resource["description"] = description
+        resource.update_in_hdx()
+    return changed, pruned

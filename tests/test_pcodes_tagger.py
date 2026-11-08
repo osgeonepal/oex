@@ -2,7 +2,6 @@
 edge-matched schema, with no network.
 """
 
-from collections.abc import Iterator
 from pathlib import Path
 
 import duckdb
@@ -52,14 +51,9 @@ def _write_admin_parquet(
 
 
 @pytest.fixture
-def conn() -> Iterator[duckdb.DuckDBPyConnection]:
-    c = duckdb.connect(":memory:")
-    c.execute("INSTALL spatial; LOAD spatial")
-    c.execute("INSTALL h3 FROM community; LOAD h3")
-    try:
-        yield c
-    finally:
-        c.close()
+def conn(spatial_conn: duckdb.DuckDBPyConnection) -> duckdb.DuckDBPyConnection:
+    spatial_conn.execute("INSTALL h3 FROM community; LOAD h3")
+    return spatial_conn
 
 
 @pytest.fixture

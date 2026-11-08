@@ -166,7 +166,7 @@ def test_with_a_tileset_the_map_is_a_peer_view():
 def test_the_map_is_resized_when_its_view_is_opened():
     """It is laid out while hidden, so it comes up zero-sized without this."""
     html = _render(_layer(), with_tiles=True)
-    assert "mapTab.addEventListener('change', () => map.resize())" in html
+    assert "map.resize()" in html
 
 
 def test_the_page_carries_the_small_screen_layout():

@@ -25,7 +25,6 @@ parallel:
 
 boundary:
   geom: null
-  geoboundaries_release: CGAZ
   geoboundaries_level: ADM0
   buffer_meters: 5000
 

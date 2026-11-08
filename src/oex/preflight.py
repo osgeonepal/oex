@@ -20,13 +20,13 @@ def check_writable_paths(cfg: RootConfig) -> None:
     fails before PBFs are downloaded or quackosm runs."""
     candidates: list[Path] = [Path(cfg.output.dir)]
 
-    osm_cfg = cfg.source.get("osm")
-    if osm_cfg is not None and getattr(osm_cfg, "enabled", True):
-        candidates.append(Path(osm_cfg.cache_dir))
+    osm_config = cfg.source.get("osm")
+    if osm_config is not None and getattr(osm_config, "enabled", True):
+        candidates.append(Path(osm_config.cache_dir))
 
-    pcodes_cfg = cfg.source.get("pcodes")
-    if pcodes_cfg is not None and getattr(pcodes_cfg, "enabled", False):
-        candidates.append(Path(pcodes_cfg.cache_dir))
+    pcodes_config = cfg.source.get("pcodes")
+    if pcodes_config is not None and getattr(pcodes_config, "enabled", False):
+        candidates.append(Path(pcodes_config.cache_dir))
 
     duckdb_temp = getattr(cfg.duckdb, "temp_dir", None)
     if duckdb_temp:
@@ -57,21 +57,21 @@ def _verify_writable(path: Path) -> None:
             prefix=".oex_preflight.",
             delete=False,
             encoding="utf-8",
-        ) as fh:
-            fh.write("ok")
-            probe = Path(fh.name)
+        ) as probe_file:
+            probe_file.write("ok")
+            probe = Path(probe_file.name)
     except OSError as exc:
         raise PreflightError(
             f"cannot write inside {path}: {exc}. Filesystem may be read-only or quota-full."
         ) from exc
 
+    renamed = probe.with_name(probe.name + ".renamed")
     try:
-        os.replace(probe, probe)
+        os.replace(probe, renamed)
     except OSError as exc:
-        probe.unlink(missing_ok=True)
+        probe.unlink()
         raise PreflightError(f"cannot rename inside {path}: {exc}") from exc
-    finally:
-        probe.unlink(missing_ok=True)
+    renamed.unlink()
 
     logger.info("preflight: %s is writable", path)
 

@@ -1,135 +1,116 @@
 """Title-resolution helpers for HDX dataset publication."""
 
+import pytest
+
 from oex.config.schema import CategoryConfig, CategoryHdx, HdxConfig, RootConfig
 from oex.hdx_publisher import country_name, dataset_title
 from oex.naming import _title_case_category
 
-
-def test_title_case_capitalises_simple_categories() -> None:
-    assert _title_case_category("buildings") == "Buildings"
-    assert _title_case_category("railways") == "Railways"
+TEMPLATE = "{country} {category} (OpenStreetMap Export)"
 
 
-def test_title_case_handles_multi_word() -> None:
-    assert _title_case_category("education_facilities") == "Education Facilities"
-    assert _title_case_category("health_facilities") == "Health Facilities"
-    assert _title_case_category("populated_places") == "Populated Places"
+@pytest.mark.parametrize(
+    ("slug", "expected"),
+    [
+        ("buildings", "Buildings"),
+        ("education_facilities", "Education Facilities"),
+        ("populated_places", "Populated Places"),
+        ("points_of_interest", "Points of Interest"),
+    ],
+)
+def test_a_category_slug_title_cases_with_filler_words_kept_lowercase(
+    slug: str, expected: str
+) -> None:
+    assert _title_case_category(slug) == expected
 
 
-def test_title_case_keeps_filler_words_lowercase() -> None:
-    assert _title_case_category("points_of_interest") == "Points of Interest"
-
-
-def test_country_name_resolves_known_iso3() -> None:
-    assert country_name("NPL") == "Nepal"
-    assert country_name("npl") == "Nepal"
-
-
-def test_country_name_prefers_common_name_over_iso_inversion() -> None:
-    # ISO name is "Viet Nam"; common usage is "Vietnam".
-    assert country_name("VNM") == "Vietnam"
-    # ISO name is "Iran, Islamic Republic of"; common is "Iran".
-    assert country_name("IRN") == "Iran"
-    # ISO name is "Korea, Republic of"; common is "South Korea".
-    assert country_name("KOR") == "South Korea"
-    # ISO name is "Tanzania, United Republic of"; common is "Tanzania".
-    assert country_name("TZA") == "Tanzania"
+@pytest.mark.parametrize(
+    ("iso3", "expected"),
+    [
+        ("NPL", "Nepal"),
+        ("npl", "Nepal"),
+        ("VNM", "Vietnam"),
+        ("IRN", "Iran"),
+        ("KOR", "South Korea"),
+        ("TZA", "Tanzania"),
+        ("ZZZ", "ZZZ"),
+    ],
+)
+def test_country_name_is_the_common_name_or_the_iso3_when_unknown(iso3: str, expected: str) -> None:
+    """ISO inverts names such as "Korea, Republic of"; a title needs the common one."""
+    assert country_name(iso3) == expected
 
 
 def test_country_name_uses_dataset_name_when_provided() -> None:
-    # dataset_name wins over pycountry, which is how users fix names it mangles (DRC) and
-    # name sub-national exports.
-    assert (
-        country_name("COD", dataset_name="Democratic Republic of the Congo")
-        == "Democratic Republic of the Congo"
-    )
+    """dataset_name is how users fix names pycountry renders badly, and name sub-national areas."""
     assert country_name("NPL", dataset_name="Pokhara Valley") == "Pokhara Valley"
 
 
-def test_country_name_falls_back_to_iso3_for_unknown() -> None:
-    assert country_name("ZZZ") == "ZZZ"
-
-
-def _cfg(*, iso3: str, template: str = "", dataset_name: str | None = None) -> RootConfig:
-    return RootConfig(
-        iso3=iso3,
-        dataset_name=dataset_name,
-        hdx=HdxConfig(title_template=template),
-    )
-
-
-def test_resolve_title_uses_template_when_set() -> None:
-    cfg = _cfg(iso3="NPL", template="{country} {category} (OpenStreetMap Export)")
-    cat = CategoryConfig(name="buildings", hdx=CategoryHdx(title=None))
-    assert dataset_title(cfg, cat) == "Nepal Buildings (OpenStreetMap Export)"
-
-
-def test_resolve_title_template_lowercases_filler_in_category() -> None:
-    cfg = _cfg(iso3="NPL", template="{country} {category} (OpenStreetMap Export)")
-    cat = CategoryConfig(name="points_of_interest")
-    assert dataset_title(cfg, cat) == "Nepal Points of Interest (OpenStreetMap Export)"
-
-
-def test_resolve_title_falls_back_to_legacy_format_when_no_template() -> None:
-    cfg = _cfg(iso3="NPL", dataset_name="Nepal")
-    cat = CategoryConfig(name="Buildings")
-    assert dataset_title(cfg, cat) == "Buildings of Nepal"
-
-
-def test_resolve_title_legacy_uses_pycountry_when_dataset_name_unset() -> None:
-    # With no title_template and no dataset_name, the legacy fallback now uses
-    # the pycountry-derived country name, not raw iso3. Cleaner default.
-    cfg = _cfg(iso3="NPL")
-    cat = CategoryConfig(name="Buildings")
-    assert dataset_title(cfg, cat) == "Buildings of Nepal"
-
-
-def test_resolve_title_legacy_uses_iso3_when_pycountry_has_no_record() -> None:
-    cfg = _cfg(iso3="ZZZ")
-    cat = CategoryConfig(name="Buildings")
-    assert dataset_title(cfg, cat) == "Buildings of ZZZ"
-
-
-def test_resolve_title_uses_category_title_override_in_template() -> None:
-    cfg = _cfg(iso3="NPL", template="{country} {category} (OpenStreetMap Export)")
-    cat = CategoryConfig(
-        name="health_facilities",
-        hdx=CategoryHdx(title="Hospitals and Clinics"),
-    )
-    assert dataset_title(cfg, cat) == "Nepal Hospitals and Clinics (OpenStreetMap Export)"
-
-
-def test_resolve_title_uses_category_title_override_in_legacy_fallback() -> None:
-    cfg = _cfg(iso3="NPL")
-    cat = CategoryConfig(
-        name="health_facilities",
-        hdx=CategoryHdx(title="Hospitals and Clinics"),
-    )
-    assert dataset_title(cfg, cat) == "Hospitals and Clinics of Nepal"
-
-
-def test_resolve_title_uses_dataset_name_for_drc() -> None:
-    # No hardcoded override map any more. Users set dataset_name in YAML
-    # (or via --dataset-name on the CLI) to fix ugly ISO 3166 inversions.
-    cfg = _cfg(
-        iso3="COD",
-        template="{country} {category} (OpenStreetMap Export)",
-        dataset_name="Democratic Republic of the Congo",
-    )
-    cat = CategoryConfig(name="waterways")
-    assert (
-        dataset_title(cfg, cat)
-        == "Democratic Republic of the Congo Waterways (OpenStreetMap Export)"
-    )
-
-
-def test_resolve_title_dataset_name_supports_subnational_exports() -> None:
-    # Sub-national use case: still pass iso3 for boundary/HDX location wiring
-    # (until full sub-national mode lands), but title reads as the named area.
-    cfg = _cfg(
-        iso3="NPL",
-        template="{country} {category} (OpenStreetMap Export)",
-        dataset_name="Pokhara",
-    )
-    cat = CategoryConfig(name="health_facilities")
-    assert dataset_title(cfg, cat) == "Pokhara Health Facilities (OpenStreetMap Export)"
+@pytest.mark.parametrize(
+    ("iso3", "template", "dataset_name", "category", "expected"),
+    [
+        (
+            "NPL",
+            TEMPLATE,
+            None,
+            CategoryConfig(name="buildings"),
+            "Nepal Buildings (OpenStreetMap Export)",
+        ),
+        (
+            "NPL",
+            TEMPLATE,
+            None,
+            CategoryConfig(name="points_of_interest"),
+            "Nepal Points of Interest (OpenStreetMap Export)",
+        ),
+        (
+            "COD",
+            TEMPLATE,
+            "Democratic Republic of the Congo",
+            CategoryConfig(name="waterways"),
+            "Democratic Republic of the Congo Waterways (OpenStreetMap Export)",
+        ),
+        (
+            "NPL",
+            TEMPLATE,
+            None,
+            CategoryConfig(
+                name="health_facilities", hdx=CategoryHdx(title="Hospitals and Clinics")
+            ),
+            "Nepal Hospitals and Clinics (OpenStreetMap Export)",
+        ),
+        (
+            "NPL",
+            "",
+            "Pokhara Valley",
+            CategoryConfig(name="buildings"),
+            "Buildings of Pokhara Valley",
+        ),
+        ("NPL", "", None, CategoryConfig(name="buildings"), "Buildings of Nepal"),
+        ("ZZZ", "", None, CategoryConfig(name="buildings"), "Buildings of ZZZ"),
+        (
+            "NPL",
+            "",
+            None,
+            CategoryConfig(
+                name="health_facilities", hdx=CategoryHdx(title="Hospitals and Clinics")
+            ),
+            "Hospitals and Clinics of Nepal",
+        ),
+    ],
+    ids=[
+        "template",
+        "template lowercases filler",
+        "template with dataset name",
+        "template with category title",
+        "no template with dataset name",
+        "no template from pycountry",
+        "no template unknown iso3",
+        "no template with category title",
+    ],
+)
+def test_dataset_title_fills_the_template_or_reads_category_of_country(
+    iso3: str, template: str, dataset_name: str | None, category: CategoryConfig, expected: str
+) -> None:
+    cfg = RootConfig(iso3=iso3, dataset_name=dataset_name, hdx=HdxConfig(title_template=template))
+    assert dataset_title(cfg, category) == expected

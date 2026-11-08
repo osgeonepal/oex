@@ -49,8 +49,8 @@ def write_country_parquet(rows: list[Row], out_path: Path, source: str) -> None:
         ) TO '{out_path}' (FORMAT PARQUET, COMPRESSION ZSTD)
     """)
     written = [
-        (name, dtype)
-        for name, dtype, *_ in conn.execute(
+        (name, column_type)
+        for name, column_type, *_ in conn.execute(
             f"DESCRIBE SELECT * FROM read_parquet('{out_path}')"
         ).fetchall()
     ]

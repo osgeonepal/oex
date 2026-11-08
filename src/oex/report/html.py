@@ -11,11 +11,11 @@ from oex.metadata import ADMIN_COLUMN_RE, ColumnReport, MetadataReport, is_sourc
 from oex.report.quality import coverage_bucket, layer_quality
 
 _PCODE_SUFFIX = "_pcode"
-_SOURCE_COL = "source"
+_SOURCE_COLUMN = "source"
 # A geometry type below this share of a layer does not earn the layer a type table.
 _MINOR_SHARE = 0.01
-_NAME_LANG_RE = re.compile(r"^name_([a-z]{2,3})$")
-_TRANSLIT_SUFFIX = "_latin"
+_NAME_LANGUAGE_RE = re.compile(r"^name_([a-z]{2,3})$")
+_TRANSLITERATION_SUFFIX = "_latin"
 
 
 def _license_link(item: dict[str, Any]) -> dict[str, Any]:
@@ -44,7 +44,7 @@ class SourceMetadata:
         """Read back a STAC Item oex wrote; its `oex:` properties carry what STAC has no field for."""
         from oex.metadata import TemporalReport
 
-        props = item["properties"]
+        properties = item["properties"]
         bbox = tuple(item["bbox"]) if item.get("bbox") else None
         columns = [
             ColumnReport(
@@ -55,28 +55,28 @@ class SourceMetadata:
                 distinct_count=column["oex:distinct_count"],
                 top_values=column["oex:top_values"],
             )
-            for column in props["table:columns"]
+            for column in properties["table:columns"]
         ]
-        temporal_raw = props.get("oex:temporal")
+        temporal_raw = properties.get("oex:temporal")
         licence = _license_link(item)
         report = MetadataReport(
-            feature_count=props["table:row_count"],
-            geometry_types=dict(props["oex:geometry_types"] or {}),
+            feature_count=properties["table:row_count"],
+            geometry_types=dict(properties["oex:geometry_types"] or {}),
             bbox=bbox,  # type: ignore[arg-type]
             columns=columns,
-            summary=props["description"],
+            summary=properties["description"],
             temporal=TemporalReport(**temporal_raw) if temporal_raw else None,
         )
         return cls(
-            source_name=props["oex:source"],
-            snapshot_label=props["oex:snapshot"],
-            dataset_source=props["oex:dataset_source"],
-            generated_utc=props["created"],
-            oex_version=props["oex:version"],
+            source_name=properties["oex:source"],
+            snapshot_label=properties["oex:snapshot"],
+            dataset_source=properties["oex:dataset_source"],
+            generated_utc=properties["created"],
+            oex_version=properties["oex:version"],
             license_label=licence["title"],
             license_url=licence["href"],
-            pcode_source_date=props.get("oex:pcode_source_date"),
-            boundary=props.get("oex:boundary"),
+            pcode_source_date=properties.get("oex:pcode_source_date"),
+            boundary=properties.get("oex:boundary"),
             metadata=report,
         )
 
@@ -120,7 +120,7 @@ th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--lin
 th { font-weight: 600; color: var(--muted); font-size: 11px;
      text-transform: uppercase; letter-spacing: 0.04em; }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-td.col-name { font-family: var(--mono); }
+.col-name { font-family: var(--mono); }
 .bar { background: var(--bar-bg); border-radius: 2px; height: 6px;
        position: relative; overflow: hidden; min-width: 80px; }
 .bar > i { display: block; height: 100%; }
@@ -176,25 +176,27 @@ def panel_sections(
         _render_attribute_table(metadata),
         _render_about(source, links, dataset_url),
     ]
-    return "\n".join(s for s in sections if s)
+    return "\n".join(section for section in sections if section)
 
 
 def _render_temporal(metadata: MetadataReport) -> str:
-    t = metadata.temporal
-    if t is None or (t.min is None and t.max is None):
+    temporal = metadata.temporal
+    if temporal is None or (temporal.min is None and temporal.max is None):
         return ""
-    column = escape(t.column)
-    lo = escape(t.min or "n/a")
-    hi = escape(t.max or "n/a")
-    coverage_pct = (
-        (t.non_null_count / metadata.feature_count * 100.0) if metadata.feature_count else 0.0
+    column = escape(temporal.column)
+    earliest = escape(temporal.min or "n/a")
+    latest = escape(temporal.max or "n/a")
+    coverage_percent = (
+        (temporal.non_null_count / metadata.feature_count * 100.0)
+        if metadata.feature_count
+        else 0.0
     )
     return (
         '<div class="temporal">'
         '<span class="temporal-label">Temporal coverage</span> '
-        f'<span class="temporal-range">{lo} <span class="temporal-arrow">to</span> {hi}</span>'
+        f'<span class="temporal-range">{earliest} <span class="temporal-arrow">to</span> {latest}</span>'
         f' <span class="temporal-meta">column <code>{column}</code>, '
-        f"{coverage_pct:.1f}% of {format_int(metadata.feature_count)} features"
+        f"{coverage_percent:.1f}% of {format_int(metadata.feature_count)} features"
         "</span></div>"
     )
 
@@ -218,7 +220,7 @@ def _kpi(label: str, value: str, sub: str, extra: str = "") -> str:
 def _geometry_kpi(metadata: MetadataReport) -> str:
     if not metadata.geometry_types:
         return _kpi("Geometry", "unknown", "geometry type not reported")
-    main, count = max(metadata.geometry_types.items(), key=lambda kv: kv[1])
+    main, count = max(metadata.geometry_types.items(), key=lambda entry: entry[1])
     other = metadata.feature_count - count
     sub = _plural(main) + (f", {format_int(other)} other" if other else "")
     return _kpi("Geometry", f"{count / metadata.feature_count * 100:.2f}%", escape(sub))
@@ -263,11 +265,11 @@ def _languages_kpi(metadata: MetadataReport) -> str:
 def _language_columns(metadata: MetadataReport) -> list[str]:
     """Language labels carried by the dataset, ordered as they appear."""
     labels: list[str] = []
-    for col in metadata.columns:
-        if col.name == "name":
+    for column in metadata.columns:
+        if column.name == "name":
             labels.append("local")
             continue
-        match = _NAME_LANG_RE.match(col.name)
+        match = _NAME_LANGUAGE_RE.match(column.name)
         if match:
             labels.append(match.group(1))
     return labels
@@ -278,18 +280,21 @@ def _render_geometry_types(metadata: MetadataReport) -> str:
     total = sum(metadata.geometry_types.values())
     if not total or max(metadata.geometry_types.values()) / total >= 1 - _MINOR_SHARE:
         return ""
-    ordered = sorted(metadata.geometry_types.items(), key=lambda kv: kv[1], reverse=True)
-    rows = [_share_row(escape(_plural(g).capitalize()), n, n / total * 100.0) for g, n in ordered]
+    ordered = sorted(metadata.geometry_types.items(), key=lambda entry: entry[1], reverse=True)
+    rows = [
+        _share_row(escape(_plural(geometry_type).capitalize()), count, count / total * 100.0)
+        for geometry_type, count in ordered
+    ]
     return _table("Geometry types", ["Type", "Features", "Share", ""], rows)
 
 
 def _render_source_mix(metadata: MetadataReport) -> str:
-    source_col = _source_column(metadata)
-    if source_col is None or len(source_col.top_values) <= 1:
+    source_column = _source_column(metadata)
+    if source_column is None or len(source_column.top_values) <= 1:
         return ""
     total = metadata.feature_count or 1
     rows = []
-    for entry in source_col.top_values:
+    for entry in source_column.top_values:
         count = int(entry.get("count", 0))
         rows.append(
             _share_row(escape(_stringify_value(entry.get("value"))), count, count / total * 100.0)
@@ -298,14 +303,22 @@ def _render_source_mix(metadata: MetadataReport) -> str:
 
 
 def _render_admin_coverage(metadata: MetadataReport) -> str:
-    pcode_cols = sorted(
-        (c for c in metadata.columns if _is_pcode_column(c.name)), key=lambda c: c.name
+    pcode_columns = sorted(
+        (column for column in metadata.columns if _is_pcode_column(column.name)),
+        key=lambda column: column.name,
     )
-    tagged = [c for c in pcode_cols if _has_values(c, metadata)]
+    tagged = [column for column in pcode_columns if _has_values(column, metadata)]
     if not tagged:
         return ""
-    rows = [_coverage_row(escape(c.name[: -len(_PCODE_SUFFIX)]), c, metadata, None) for c in tagged]
-    empty = [c.name[: -len(_PCODE_SUFFIX)] for c in pcode_cols if not _has_values(c, metadata)]
+    rows = [
+        _coverage_row(escape(column.name[: -len(_PCODE_SUFFIX)]), column, metadata, None)
+        for column in tagged
+    ]
+    empty = [
+        column.name[: -len(_PCODE_SUFFIX)]
+        for column in pcode_columns
+        if not _has_values(column, metadata)
+    ]
     note = (
         f'<p class="note">No {escape(", ".join(empty))} boundaries for this area.</p>'
         if empty
@@ -315,7 +328,7 @@ def _render_admin_coverage(metadata: MetadataReport) -> str:
 
 
 def _render_attribute_table(metadata: MetadataReport) -> str:
-    columns = sorted(_data_columns(metadata), key=lambda c: c.null_percent)
+    columns = sorted(_data_columns(metadata), key=lambda column: column.null_percent)
     if not columns:
         return ""
     legend = (
@@ -324,12 +337,12 @@ def _render_attribute_table(metadata: MetadataReport) -> str:
     )
     rows = [
         _coverage_row(
-            f'<span class="col-name">{escape(c.name)}</span>',
-            c,
+            f'<span class="col-name">{escape(column.name)}</span>',
+            column,
             metadata,
-            _common_values(c, metadata),
+            _common_values(column, metadata),
         )
-        for c in columns
+        for column in columns
     ]
     return _table("Attributes", ["Column", "Filled", "", "Common values"], rows, legend)
 
@@ -347,7 +360,7 @@ def _render_about(
                 f"fieldmaps.io edge-matched humanitarian, {escape(source.pcode_source_date)}",
             )
         )
-    if any(col.name.endswith(_TRANSLIT_SUFFIX) for col in source.metadata.columns):
+    if any(column.name.endswith(_TRANSLITERATION_SUFFIX) for column in source.metadata.columns):
         facts.append(("Latin names", "transliterated with unidecode"))
     licence = escape(source.license_label)
     if source.license_url:
@@ -379,8 +392,8 @@ def _duckdb_snippet(url: str, bbox: tuple[float, float, float, float] | None) ->
     smaller area reads a fraction of the file over HTTP."""
     if bbox is None:
         return ""
-    west, south = (math.floor(round(v * 100, 6)) / 100 for v in bbox[:2])
-    east, north = (math.ceil(round(v * 100, 6)) / 100 for v in bbox[2:])
+    west, south = (math.floor(round(value * 100, 6)) / 100 for value in bbox[:2])
+    east, north = (math.ceil(round(value * 100, 6)) / 100 for value in bbox[2:])
     query = (
         f"SELECT * FROM '{url}'\n"
         f"WHERE bbox.xmin >= {west:.2f} AND bbox.xmax <= {east:.2f}\n"
@@ -395,67 +408,67 @@ def _data_columns(metadata: MetadataReport) -> list[ColumnReport]:
     `id` is always complete, so counting any of them would overstate how filled the data is."""
     mixed_out = _source_mix_is_complete(metadata)
     return [
-        c
-        for c in metadata.columns
-        if is_source_attribute(c.name) and not (mixed_out and c.name == _SOURCE_COL)
+        column
+        for column in metadata.columns
+        if is_source_attribute(column.name) and not (mixed_out and column.name == _SOURCE_COLUMN)
     ]
 
 
-def _has_values(col: ColumnReport, metadata: MetadataReport) -> bool:
+def _has_values(column: ColumnReport, metadata: MetadataReport) -> bool:
     """Read off the counts, since `null_percent` rounds one value in a million to 100."""
-    return col.null_count < metadata.feature_count
+    return column.null_count < metadata.feature_count
 
 
-def _common_values(col: ColumnReport, metadata: MetadataReport) -> str:
-    if not _has_values(col, metadata):
+def _common_values(column: ColumnReport, metadata: MetadataReport) -> str:
+    if not _has_values(column, metadata):
         return '<span class="muted">empty</span>'
-    if col.top_values:
+    if column.top_values:
         return " &middot; ".join(
             f"<code>{escape(_stringify_value(entry.get('value')))}</code> "
             f'<span class="count">{format_int(int(entry.get("count", 0)))}</span>'
-            for entry in col.top_values
+            for entry in column.top_values
         )
-    if col.distinct_count == metadata.feature_count - col.null_count:
+    if column.distinct_count == metadata.feature_count - column.null_count:
         return '<span class="muted">unique per feature</span>'
-    return f'<span class="muted">{format_int(col.distinct_count)} distinct values</span>'
+    return f'<span class="muted">{format_int(column.distinct_count)} distinct values</span>'
 
 
 def _coverage_row(
-    label_html: str, col: ColumnReport, metadata: MetadataReport, detail: str | None
+    label_html: str, column: ColumnReport, metadata: MetadataReport, detail: str | None
 ) -> str:
-    filled = _filled_percent(col, metadata)
+    filled = _filled_percent(column, metadata)
     detail_cell = "" if detail is None else f'<td class="top-values">{detail}</td>'
     return (
-        f'<tr><td>{label_html}</td><td class="num">{_filled_label(col, metadata)}</td>'
+        f'<tr><td>{label_html}</td><td class="num">{_filled_label(column, metadata)}</td>'
         f'<td class="bar-cell"><div class="bar"><i class="{coverage_bucket(filled)}" '
         f'style="width:{filled:.2f}%"></i></div></td>{detail_cell}</tr>'
     )
 
 
-def _filled_percent(col: ColumnReport, metadata: MetadataReport) -> float:
+def _filled_percent(column: ColumnReport, metadata: MetadataReport) -> float:
     if not metadata.feature_count:
         return 0.0
-    return (metadata.feature_count - col.null_count) / metadata.feature_count * 100.0
+    return (metadata.feature_count - column.null_count) / metadata.feature_count * 100.0
 
 
-def _filled_label(col: ColumnReport, metadata: MetadataReport) -> str:
+def _filled_label(column: ColumnReport, metadata: MetadataReport) -> str:
     """A column with any value never reads 0.00%, which the reader would take for empty."""
-    filled = _filled_percent(col, metadata)
+    filled = _filled_percent(column, metadata)
     return "&lt;0.01%" if 0 < filled < 0.005 else f"{filled:.2f}%"
 
 
 def _source_column(metadata: MetadataReport) -> ColumnReport | None:
-    return next((c for c in metadata.columns if c.name == _SOURCE_COL), None)
+    return next((column for column in metadata.columns if column.name == _SOURCE_COLUMN), None)
 
 
 def _source_mix_is_complete(metadata: MetadataReport) -> bool:
     """Only then does the Source mix table say everything the column's own row would."""
-    col = _source_column(metadata)
+    column = _source_column(metadata)
     return (
-        col is not None
-        and len(col.top_values) > 1
-        and col.null_count == 0
-        and col.distinct_count <= len(col.top_values)
+        column is not None
+        and len(column.top_values) > 1
+        and column.null_count == 0
+        and column.distinct_count <= len(column.top_values)
     )
 
 
@@ -470,10 +483,10 @@ def _share_row(label_html: str, count: int, share: float) -> str:
 
 def _table(heading: str, headers: list[str], rows: list[str], intro: str = "") -> str:
     head_cells = "".join(
-        f'<th class="num">{escape(h)}</th>'
-        if h in {"Features", "Share", "Tagged", "Filled"}
-        else f"<th>{escape(h)}</th>"
-        for h in headers
+        f'<th class="num">{escape(header)}</th>'
+        if header in {"Features", "Share", "Tagged", "Filled"}
+        else f"<th>{escape(header)}</th>"
+        for header in headers
     )
     return (
         f"<h2>{escape(heading)}</h2>{intro}"
@@ -492,11 +505,11 @@ def _is_pcode_column(name: str) -> bool:
 
 
 def _deepest_pcode_column(metadata: MetadataReport) -> ColumnReport | None:
-    pcode_cols = [c for c in metadata.columns if _is_pcode_column(c.name)]
-    populated = [c for c in pcode_cols if _has_values(c, metadata)]
+    pcode_columns = [column for column in metadata.columns if _is_pcode_column(column.name)]
+    populated = [column for column in pcode_columns if _has_values(column, metadata)]
     if not populated:
         return None
-    return max(populated, key=lambda c: c.name)
+    return max(populated, key=lambda column: column.name)
 
 
 def outbound_link(href: str, text_html: str) -> str:

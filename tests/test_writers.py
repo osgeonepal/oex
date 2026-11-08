@@ -5,15 +5,12 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from oex.writers import geometry_labels, write_format
+from oex.writers import geometry_labels, geometry_type_filter, write_format
 
 
 @pytest.fixture
-def conn_with_table(tmp_path: Path) -> duckdb.DuckDBPyConnection:
-    conn = duckdb.connect(":memory:")
-    conn.execute("INSTALL spatial")
-    conn.execute("LOAD spatial")
-    conn.execute(
+def conn_with_table(spatial_conn: duckdb.DuckDBPyConnection) -> duckdb.DuckDBPyConnection:
+    spatial_conn.execute(
         """
         CREATE TABLE features AS SELECT * FROM (VALUES
             (1, 'A', ST_Point(83.5, 28.5)),
@@ -21,25 +18,39 @@ def conn_with_table(tmp_path: Path) -> duckdb.DuckDBPyConnection:
         ) AS t(id, name, geom)
         """
     )
-    return conn
+    return spatial_conn
 
 
-def test_geojson_writer(conn_with_table: duckdb.DuckDBPyConnection, tmp_path: Path) -> None:
+def _read_back_names(conn: duckdb.DuckDBPyConnection, path: Path) -> list[str]:
+    return [
+        row[0]
+        for row in conn.execute(f"SELECT name FROM ST_Read('{path}') ORDER BY name").fetchall()
+    ]
+
+
+def test_geojson_writer_writes_one_named_file_holding_every_feature(
+    conn_with_table: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
     out_dir = tmp_path / "out"
     files = write_format(conn_with_table, "features", "demo", "geojson", out_dir)
     assert len(files) == 1
     assert files[0].name == "demo.geojson"
-    assert files[0].stat().st_size > 0
+    assert _read_back_names(conn_with_table, files[0]) == ["A", "B"]
 
 
-def test_gpkg_writer(conn_with_table: duckdb.DuckDBPyConnection, tmp_path: Path) -> None:
+def test_gpkg_writer_writes_one_named_file_holding_every_feature(
+    conn_with_table: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
     out_dir = tmp_path / "out"
     files = write_format(conn_with_table, "features", "demo", "gpkg", out_dir)
     assert len(files) == 1
     assert files[0].name == "demo.gpkg"
+    assert _read_back_names(conn_with_table, files[0]) == ["A", "B"]
 
 
-def test_kml_writer(conn_with_table: duckdb.DuckDBPyConnection, tmp_path: Path) -> None:
+def test_kml_writer_writes_a_placemark_per_feature(
+    conn_with_table: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
     out_dir = tmp_path / "out"
     files = write_format(conn_with_table, "features", "demo", "kml", out_dir)
     assert len(files) == 1
@@ -47,23 +58,14 @@ def test_kml_writer(conn_with_table: duckdb.DuckDBPyConnection, tmp_path: Path) 
     assert files[0].stat().st_size > 0
     body = files[0].read_text(encoding="utf-8")
     assert "<kml" in body
-    assert "<Placemark>" in body
+    assert body.count("<Placemark>") == 2
 
 
-def test_shp_writer_splits_by_geometry_type(
-    conn_with_table: duckdb.DuckDBPyConnection, tmp_path: Path
+def test_shp_writer_splits_by_geometry_and_keeps_polygon_and_multipolygon_together(
+    spatial_conn: duckdb.DuckDBPyConnection, tmp_path: Path
 ) -> None:
-    out_dir = tmp_path / "out"
-    files = write_format(conn_with_table, "features", "demo", "shp", out_dir)
-    assert len(files) >= 1
-    assert all(f.name.startswith("demo_") for f in files)
-    assert all(f.suffix == ".shp" for f in files)
-
-
-def test_shp_writer_groups_polygon_and_multipolygon(tmp_path: Path) -> None:
-    """POLYGON and MULTIPOLYGON must end up in a single polygons.shp."""
-    conn = duckdb.connect(":memory:")
-    conn.execute("INSTALL spatial; LOAD spatial")
+    """A shapefile holds one geometry type, so POLYGON and MULTIPOLYGON share polygons.shp."""
+    conn = spatial_conn
     conn.execute(
         """
         CREATE TABLE mixed AS SELECT * FROM (VALUES
@@ -79,23 +81,22 @@ def test_shp_writer_groups_polygon_and_multipolygon(tmp_path: Path) -> None:
     assert names == ["demo_lines.shp", "demo_polygons.shp"]
 
 
-def test_unknown_format_raises(conn_with_table: duckdb.DuckDBPyConnection, tmp_path: Path) -> None:
-    with pytest.raises(ValueError):
+def test_an_unknown_format_raises_value_error(
+    conn_with_table: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
+    with pytest.raises(ValueError, match="xyz"):
         write_format(conn_with_table, "features", "demo", "xyz", tmp_path)
 
 
-def test_fgb_writer_emits_indexed_file(
+def test_fgb_writer_writes_a_flatgeobuf_file_holding_every_feature(
     conn_with_table: duckdb.DuckDBPyConnection, tmp_path: Path
 ) -> None:
     out_dir = tmp_path / "out"
     files = write_format(conn_with_table, "features", "demo", "fgb", out_dir)
     assert len(files) == 1
     assert files[0].name == "demo.fgb"
-    # FGB writes a magic "fgb3" header. A spatially-indexed file has the index
-    # written at the end; we just confirm the magic + non-empty payload.
-    head = files[0].read_bytes()[:4]
-    assert head[:3] == b"fgb"
-    assert files[0].stat().st_size > 64
+    assert files[0].read_bytes()[:3] == b"fgb"
+    assert _read_back_names(conn_with_table, files[0]) == ["A", "B"]
 
 
 def test_write_pmtiles_produces_archive(
@@ -164,17 +165,13 @@ def test_write_geoparquet_roundtrips_as_geometry(
     assert gtype is not None and gtype[0].startswith("GEOMETRY")
 
 
-def test_build_combined_pmtiles_injects_category_source_and_handles_missing_name(
-    tmp_path: Path,
+def test_the_combined_tileset_tags_each_feature_with_its_category_and_source(
+    spatial_conn: duckdb.DuckDBPyConnection, tmp_path: Path
 ) -> None:
-    import duckdb
-
+    """Layers with different columns merge; layer b has no `name` and must still tile."""
     from oex.writers import TileLayer, build_combined_pmtiles, write_geoparquet
 
-    conn = duckdb.connect(":memory:")
-    conn.execute("INSTALL spatial")
-    conn.execute("LOAD spatial")
-    # Heterogeneous per-layer schemas; layer b intentionally has no `name` column.
+    conn = spatial_conn
     conn.execute(
         "CREATE TABLE a AS SELECT 'ra' AS name, 'x' AS highway, ST_Point(83.5, 28.5) AS geom"
     )
@@ -188,17 +185,16 @@ def test_build_combined_pmtiles_injects_category_source_and_handles_missing_name
     ]
     out = tmp_path / "combined.pmtiles"
     build_combined_pmtiles(conn, layers, out, min_zoom=0, max_zoom=8, max_extra_zooms=4)
-    assert out.read_bytes()[:7] == b"PMTiles"
-    # The per-layer parquet itself carries no category column; it is injected at merge time.
-    cols_a = {r[0] for r in conn.execute(f"DESCRIBE SELECT * FROM read_parquet('{pa}')").fetchall()}
-    assert "category" not in cols_a and "geom" in cols_a
+    tagged = sorted(
+        (f["properties"]["category"], f["properties"]["source"], f["properties"].get("name"))
+        for f in _decoded_features(out, 8)
+    )
+    assert tagged == [("buildings", "overture", None), ("roads", "osm", "ra")]
 
 
 @pytest.fixture
-def conn_mixed_geometry() -> duckdb.DuckDBPyConnection:
-    conn = duckdb.connect(":memory:")
-    conn.execute("INSTALL spatial; LOAD spatial;")
-    conn.execute(
+def conn_mixed_geometry(spatial_conn: duckdb.DuckDBPyConnection) -> duckdb.DuckDBPyConnection:
+    spatial_conn.execute(
         """
         CREATE TABLE mixed AS SELECT * FROM (VALUES
             (1, ST_Point(83.5, 28.5)),
@@ -208,7 +204,7 @@ def conn_mixed_geometry() -> duckdb.DuckDBPyConnection:
         ) AS t(id, geom)
         """
     )
-    return conn
+    return spatial_conn
 
 
 def test_geometry_labels_groups_source_types_by_label(conn_mixed_geometry) -> None:
@@ -220,6 +216,12 @@ def test_geometry_labels_groups_source_types_by_label(conn_mixed_geometry) -> No
 def test_geometry_labels_is_empty_for_an_empty_table(conn_mixed_geometry) -> None:
     conn_mixed_geometry.execute("CREATE TABLE none_ AS SELECT * FROM mixed WHERE false")
     assert geometry_labels(conn_mixed_geometry, "none_") == {}
+
+
+def test_geometry_type_filter_keeps_only_the_listed_types(conn_mixed_geometry) -> None:
+    predicate = geometry_type_filter(["POLYGON", "MULTIPOLYGON"])
+    rows = conn_mixed_geometry.execute(f"SELECT id FROM mixed WHERE {predicate} ORDER BY id")
+    assert rows.fetchall() == [(3,), (4,)]
 
 
 def _geo(path: Path) -> dict:
@@ -248,11 +250,8 @@ def _row_groups(path: Path) -> list[dict[str, float]]:
     return boxes
 
 
-def _spread(tmp_path: Path) -> tuple[duckdb.DuckDBPyConnection, Path]:
+def _spread(conn: duckdb.DuckDBPyConnection, tmp_path: Path) -> Path:
     """Points spread over a degree, which is what makes row group bounds meaningful."""
-    conn = duckdb.connect(":memory:")
-    conn.execute("INSTALL spatial")
-    conn.execute("LOAD spatial")
     conn.execute(
         "CREATE TABLE features AS "
         "SELECT i AS id, ST_Point(84.0 + (i % 100) / 100.0, 27.0 + (i / 100) / 100.0) AS geom "
@@ -262,21 +261,21 @@ def _spread(tmp_path: Path) -> tuple[duckdb.DuckDBPyConnection, Path]:
 
     out = tmp_path / "spread.parquet"
     write_geoparquet(conn, "features", out)
-    return conn, out
+    return out
 
 
 def test_the_geoparquet_declares_the_version_that_carries_a_covering() -> None:
     """1.0.0 has no covering, and without it a reader cannot skip anything."""
-    from oex.writers import BBOX_COL, geo_metadata
+    from oex.writers import BBOX_COLUMN, geo_metadata
 
     geo = geo_metadata({"POLYGON": 3}, (1.0, 2.0, 3.0, 4.0))
     assert geo["version"] == "1.1.0"
     covering = geo["columns"]["geom"]["covering"]["bbox"]
     assert covering == {
-        "xmin": [BBOX_COL, "xmin"],
-        "ymin": [BBOX_COL, "ymin"],
-        "xmax": [BBOX_COL, "xmax"],
-        "ymax": [BBOX_COL, "ymax"],
+        "xmin": [BBOX_COLUMN, "xmin"],
+        "ymin": [BBOX_COLUMN, "ymin"],
+        "xmax": [BBOX_COLUMN, "xmax"],
+        "ymax": [BBOX_COLUMN, "ymax"],
     }
 
 
@@ -307,9 +306,11 @@ def test_the_row_group_size_suits_the_layer_it_is_given() -> None:
     assert row_group_size(200_000) < 200_000
 
 
-def test_a_written_layer_is_split_into_row_groups_a_reader_can_skip(tmp_path: Path) -> None:
+def test_a_written_layer_is_split_into_row_groups_a_reader_can_skip(
+    spatial_conn: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
     """One row group means every query reads the whole file however small its area."""
-    _conn, out = _spread(tmp_path)
+    out = _spread(spatial_conn, tmp_path)
     boxes = _row_groups(out)
     assert len(boxes) > 1
 
@@ -319,9 +320,11 @@ def test_a_written_layer_is_split_into_row_groups_a_reader_can_skip(tmp_path: Pa
     assert sum(widths) / len(widths) < layer_width
 
 
-def test_a_query_window_reads_only_the_row_groups_that_hold_it(tmp_path: Path) -> None:
+def test_a_query_window_reads_only_the_row_groups_that_hold_it(
+    spatial_conn: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
     """This is the behaviour the covering exists for, measured the way a reader sees it."""
-    _conn, out = _spread(tmp_path)
+    out = _spread(spatial_conn, tmp_path)
     boxes = _row_groups(out)
     window = (84.02, 27.02, 84.06, 27.06)
     touched = [
@@ -337,14 +340,17 @@ def test_a_query_window_reads_only_the_row_groups_that_hold_it(tmp_path: Path) -
     assert len(touched) < len(boxes)
 
 
-def test_the_bbox_column_stays_out_of_the_tiles(tmp_path: Path) -> None:
+def test_the_bbox_column_stays_out_of_the_tiles(
+    spatial_conn: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
     """It is a storage detail; carrying it into the tileset would bloat every feature."""
     from unittest.mock import patch
 
-    from oex.writers import BBOX_COL, TileLayer, build_combined_pmtiles
+    from oex.writers import BBOX_COLUMN, TileLayer, build_combined_pmtiles
 
-    conn, out = _spread(tmp_path)
-    assert BBOX_COL in {
+    conn = spatial_conn
+    out = _spread(conn, tmp_path)
+    assert BBOX_COLUMN in {
         row[0] for row in conn.execute(f"DESCRIBE SELECT * FROM '{out}'").fetchall()
     }
     seen: dict[str, set[str]] = {}
@@ -365,24 +371,29 @@ def test_the_bbox_column_stays_out_of_the_tiles(tmp_path: Path) -> None:
             max_zoom=4,
             max_extra_zooms=4,
         )
-    assert BBOX_COL not in seen["columns"]
+    assert BBOX_COLUMN not in seen["columns"]
     assert {"category", "source", "geom"} <= seen["columns"]
 
 
-def test_the_file_carries_exactly_one_geoparquet_metadata_block(tmp_path: Path) -> None:
+def test_the_file_carries_exactly_one_geoparquet_metadata_block(
+    spatial_conn: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
     """DuckDB writes its own `geo` alongside ours unless the geometry is handed to it as
     plain WKB, and a reader taking the last one would see 1.0.0 with no covering."""
     import re
 
-    _conn, out = _spread(tmp_path)
+    out = _spread(spatial_conn, tmp_path)
     blocks = re.findall(rb'\{"version"\s*:\s*"[0-9.]+"', out.read_bytes())
     assert len(blocks) == 1, [b.decode() for b in blocks]
     assert b'"1.1.0"' in blocks[0]
 
 
-def test_the_written_geometry_still_reads_back_as_geometry(tmp_path: Path) -> None:
+def test_the_written_geometry_still_reads_back_as_geometry(
+    spatial_conn: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
     """Handing DuckDB plain WKB must not cost the round trip the tiler depends on."""
-    conn, out = _spread(tmp_path)
+    conn = spatial_conn
+    out = _spread(conn, tmp_path)
     typed = conn.execute(f"SELECT typeof(geom) FROM read_parquet('{out}') LIMIT 1").fetchone()
     assert typed is not None and typed[0].startswith("GEOMETRY")
     assert (
@@ -390,14 +401,14 @@ def test_the_written_geometry_still_reads_back_as_geometry(tmp_path: Path) -> No
     )
 
 
-def test_a_source_column_called_bbox_is_refused(tmp_path: Path) -> None:
+def test_a_source_column_called_bbox_is_refused(
+    spatial_conn: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
     """Overture carries its own `bbox`, and SELECT would emit two columns of that name
     while the covering names one of them, silently pointing at the wrong data."""
     from oex.writers import write_geoparquet
 
-    conn = duckdb.connect(":memory:")
-    conn.execute("INSTALL spatial")
-    conn.execute("LOAD spatial")
+    conn = spatial_conn
     conn.execute(
         "CREATE TABLE features AS SELECT 1 AS id, {xmin: 1.0} AS bbox, ST_Point(84.0, 27.0) AS geom"
     )
@@ -430,13 +441,13 @@ def _top_zoom(path: Path) -> int:
         return Reader(MmapSource(handle)).header()["max_zoom"]
 
 
-def test_every_feature_survives_at_the_top_zoom(tmp_path: Path) -> None:
+def test_every_feature_survives_at_the_top_zoom(
+    spatial_conn: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
     """A tile past its size budget must not shed features at the zoom readers inspect."""
     from oex.writers import write_pmtiles
 
-    conn = duckdb.connect(":memory:")
-    conn.execute("INSTALL spatial")
-    conn.execute("LOAD spatial")
+    conn = spatial_conn
     # Hashes do not compress, so these overflow a zoom 2 tile without needing 200,000 rows.
     conn.execute(
         "CREATE TABLE dense AS SELECT i AS id, md5(i::VARCHAR) || md5((i * 7)::VARCHAR) AS note, "
@@ -533,13 +544,13 @@ def test_a_tippecanoe_without_a_version_number_is_refused(fresh_tile_builder: Pa
         tile_builder()
 
 
-def test_numbers_and_flags_keep_their_types_in_the_tiles(tmp_path: Path) -> None:
+def test_numbers_and_flags_keep_their_types_in_the_tiles(
+    spatial_conn: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
     """A map filter on `levels > 2` matches nothing when the value arrives as a string."""
     from oex.writers import write_pmtiles
 
-    conn = duckdb.connect(":memory:")
-    conn.execute("INSTALL spatial")
-    conn.execute("LOAD spatial")
+    conn = spatial_conn
     conn.execute(
         "CREATE TABLE typed AS SELECT 7::BIGINT AS levels, 2.5::DOUBLE AS height, "
         "false AS covered, ST_Point(85.3, 27.7) AS geom"
@@ -557,13 +568,13 @@ def test_numbers_and_flags_keep_their_types_in_the_tiles(tmp_path: Path) -> None
     assert properties == {"levels": 7, "height": 2.5, "covered": False}
 
 
-def test_small_buildings_survive_at_the_top_zoom(tmp_path: Path) -> None:
+def test_small_buildings_survive_at_the_top_zoom(
+    spatial_conn: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
     """Building footprints are smaller than a pixel at zoom 12 and must not be merged away."""
     from oex.writers import write_pmtiles
 
-    conn = duckdb.connect(":memory:")
-    conn.execute("INSTALL spatial")
-    conn.execute("LOAD spatial")
+    conn = spatial_conn
     conn.execute(
         "CREATE TABLE footprints AS SELECT i AS id, ST_MakeEnvelope(x, y, x + 0.00003, y + 0.00003) "
         "AS geom FROM (SELECT i, 85.30 + (i % 200) / 5000.0 AS x, 27.70 + (i // 200) / 5000.0 AS y "
@@ -582,29 +593,28 @@ def test_small_buildings_survive_at_the_top_zoom(tmp_path: Path) -> None:
     assert len(ids) == 20000
 
 
-def _stacked_points(tmp_path: Path) -> tuple[duckdb.DuckDBPyConnection, Path]:
+def _stacked_points(conn: duckdb.DuckDBPyConnection, tmp_path: Path) -> Path:
     """30,000 points on one coordinate, which never separate however far tiles zoom in."""
     from oex.writers import write_geoparquet
 
-    conn = duckdb.connect(":memory:")
-    conn.execute("INSTALL spatial")
-    conn.execute("LOAD spatial")
     conn.execute(
         "CREATE TABLE stacked AS SELECT i AS id, md5(i::VARCHAR) || md5((i * 7)::VARCHAR) AS name, "
         "ST_Point(85.3, 27.7) AS geom FROM range(30000) t(i)"
     )
     parquet = tmp_path / "stacked.parquet"
     write_geoparquet(conn, "stacked", parquet)
-    return conn, parquet
+    return parquet
 
 
-def test_added_zooms_stop_at_the_configured_limit(tmp_path: Path) -> None:
+def test_added_zooms_stop_at_the_configured_limit(
+    spatial_conn: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
     """Without a limit these tiles run to z24."""
     from oex.writers import write_pmtiles
 
-    conn, _ = _stacked_points(tmp_path)
+    _stacked_points(spatial_conn, tmp_path)
     out = write_pmtiles(
-        conn,
+        spatial_conn,
         "stacked",
         tmp_path / "s.pmtiles",
         layer="features",
@@ -615,12 +625,14 @@ def test_added_zooms_stop_at_the_configured_limit(tmp_path: Path) -> None:
     assert _top_zoom(out) == 4
 
 
-def test_the_combined_tileset_honours_the_same_limit(tmp_path: Path) -> None:
+def test_the_combined_tileset_stops_added_zooms_at_the_configured_limit(
+    spatial_conn: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
     from oex.writers import TileLayer, build_combined_pmtiles
 
-    conn, parquet = _stacked_points(tmp_path)
+    parquet = _stacked_points(spatial_conn, tmp_path)
     out = build_combined_pmtiles(
-        conn,
+        spatial_conn,
         [TileLayer(path=str(parquet), category="stacked", source="osm")],
         tmp_path / "c.pmtiles",
         min_zoom=0,
@@ -630,13 +642,13 @@ def test_the_combined_tileset_honours_the_same_limit(tmp_path: Path) -> None:
     assert _top_zoom(out) == 4
 
 
-def test_every_part_of_a_geometry_collection_reaches_the_tiles(tmp_path: Path) -> None:
+def test_every_part_of_a_geometry_collection_reaches_the_tiles(
+    spatial_conn: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
     """OSM relations come out as collections, and tippecanoe refuses them in FlatGeobuf."""
     from oex.writers import write_pmtiles
 
-    conn = duckdb.connect(":memory:")
-    conn.execute("INSTALL spatial")
-    conn.execute("LOAD spatial")
+    conn = spatial_conn
     conn.execute(
         "CREATE TABLE places AS SELECT * FROM (VALUES "
         "(1, 'a', ST_GeomFromText('GEOMETRYCOLLECTION(POINT(85.3 27.7), "
@@ -714,3 +726,25 @@ def test_a_tileset_carries_the_layer_name_it_is_given(
         for layer in tile["features"]
     }
     assert layers == {"buildings"}
+
+
+@pytest.mark.parametrize("fmt", ["geojson", "shp"])
+def test_a_format_writes_into_a_directory_whose_name_has_an_apostrophe(
+    conn_with_table: duckdb.DuckDBPyConnection, tmp_path: Path, fmt: str
+) -> None:
+    files = write_format(conn_with_table, "features", "demo", fmt, tmp_path / "cote d'ivoire")
+    assert files and all(f.stat().st_size > 0 for f in files)
+
+
+def test_a_layer_with_apostrophes_in_its_path_and_category_builds_combined_tiles(
+    conn_with_table: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
+    from oex.writers import TileLayer, build_combined_pmtiles, write_geoparquet
+
+    parquet = write_geoparquet(
+        conn_with_table, "features", tmp_path / "cote d'ivoire" / "a.parquet"
+    )
+    layers = [TileLayer(path=str(parquet), category="people's places", source="o'sm")]
+    out = tmp_path / "combined.pmtiles"
+    build_combined_pmtiles(conn_with_table, layers, out, min_zoom=0, max_zoom=8, max_extra_zooms=4)
+    assert out.read_bytes()[:7] == b"PMTiles"

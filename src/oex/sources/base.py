@@ -16,9 +16,8 @@ class SourceQuery:
     source_expr: str
     select_fields: list[str]
     where_conditions: list[str]
-    # "bbox" for tables with an upstream bbox struct (Overture); "geom" to derive
-    # bbox from the geometry column (OSM cache).
-    bbox_cols: str
+    # "bbox" reads an upstream bbox struct; "geom" derives the bbox from the geometry.
+    bbox_mode: str
     dataset_source: str
     source_url: str
     source_description: str

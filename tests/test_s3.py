@@ -5,7 +5,14 @@ from pathlib import Path
 import pytest
 
 from oex.config.schema import S3Config
-from oex.s3 import artifact_key, content_type_for, public_url, resolve
+from oex.s3 import (
+    artifact_key,
+    category_artifact_key,
+    content_type_for,
+    public_url,
+    resolve,
+    resolve_with_bucket,
+)
 
 
 def test_artifact_key_uses_iso3_then_category_then_filename() -> None:
@@ -39,14 +46,14 @@ def test_artifact_key_prepends_prefix_when_set() -> None:
     )
 
 
-def test_build_key_strips_stray_slashes_in_prefix() -> None:
+def test_artifact_key_strips_stray_slashes_in_prefix() -> None:
     assert (
         artifact_key("/hotosm/exports/", "NPL", "buildings", "x.zip")
         == "hotosm/exports/NPL/buildings/x.zip"
     )
 
 
-def test_public_url_us_east_1_uses_legacy_host() -> None:
+def test_public_url_us_east_1_uses_the_global_host() -> None:
     url = public_url(bucket="my-bucket", key="a/b/c.zip", region="us-east-1", endpoint_url=None)
     assert url == "https://my-bucket.s3.amazonaws.com/a/b/c.zip"
 
@@ -56,7 +63,7 @@ def test_public_url_other_region_includes_region_in_host() -> None:
     assert url == "https://my-bucket.s3.ap-south-1.amazonaws.com/a/b.zip"
 
 
-def test_public_url_empty_region_falls_back_to_legacy() -> None:
+def test_public_url_empty_region_uses_the_global_host() -> None:
     url = public_url(bucket="b", key="k", region="", endpoint_url=None)
     assert url == "https://b.s3.amazonaws.com/k"
 
@@ -134,3 +141,20 @@ def test_layer_key_separates_two_configs_for_one_country() -> None:
     assert flood == "ISO3/NPL/_layers/osm/buildings.parquet"
     assert corridor == "ISO3/NPL_CORRIDOR/_layers/osm/buildings.parquet"
     assert flood != corridor
+
+
+def test_resolve_with_bucket_raises_when_no_bucket_is_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OEX_S3_BUCKET", raising=False)
+    with pytest.raises(ValueError, match="no bucket given"):
+        resolve_with_bucket(S3Config(enabled=True))
+
+
+def test_category_artifact_key_adds_the_geometry_only_with_nest_by_geometry() -> None:
+    cfg = S3Config(enabled=True, prefix="TM", folder="hotosm_project_1")
+    flat = category_artifact_key(cfg, "TM", "", "buildings", "a.zip", geometry="polygons")
+    cfg.nest_by_geometry = True
+    nested = category_artifact_key(cfg, "TM", "", "buildings", "a.zip", geometry="polygons")
+    assert flat == "TM/hotosm_project_1/buildings/a.zip"
+    assert nested == "TM/hotosm_project_1/buildings/polygons/a.zip"

@@ -134,7 +134,8 @@ def test_transliterate_empty_rules_is_a_noop(conn: duckdb.DuckDBPyConnection) ->
     assert cols_before == cols_after
 
 
-def test_multiple_rules_in_one_call(conn: duckdb.DuckDBPyConnection) -> None:
+def test_every_rule_in_one_call_writes_its_target_column(conn: duckdb.DuckDBPyConnection) -> None:
+    """Only the first rule prefers name_en, so row 3 differs between the two targets."""
     _seed(conn)
     conn.execute("ALTER TABLE features ADD COLUMN name_ne VARCHAR")
     conn.execute("UPDATE features SET name_ne = name")
@@ -146,6 +147,23 @@ def test_multiple_rules_in_one_call(conn: duckdb.DuckDBPyConnection) -> None:
             TransliterateRule(target="name_ne_latin", source="name_ne"),
         ],
     )
-    cols = {r[0] for r in conn.execute("DESCRIBE features").fetchall()}
-    assert "name_latin" in cols
-    assert "name_ne_latin" in cols
+    rows = conn.execute(
+        "SELECT name_latin, name_ne_latin FROM features WHERE id IN (2, 3) ORDER BY id"
+    ).fetchall()
+    assert rows == [("kaatthmaaddauN", "kaatthmaaddauN"), ("Moscow", "Moskva")]
+
+
+def test_transliterating_twice_on_one_connection_adds_both_columns(
+    conn: duckdb.DuckDBPyConnection,
+) -> None:
+    _seed(conn)
+    transliterate_table(
+        conn, table="features", rules=[TransliterateRule(target="a", source="name")]
+    )
+    transliterate_table(
+        conn, table="features", rules=[TransliterateRule(target="b", source="name")]
+    )
+    assert conn.execute("SELECT a, b FROM features WHERE id = 2").fetchone() == (
+        "kaatthmaaddauN",
+        "kaatthmaaddauN",
+    )

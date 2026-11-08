@@ -48,8 +48,7 @@ class GeofabrikLookupError(LookupError):
 
 
 class GeofabrikUnavailableError(GeofabrikLookupError):
-    """Geofabrik publishes no country-level PBF for this ISO3; a subclass so planet_fallback
-    can catch it without swallowing network failures."""
+    """Geofabrik publishes no country-level PBF for this ISO3, a gap planet_fallback covers."""
 
 
 def _iso3_to_iso2(iso3: str) -> str:
@@ -66,12 +65,12 @@ def _load_index(index_url: str) -> list[dict[str, Any]]:
         return cached
 
     logger.info("Fetching Geofabrik index: %s", index_url)
-    resp = http.session.get(index_url, timeout=120)
-    resp.raise_for_status()
-    payload = resp.json()
+    response = http.session.get(index_url, timeout=120)
+    response.raise_for_status()
+    payload = response.json()
     if payload.get("type") != "FeatureCollection":
         raise RuntimeError(f"Unexpected Geofabrik index format: {payload.get('type')!r}")
-    features: list[dict[str, Any]] = [f["properties"] for f in payload["features"]]
+    features: list[dict[str, Any]] = [feature["properties"] for feature in payload["features"]]
     with _index_lock:
         _index_cache[index_url] = features
     return features
@@ -82,13 +81,13 @@ def lookup_country(iso3: str, *, index_url: str = DEFAULT_INDEX_URL) -> Geofabri
     features = _load_index(index_url)
 
     candidates: list[dict[str, Any]] = []
-    for props in features:
-        codes = props.get("iso3166-1:alpha2") or []
+    for properties in features:
+        codes = properties.get("iso3166-1:alpha2") or []
         if iso2 not in codes:
             continue
-        parent = props.get("parent")
+        parent = properties.get("parent")
         if parent in _CONTINENT_PARENTS or parent is None:
-            candidates.append(props)
+            candidates.append(properties)
 
     if not candidates:
         raise GeofabrikUnavailableError(
@@ -97,7 +96,9 @@ def lookup_country(iso3: str, *, index_url: str = DEFAULT_INDEX_URL) -> Geofabri
         )
 
     # Prefer an unambiguous country-level entry whose alpha2 list is exactly [iso2].
-    candidates.sort(key=lambda p: (p.get("iso3166-1:alpha2") != [iso2], p.get("id", "")))
+    candidates.sort(
+        key=lambda entry: (entry.get("iso3166-1:alpha2") != [iso2], entry.get("id", ""))
+    )
     chosen = candidates[0]
 
     pbf_url = chosen.get("urls", {}).get("pbf")

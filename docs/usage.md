@@ -28,6 +28,9 @@ Common options:
 - `--output-dir <dir>`: override output dir
 - `--hdx-push / --no-hdx-push`: HDX toggle
 
+`--log-level` sets the log level for every command, and goes before the command name:
+`oex-cli --log-level DEBUG osm npl`. The `LOG_LEVEL` environment variable sets it too.
+
 ## Output formats
 
 Set `output.formats` (or per-category `formats`) to any combination of
@@ -52,7 +55,7 @@ from oex.config import load_config, select_categories
 from oex.osm.runner import OsmRunner
 from oex.overture.runner import OvertureRunner
 
-cfg = load_config("configs/nepal.yaml", ["iso3=NPL", "hdx.push=false"])
+cfg = load_config("configs/nepal.yaml", {"iso3": "NPL", "hdx.push": False})
 
 result = Exporter(cfg, OvertureRunner()).run()
 

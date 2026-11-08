@@ -10,17 +10,27 @@ from oex.config.schema import S3Config
 
 def content_type_for(path: Path) -> str:
     # Without an explicit ContentType, S3 serves objects as application/octet-stream
-    # and browsers prompt download instead of rendering (breaks the customviz iframe).
-    ctype, _ = mimetypes.guess_type(path.name)
-    return ctype or "application/octet-stream"
+    # and browsers prompt download instead of rendering (breaking the custom visualisation iframe).
+    content_type, _ = mimetypes.guess_type(path.name)
+    return content_type or "application/octet-stream"
 
 
-def resolve(cfg: S3Config) -> tuple[str, str, str, str | None, str]:
-    bucket = cfg.bucket or os.environ.get("OEX_S3_BUCKET", "")
-    prefix = cfg.prefix or os.environ.get("OEX_S3_PREFIX", "")
-    region = cfg.region or os.environ.get("OEX_S3_REGION", "")
-    endpoint_url = cfg.endpoint_url or os.environ.get("OEX_S3_ENDPOINT_URL")
-    return bucket, prefix, region, endpoint_url, cfg.acl
+def resolve(s3_config: S3Config) -> tuple[str, str, str, str | None, str]:
+    bucket = s3_config.bucket or os.environ.get("OEX_S3_BUCKET", "")
+    prefix = s3_config.prefix or os.environ.get("OEX_S3_PREFIX", "")
+    region = s3_config.region or os.environ.get("OEX_S3_REGION", "")
+    endpoint_url = s3_config.endpoint_url or os.environ.get("OEX_S3_ENDPOINT_URL")
+    return bucket, prefix, region, endpoint_url, s3_config.acl
+
+
+def resolve_with_bucket(s3_config: S3Config) -> tuple[str, str, str, str | None, str]:
+    """`resolve`, raising when neither the config nor the environment names a bucket."""
+    resolved = resolve(s3_config)
+    if not resolved[0]:
+        raise ValueError(
+            "output.s3.enabled is true but no bucket given via output.s3.bucket or OEX_S3_BUCKET"
+        )
+    return resolved
 
 
 def artifact_key(
@@ -33,16 +43,38 @@ def artifact_key(
     nest_by_category: bool = True,
     geometry: str = "",
 ) -> str:
-    """``folder`` overrides the iso3 segment, a false ``nest_by_category`` flattens the path,
-    and ``geometry`` adds a points/lines/polygons segment."""
+    """Object key nested by area (`folder`, else iso3), then optionally by category and by a
+    points/lines/polygons `geometry` segment."""
     segments = [prefix, folder or iso3.upper()]
     if nest_by_category:
         segments.append(category_slug)
     if geometry:
         segments.append(geometry)
-    parts = [s.strip("/") for s in segments if s]
+    parts = [segment.strip("/") for segment in segments if segment]
     parts.append(filename)
     return "/".join(parts)
+
+
+def category_artifact_key(
+    s3_config: S3Config,
+    prefix: str,
+    iso3: str,
+    category_slug: str,
+    filename: str,
+    *,
+    geometry: str = "",
+) -> str:
+    """`artifact_key` laid out by the S3 config, under the prefix `resolve` gave; `geometry`
+    applies only with nest_by_geometry."""
+    return artifact_key(
+        prefix,
+        iso3,
+        category_slug,
+        filename,
+        folder=s3_config.folder,
+        nest_by_category=s3_config.nest_by_category,
+        geometry=geometry if s3_config.nest_by_geometry else "",
+    )
 
 
 def build_layer_key(prefix: str, iso3: str, source: str, slug: str, folder: str = "") -> str:
@@ -52,33 +84,33 @@ def build_layer_key(prefix: str, iso3: str, source: str, slug: str, folder: str 
 
 
 def list_layer_urls(
-    cfg: S3Config, iso3: str, *, exclude_source: str | None = None
+    s3_config: S3Config, iso3: str, *, exclude_source: str | None = None
 ) -> list[tuple[str, str, str]]:
-    """List staged per-layer GeoParquets as (source, slug, url), optionally skipping one source."""
+    """Staged per-layer GeoParquets as (source, slug, url)."""
     import boto3
 
-    bucket, prefix, region, endpoint_url, _ = resolve(cfg)
+    bucket, prefix, region, endpoint_url, _ = resolve(s3_config)
     if not bucket:
         return []
-    ident = (cfg.folder or iso3).upper()
-    key_prefix = "/".join(p.strip("/") for p in (prefix, ident, "_layers") if p) + "/"
+    area_id = (s3_config.folder or iso3).upper()
+    key_prefix = "/".join(part.strip("/") for part in (prefix, area_id, "_layers") if part) + "/"
     client = boto3.client("s3", region_name=region or None, endpoint_url=endpoint_url)
-    found: list[tuple[str, str, str]] = []
+    layers: list[tuple[str, str, str]] = []
     for page in client.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=key_prefix):
-        for obj in page.get("Contents", []):
-            key = obj["Key"]
+        for listed in page.get("Contents", []):
+            key = listed["Key"]
             if not key.endswith(".parquet"):
                 continue
-            rest = key[len(key_prefix) :].split("/")
-            if len(rest) != 2:
+            relative_parts = key[len(key_prefix) :].split("/")
+            if len(relative_parts) != 2:
                 continue
-            source, filename = rest
+            source, filename = relative_parts
             if exclude_source is not None and source == exclude_source:
                 continue
             slug = filename[: -len(".parquet")]
             url = public_url(bucket=bucket, key=key, region=region, endpoint_url=endpoint_url)
-            found.append((source, slug, url))
-    return found
+            layers.append((source, slug, url))
+    return layers
 
 
 def public_url(*, bucket: str, key: str, region: str, endpoint_url: str | None) -> str:
@@ -101,22 +133,18 @@ def upload(
     import boto3
 
     client = boto3.client("s3", region_name=region or None, endpoint_url=endpoint_url)
-    extra: dict[str, Any] = {"ContentType": content_type_for(path)}
+    extra_args: dict[str, Any] = {"ContentType": content_type_for(path)}
     if acl:
-        extra["ACL"] = acl
-    client.upload_file(str(path), bucket, key, ExtraArgs=extra)
+        extra_args["ACL"] = acl
+    client.upload_file(str(path), bucket, key, ExtraArgs=extra_args)
     return public_url(bucket=bucket, key=key, region=region, endpoint_url=endpoint_url)
 
 
-def preflight(cfg: S3Config) -> None:
+def preflight(s3_config: S3Config) -> None:
     import boto3
     import botocore.exceptions
 
-    bucket, prefix, region, endpoint_url, acl = resolve(cfg)
-    if not bucket:
-        raise ValueError(
-            "output.s3.enabled is true but no bucket given via output.s3.bucket or OEX_S3_BUCKET"
-        )
+    bucket, prefix, region, endpoint_url, acl = resolve_with_bucket(s3_config)
 
     client = boto3.client("s3", region_name=region or None, endpoint_url=endpoint_url)
     try:
@@ -125,9 +153,9 @@ def preflight(cfg: S3Config) -> None:
         raise RuntimeError(f"S3 preflight: cannot reach bucket {bucket!r}: {exc}") from exc
 
     test_key = f"{prefix.strip('/')}/.oex_preflight" if prefix else ".oex_preflight"
-    extra: dict[str, Any] = {"ACL": acl} if acl else {}
+    extra_args: dict[str, Any] = {"ACL": acl} if acl else {}
     try:
-        client.put_object(Bucket=bucket, Key=test_key, Body=b"oex preflight ok", **extra)
+        client.put_object(Bucket=bucket, Key=test_key, Body=b"oex preflight ok", **extra_args)
     except botocore.exceptions.ClientError as exc:
         raise RuntimeError(
             f"S3 preflight: cannot put to s3://{bucket}/{test_key} with ACL={acl!r}: {exc}"

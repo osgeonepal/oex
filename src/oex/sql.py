@@ -1,4 +1,4 @@
-"""SELECT/WHERE clause builders + materialise(); shared by both sources."""
+"""SQL the exporter assembles to materialise each category."""
 
 import duckdb
 
@@ -8,17 +8,27 @@ from oex.logging_setup import get_logger
 logger = get_logger(__name__)
 
 
+def sql_string(value: str) -> str:
+    """`value` as a single-quoted SQL string literal."""
+    return "'" + value.replace("'", "''") + "'"
+
+
+def sql_identifier(name: str) -> str:
+    """`name` as a double-quoted SQL identifier."""
+    return '"' + name.replace('"', '""') + '"'
+
+
 def build_select_clause(select_fields: list[str]) -> str:
     if not select_fields:
         return "geometry AS geom"
     return ",\n       ".join([*select_fields, "geometry AS geom"])
 
 
-def build_where_clause(boundary: Boundary, where_conditions: list[str], bbox_cols: str) -> str:
-    """`bbox_cols="bbox"` prunes on Overture's own bbox struct; `"geom"` derives it from the
+def build_where_clause(boundary: Boundary, where_conditions: list[str], bbox_mode: str) -> str:
+    """`bbox_mode="bbox"` prunes on Overture's own bbox struct; `"geom"` derives it from the
     geometry for the OSM cache."""
     minx, miny, maxx, maxy = boundary.bbox
-    if bbox_cols == "geom":
+    if bbox_mode == "geom":
         bbox_filter = (
             f"ST_XMin(geometry) <= {maxx} AND ST_XMax(geometry) >= {minx} AND "
             f"ST_YMin(geometry) <= {maxy} AND ST_YMax(geometry) >= {miny}"
@@ -36,10 +46,9 @@ def build_where_clause(boundary: Boundary, where_conditions: list[str], bbox_col
         "ST_XMin(geometry) >= -180 AND ST_XMax(geometry) <= 180"
     )
 
-    geojson_literal = boundary.geojson.replace("'", "''")
-    intersect = f"ST_Intersects(geometry, ST_GeomFromGeoJSON('{geojson_literal}'))"
+    intersect = f"ST_Intersects(geometry, ST_GeomFromGeoJSON({sql_string(boundary.geojson)}))"
     parts = [bbox_filter, earth_filter, intersect]
-    parts.extend(f"({cond})" for cond in where_conditions if cond)
+    parts.extend(f"({condition})" for condition in where_conditions if condition)
     return " AND ".join(parts)
 
 

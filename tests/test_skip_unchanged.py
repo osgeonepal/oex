@@ -3,10 +3,11 @@
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock, patch
 
 import duckdb
 import pytest
+from hdx.data.hdxobject import HDXError
 
 from oex.boundary import Boundary
 from oex.config.schema import CategoryConfig, RootConfig
@@ -33,60 +34,52 @@ def _cfg(tmp_path: Path) -> RootConfig:
     return cfg
 
 
-@pytest.fixture
-def conn():
-    connection = duckdb.connect()
-    connection.execute("INSTALL spatial; LOAD spatial")
-    yield connection
-    connection.close()
-
-
-def _fingerprint(exporter: Exporter, conn, rows_sql: str) -> str:
+def _fingerprint(exporter: Exporter, conn: duckdb.DuckDBPyConnection, rows_sql: str) -> str:
     conn.execute(f"CREATE OR REPLACE TABLE features AS {rows_sql}")
     return exporter._content_hash(conn, "features", exporter._cfg.categories[0])
 
 
-def test_the_fingerprint_ignores_row_order(tmp_path, conn):
+def test_the_fingerprint_ignores_row_order(make_exporter, tmp_path, spatial_conn):
     """Parallel queries return rows in any order; the data is the same."""
-    exporter = Exporter(_cfg(tmp_path), Mock(name="osm"))
-    forward = _fingerprint(exporter, conn, FEATURES)
+    exporter = make_exporter(_cfg(tmp_path), "osm")
+    forward = _fingerprint(exporter, spatial_conn, FEATURES)
     reversed_order = _fingerprint(
-        exporter, conn, f"SELECT * FROM ({FEATURES}) ORDER BY feature_id DESC"
+        exporter, spatial_conn, f"SELECT * FROM ({FEATURES}) ORDER BY feature_id DESC"
     )
     assert forward == reversed_order
 
 
-def test_the_fingerprint_changes_with_a_tag(tmp_path, conn):
-    exporter = Exporter(_cfg(tmp_path), Mock(name="osm"))
-    before = _fingerprint(exporter, conn, FEATURES)
-    after = _fingerprint(exporter, conn, FEATURES.replace("'primary'", "'secondary'"))
+def test_the_fingerprint_changes_when_a_tag_value_changes(make_exporter, tmp_path, spatial_conn):
+    exporter = make_exporter(_cfg(tmp_path), "osm")
+    before = _fingerprint(exporter, spatial_conn, FEATURES)
+    after = _fingerprint(exporter, spatial_conn, FEATURES.replace("'primary'", "'secondary'"))
     assert before != after
 
 
-def test_the_fingerprint_counts_repeated_rows(tmp_path, conn):
+def test_the_fingerprint_counts_repeated_rows(make_exporter, tmp_path, spatial_conn):
     """Two extra copies of a row would cancel out under XOR."""
-    exporter = Exporter(_cfg(tmp_path), Mock(name="osm"))
-    once = _fingerprint(exporter, conn, FEATURES)
+    exporter = make_exporter(_cfg(tmp_path), "osm")
+    once = _fingerprint(exporter, spatial_conn, FEATURES)
     first_row = f"SELECT * FROM ({FEATURES}) WHERE feature_id = 'node/1'"
     tripled = _fingerprint(
-        exporter, conn, f"{FEATURES} UNION ALL {first_row} UNION ALL {first_row}"
+        exporter, spatial_conn, f"{FEATURES} UNION ALL {first_row} UNION ALL {first_row}"
     )
     assert once != tripled
 
 
-def test_the_recipe_ignores_paths_and_memory_but_not_the_layer(tmp_path):
+def test_the_recipe_ignores_paths_and_memory_but_not_the_layer(make_exporter, tmp_path):
     """The laptop and the server write to different disks with different memory."""
     laptop, server = _cfg(tmp_path), _cfg(tmp_path)
     server.output.dir = "/mnt/disk/output"
     server.parallel.memory_gb = 12
     category = laptop.categories[0]
-    assert Exporter(laptop, Mock())._layer_recipe(category) == Exporter(
-        server, Mock()
-    )._layer_recipe(category)
+    assert make_exporter(laptop)._layer_recipe(category) == make_exporter(server)._layer_recipe(
+        category
+    )
 
     without_pcodes = CategoryConfig(name="schools", skip_pcodes=True)
-    assert Exporter(laptop, Mock())._layer_recipe(without_pcodes) != Exporter(
-        laptop, Mock()
+    assert make_exporter(laptop)._layer_recipe(without_pcodes) != make_exporter(
+        laptop
     )._layer_recipe(category)
 
 
@@ -94,9 +87,8 @@ def test_the_recipe_ignores_paths_and_memory_but_not_the_layer(tmp_path):
     ("item", "expected"),
     [(None, None), ({"properties": {"oex:content_hash": "abc"}}, "abc")],
 )
-def test_the_published_fingerprint_is_read_from_the_item(tmp_path, item, expected):
-    exporter = Exporter(_cfg(tmp_path), Mock(name="osm"))
-    exporter._runner.name = "osm"
+def test_the_published_fingerprint_is_read_from_the_item(make_exporter, tmp_path, item, expected):
+    exporter = make_exporter(_cfg(tmp_path), "osm")
     with patch("oex.exporter.S3CatalogStore") as store:
         store.return_value.read.return_value = (item, None)
         assert exporter._published_content_hash(exporter._cfg.categories[0]) == expected
@@ -109,16 +101,16 @@ def test_the_published_fingerprint_is_read_from_the_item(tmp_path, item, expecte
     ("setting", "value"),
     [("metadata", False), ("resume", False), ("skip_unchanged", False)],
 )
-def test_skipping_needs_metadata_resume_and_the_setting(tmp_path, setting, value):
+def test_skipping_needs_metadata_resume_and_the_setting(make_exporter, tmp_path, setting, value):
     cfg = _cfg(tmp_path)
-    assert Exporter(cfg, Mock())._skips_unchanged(combine=False)
+    assert make_exporter(cfg)._skips_unchanged(combine=False)
     setattr(cfg.output, setting, value)
-    assert not Exporter(cfg, Mock())._skips_unchanged(combine=False)
+    assert not make_exporter(cfg)._skips_unchanged(combine=False)
 
 
-def test_a_combined_dataset_is_never_skipped(tmp_path):
+def test_a_combined_dataset_is_never_skipped(make_exporter, tmp_path):
     """One combined dataset holds every layer, so a single unchanged layer decides nothing."""
-    assert not Exporter(_cfg(tmp_path), Mock())._skips_unchanged(combine=True)
+    assert not make_exporter(_cfg(tmp_path))._skips_unchanged(combine=True)
 
 
 def _runner() -> MagicMock:
@@ -128,7 +120,7 @@ def _runner() -> MagicMock:
         source_expr=f"({FEATURES.replace('geom)', 'geometry)')})",
         select_fields=["feature_id", "tags", "update_time"],
         where_conditions=[],
-        bbox_cols="geom",
+        bbox_mode="geom",
         dataset_source="OpenStreetMap",
         source_url="",
         source_description="",
@@ -236,3 +228,37 @@ def test_only_a_refreshed_unchanged_layer_counts_as_done(tmp_path, on_hdx, marke
     _process(_cfg(tmp_path), tmp_path, publisher, published="new", state=state)
 
     assert state.is_uploaded("schools", snapshot_label="2026-12-01") is marked_done
+
+
+def test_an_hdx_error_while_refreshing_an_unchanged_layer_fails_it(tmp_path):
+    """A transient HDX error is no reason to re-export and republish an unchanged layer."""
+    publisher = MagicMock()
+    publisher.refresh_metadata.side_effect = HDXError("HDX unavailable")
+
+    built, _ = _process(_cfg(tmp_path), tmp_path, publisher, published="new")
+
+    assert built.result.status == "failed"
+    assert built.result.error == "HDX unavailable"
+    publisher.publish.assert_not_called()
+
+
+def test_an_hdx_error_while_refreshing_an_empty_layer_keeps_it_empty(tmp_path):
+    """An empty layer has nothing to re-export, so the older HDX date simply stays."""
+    publisher = MagicMock()
+    publisher.refresh_metadata.side_effect = HDXError("HDX unavailable")
+    exporter = Exporter(_cfg(tmp_path), _runner())
+    far_away = Boundary(
+        iso3="NPL",
+        bbox=(0.0, 0.0, 1.0, 1.0),
+        geojson=json.dumps(
+            {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]}
+        ),
+        source="test",
+    )
+
+    built = exporter._process_category(
+        exporter._cfg.categories[0], far_away, tmp_path / "out", publisher
+    )
+
+    assert built.result.status == "empty"
+    publisher.refresh_metadata.assert_called_once()

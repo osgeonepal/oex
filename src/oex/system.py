@@ -1,6 +1,5 @@
-"""Thread count and memory limit defaults, read from the cgroup before psutil.
-
-psutil reports the machine, so under a container or unit limit it oversizes the run.
+"""Thread count and memory limit defaults, read from the cgroup first, since psutil reports
+the whole machine and so oversizes a run under a container or unit limit.
 """
 
 import os
@@ -18,7 +17,7 @@ def _cgroup_chain() -> list[Path]:
         entry = Path("/proc/self/cgroup").read_text().strip().rsplit(":", 1)[-1]
     except OSError:
         return []
-    parts = [p for p in entry.split("/") if p]
+    parts = [part for part in entry.split("/") if part]
     return [_CGROUP_ROOT.joinpath(*parts[:depth]) for depth in range(len(parts), -1, -1)]
 
 
@@ -49,9 +48,9 @@ def _parse_memory_max(raw: str) -> float | None:
 
 def total_memory_gb() -> float:
     """Memory this process may use, in GB. OEX_MEMORY_GB overrides the detection."""
-    env = os.environ.get("OEX_MEMORY_GB")
-    if env:
-        return float(env)
+    override = os.environ.get("OEX_MEMORY_GB")
+    if override:
+        return float(override)
     host_bytes = float(psutil.virtual_memory().total)
     capped = _tightest_limit("memory.max", _parse_memory_max)
     return min(host_bytes, capped if capped is not None else host_bytes) / (1024**3)
@@ -78,7 +77,7 @@ def default_memory_limit_gb() -> int:
 
 def adaptive_parallel_resources() -> tuple[int, int]:
     """One worker, because DuckDB already uses every core inside a session and concurrent
-    sessions OOM each other on large countries; memory is 60% of what is available."""
+    sessions run each other out of memory on large countries; memory is 60% of what is available."""
     total_gb = total_memory_gb()
     memory_gb = max(1, int(total_gb * 0.60))
     return 1, memory_gb

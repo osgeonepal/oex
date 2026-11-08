@@ -5,10 +5,10 @@ parquet build runs for real, since its schema is the contract the exporter relie
 import json
 from pathlib import Path
 
+import duckdb
 import pytest
 
 from oex.config import ConfigError
-from oex.config.loader import load_config
 from oex.osm.postpass import (
     _feature_id_expr,
     _rows,
@@ -56,14 +56,10 @@ def test_false_values_are_skipped_like_the_duckdb_predicate() -> None:
     assert hstore_predicate({"building": True, "highway": False}) == "(exist(tags, 'building'))"
 
 
-def test_a_filter_with_nothing_usable_fails_loud() -> None:
+@pytest.mark.parametrize("tag_filter", [{"highway": False}, {}], ids=["only false", "empty"])
+def test_a_filter_with_nothing_usable_fails_loud(tag_filter: dict) -> None:
     with pytest.raises(ValueError, match="non-empty osm.filter"):
-        hstore_predicate({"highway": False})
-
-
-def test_empty_filter_fails_loud() -> None:
-    with pytest.raises(ValueError, match="non-empty osm.filter"):
-        hstore_predicate({})
+        hstore_predicate(tag_filter)
 
 
 def test_points_carry_node_ids() -> None:
@@ -82,8 +78,11 @@ def test_sql_clips_to_the_boundary_and_carries_wkt() -> None:
     assert "ST_Intersects(way, g)" in sql
     assert "ST_AsText(way) AS wkt" in sql
     assert "hstore_to_json(tags)" in sql
-    # A GeoJSON geometry never contains a single quote, but the escape must survive.
-    assert "ST_GeomFromGeoJSON('" in sql
+
+
+def test_sql_escapes_a_quote_in_the_boundary_geojson() -> None:
+    sql = build_sql("planet_osm_polygon", "TRUE", '{"name": "o\'brien"}')
+    assert """ST_GeomFromGeoJSON('{"name": "o''brien"}')""" in sql
 
 
 def test_rows_drop_features_without_geometry() -> None:
@@ -125,7 +124,7 @@ def test_an_empty_result_is_refused_rather_than_written(
 
 
 def test_fetch_merges_all_three_tables_and_reports_the_data_timestamp(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spatial_conn: duckdb.DuckDBPyConnection
 ) -> None:
     _stub_post(
         monkeypatch,
@@ -158,28 +157,24 @@ def test_fetch_merges_all_three_tables_and_reports_the_data_timestamp(
     assert snapshot.timestamp.year == 2026 and snapshot.timestamp.tzinfo is not None
     assert snapshot.parquet == out
 
-    import duckdb
-
-    conn = duckdb.connect()
-    conn.execute("INSTALL spatial; LOAD spatial;")
     ids = [
         r[0]
-        for r in conn.execute(f"SELECT feature_id FROM read_parquet('{out}') ORDER BY 1").fetchall()
+        for r in spatial_conn.execute(
+            f"SELECT feature_id FROM read_parquet('{out}') ORDER BY 1"
+        ).fetchall()
     ]
     assert ids == ["node/1", "way/2", "way/3"]
 
 
 def test_area_is_measured_geodesically() -> None:
-    # Roughly 0.1 degree square near the equator-ish latitude 27; about 110 km2.
+    # A 0.1 degree square at 27N covers about 110 km2.
     area = boundary_area_sq_km(SQUARE)
     assert 100 < area < 125
 
 
-def _config(tmp_path: Path, *, max_area: float | None = None) -> Path:
+def _config_text(tmp_path: Path, *, max_area: float | None = None) -> str:
     ceiling = f"    postpass_max_area_sq_km: {max_area}\n" if max_area is not None else ""
-    yaml = tmp_path / "c.yaml"
-    yaml.write_text(
-        f"""
+    return f"""
 iso3: NPL
 key: t
 boundary:
@@ -194,23 +189,20 @@ source:
       enabled: true
       filter:
         building: true
-""",
-        encoding="utf-8",
-    )
-    return yaml
+"""
 
 
-def test_postpass_engine_is_accepted_at_config_load(tmp_path: Path) -> None:
-    cfg = load_config(_config(tmp_path))
+def test_postpass_engine_is_accepted_at_config_load(load_yaml_config, tmp_path: Path) -> None:
+    cfg = load_yaml_config(_config_text(tmp_path))
     assert cfg.source["osm"].engine == "postpass"
 
 
-def test_a_boundary_over_the_ceiling_is_refused(tmp_path: Path) -> None:
-    cfg = load_config(_config(tmp_path, max_area=10.0))
+def test_a_boundary_over_the_ceiling_is_refused(load_yaml_config, tmp_path: Path) -> None:
+    cfg = load_yaml_config(_config_text(tmp_path, max_area=10.0))
     with pytest.raises(ValueError, match="above the"):
         OsmRunner().prepare(cfg)
 
 
-def test_a_zero_ceiling_is_rejected_at_config_load(tmp_path: Path) -> None:
+def test_a_zero_ceiling_is_rejected_at_config_load(load_yaml_config, tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="postpass_max_area_sq_km"):
-        load_config(_config(tmp_path, max_area=0))
+        load_yaml_config(_config_text(tmp_path, max_area=0))

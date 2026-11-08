@@ -35,17 +35,18 @@ from oex.osm.engines import ENGINE_NAMES
 from oex.osm.errors import OsmEngineUnavailableError
 from oex.osm.extract import osmium_polygon_extract
 from oex.osm.fetch_planet import download_pbf
-from oex.osm.geofabrik import GeofabrikUnavailableError, lookup_country
+from oex.osm.geofabrik import GeofabrikExtract, GeofabrikUnavailableError, lookup_country
 from oex.osm.postpass import boundary_area_sq_km, fetch_country_parquet
 from oex.osm.rawdata import fetch_country_parquet as fetch_rawdata_parquet
 from oex.sources.base import CategorySkippedError, SourceQuery, SourceRunner
 from oex.system import cpu_count, default_memory_limit_gb
+from oex.timestamps import parse_utc
 
 logger = get_logger(__name__)
 
 _GEOFABRIK_DOWNLOAD_ATTEMPTS = 2
 _GEOFABRIK_RETRY_BACKOFF_SECONDS = 5
-_GeofabrikFallbackError = (
+_GEOFABRIK_FALLBACK_ERRORS = (
     GeofabrikUnavailableError,
     OsmEngineUnavailableError,
     requests.RequestException,
@@ -53,10 +54,8 @@ _GeofabrikFallbackError = (
 
 
 def _ensure_local_pbf(pbf_path: str, cache_dir: Path) -> Path:
-    """Return a local PBF, downloading it first when the path is remote (s3://, ...).
-
-    A cached download is reused when its size matches the remote object.
-    """
+    """`pbf_path` as a local file, downloaded when remote and reused while its size matches
+    the remote object."""
     remote = UPath(pbf_path)
     if remote.protocol in ("", "file", "local"):
         return Path(pbf_path)
@@ -94,7 +93,6 @@ def _parquet_fingerprint(cfg: RootConfig, *, clip: bool) -> str:
             "simplify": boundary.simplify_meters,
         }
     payload = json.dumps(
-        # Which tags quackosm keeps shapes the parquet, so it is part of the key.
         {
             "clip": clip_key,
             "filter": union_tag_filter(cfg.categories),
@@ -107,10 +105,8 @@ def _parquet_fingerprint(cfg: RootConfig, *, clip: bool) -> str:
 
 
 def _inject_local_name(select_fields: list[str], iso3: str) -> list[str]:
-    """Append `tags['name:<lang>'] AS name_<lang>` for each local OSM language.
-
-    Skips a language if its alias is already present (per-category YAML wins).
-    """
+    """Add `tags['name:<lang>'] AS name_<lang>` after `name_en` for each local language the
+    category's own select does not already alias."""
     languages = local_osm_languages(iso3)
     if not languages:
         return select_fields
@@ -123,11 +119,11 @@ def _inject_local_name(select_fields: list[str], iso3: str) -> list[str]:
             break
 
     existing = "\n".join(new_fields)
-    for lang in languages:
-        alias = f"name_{lang}"
+    for language in languages:
+        alias = f"name_{language}"
         if alias in existing:
             continue
-        new_fields.insert(insert_at, f"tags['name:{lang}'] AS {alias}")
+        new_fields.insert(insert_at, f"tags['name:{language}'] AS {alias}")
         insert_at += 1
     return new_fields
 
@@ -174,10 +170,14 @@ def _refuse_stale_planet(planet_pbf: Path, frequency: str) -> None:
         )
 
 
-def _refreshes_planet(src: OsmSourceConfig) -> bool:
+def _refreshes_planet(osm_config: OsmSourceConfig) -> bool:
     """A remote pbf_path is copied from its own source, so only a local planet is refreshed."""
-    is_local = bool(src.pbf_path) and UPath(src.pbf_path).protocol in ("", "file", "local")
-    return src.auto_download_planet and src.snapshot in ("", "latest") and is_local
+    is_local = bool(osm_config.pbf_path) and UPath(osm_config.pbf_path).protocol in (
+        "",
+        "file",
+        "local",
+    )
+    return osm_config.auto_download_planet and osm_config.snapshot in ("", "latest") and is_local
 
 
 class OsmRunner(SourceRunner):
@@ -194,40 +194,43 @@ class OsmRunner(SourceRunner):
         self._tags_present: bool | None = None
 
     def peek_snapshot_label(self, cfg: RootConfig) -> str | None:
-        src = cast(OsmSourceConfig, cfg.source["osm"])
-        if not src.enabled or not dataset_identity(cfg):
+        osm_config = cast(OsmSourceConfig, cfg.source["osm"])
+        if not osm_config.enabled or not dataset_identity(cfg):
             return None
-        engine = (src.engine or "geofabrik").lower()
+        engine = (osm_config.engine or "geofabrik").lower()
         if engine == "geofabrik":
-            country_root = Path(src.cache_dir) / "geofabrik" / cfg.iso3.lower()
+            country_root = Path(osm_config.cache_dir) / "geofabrik" / cfg.iso3.lower()
             if not country_root.exists():
                 return None
             try:
-                extract = lookup_country(cfg.iso3, index_url=src.geofabrik_index_url)
-                return self._resolve_geofabrik_snapshot(src.snapshot, extract.pbf_url)
-            except _GeofabrikFallbackError as exc:
+                extract = lookup_country(cfg.iso3, index_url=osm_config.geofabrik_index_url)
+                return self._resolve_geofabrik_snapshot(osm_config.snapshot, extract.pbf_url)
+            except _GEOFABRIK_FALLBACK_ERRORS as exc:
                 logger.debug("Cannot peek the %s snapshot (%s); will run it", cfg.iso3, exc)
                 return None
         if engine == "planet":
-            if not src.pbf_path:
+            if not osm_config.pbf_path:
                 return None
-            pbf = Path(src.pbf_path)
+            pbf = Path(osm_config.pbf_path)
             if not pbf.exists():
                 return None
-            if _refreshes_planet(src) and _planet_published_at(src.pbf_url) > pbf.stat().st_mtime:
+            if (
+                _refreshes_planet(osm_config)
+                and _planet_published_at(osm_config.pbf_url) > pbf.stat().st_mtime
+            ):
                 return None
-            return self._planet_snapshot_label(pbf, src.snapshot)
+            return self._planet_snapshot_label(pbf, osm_config.snapshot)
         return None
 
     def prepare(self, cfg: RootConfig) -> None:
-        src = cast(OsmSourceConfig, cfg.source["osm"])
-        if not src.enabled:
+        osm_config = cast(OsmSourceConfig, cfg.source["osm"])
+        if not osm_config.enabled:
             raise RuntimeError("OSM source is disabled in config")
 
-        engine = (src.engine or "geofabrik").lower()
-        fallback = (src.fallback_engine or "").lower()
+        engine = (osm_config.engine or "geofabrik").lower()
+        fallback = (osm_config.fallback_engine or "").lower()
         try:
-            self._prepare_engine(cfg, src, engine)
+            self._prepare_engine(cfg, osm_config, engine)
         except (OsmEngineUnavailableError, requests.RequestException) as error:
             if not fallback:
                 raise
@@ -238,29 +241,29 @@ class OsmRunner(SourceRunner):
                 fallback,
             )
             try:
-                self._prepare_engine(cfg, src, fallback)
+                self._prepare_engine(cfg, osm_config, fallback)
             except Exception as fallback_error:
                 raise fallback_error from error
 
-    def _prepare_engine(self, cfg: RootConfig, src: OsmSourceConfig, engine: str) -> None:
+    def _prepare_engine(self, cfg: RootConfig, osm_config: OsmSourceConfig, engine: str) -> None:
         if engine == "geofabrik":
             try:
-                self._prepare_geofabrik(cfg, src)
-            except _GeofabrikFallbackError as exc:
-                if not src.planet_fallback:
+                self._prepare_geofabrik(cfg, osm_config)
+            except _GEOFABRIK_FALLBACK_ERRORS as exc:
+                if not osm_config.planet_fallback:
                     raise
                 logger.warning(
                     "Geofabrik failed for %s (%s); falling back to planet engine",
                     cfg.iso3,
                     exc,
                 )
-                self._prepare_planet(cfg, src)
+                self._prepare_planet(cfg, osm_config)
         elif engine == "planet":
-            self._prepare_planet(cfg, src)
+            self._prepare_planet(cfg, osm_config)
         elif engine == "postpass":
-            self._prepare_postpass(cfg, src)
+            self._prepare_postpass(cfg, osm_config)
         elif engine == "rawdata":
-            self._prepare_rawdata(cfg, src)
+            self._prepare_rawdata(cfg, osm_config)
         else:
             raise ValueError(
                 f"Unknown osm.engine={engine!r}; expected one of {sorted(ENGINE_NAMES)}"
@@ -269,7 +272,7 @@ class OsmRunner(SourceRunner):
     def _prepare_live_engine(
         self,
         cfg: RootConfig,
-        src: OsmSourceConfig,
+        osm_config: OsmSourceConfig,
         *,
         engine: str,
         fetch: Callable[..., LiveSnapshot],
@@ -284,9 +287,9 @@ class OsmRunner(SourceRunner):
             raise ValueError(f"osm.engine={engine} requires `iso3` in the config")
 
         boundary = resolve_boundary(cfg.iso3, cfg.boundary)
-        self._check_area(engine, src, boundary.geojson)
+        self._check_area(engine, osm_config, boundary.geojson)
         union_filter = union_tag_filter(cfg.categories)
-        snapshot_dir = Path(src.cache_dir) / engine / cfg.iso3.lower()
+        snapshot_dir = Path(osm_config.cache_dir) / engine / cfg.iso3.lower()
         country_parquet = snapshot_dir / f"country-{_parquet_fingerprint(cfg, clip=True)}.parquet"
 
         logger.info("%s fetch for %s: %d filter keys", engine, cfg.iso3.upper(), len(union_filter))
@@ -298,36 +301,56 @@ class OsmRunner(SourceRunner):
             timeout=timeout,
         )
 
+        self._adopt_snapshot(
+            engine=engine,
+            snapshot_dir=snapshot_dir,
+            label=snapshot.label,
+            date=snapshot.timestamp,
+            dataset_source=dataset_source.format(label=snapshot.label),
+            country_parquet=country_parquet,
+        )
+        self._source_description = source_description
+
+    def _adopt_snapshot(
+        self,
+        *,
+        engine: str,
+        snapshot_dir: Path,
+        label: str,
+        date: datetime,
+        dataset_source: str,
+        country_parquet: Path,
+    ) -> None:
+        """Record the prepared snapshot that every category query reads."""
         self._engine = engine
         self._snapshot_dir = snapshot_dir
-        self._snapshot_label = snapshot.label
-        self._snapshot_date = snapshot.timestamp
-        self._dataset_source = dataset_source.format(label=snapshot.label)
-        self._source_description = source_description
+        self._snapshot_label = label
+        self._snapshot_date = date
+        self._dataset_source = dataset_source
         self._country_parquet = country_parquet
 
     @staticmethod
-    def _check_area(engine: str, src: OsmSourceConfig, boundary_geojson: str) -> None:
+    def _check_area(engine: str, osm_config: OsmSourceConfig, boundary_geojson: str) -> None:
         """Postpass is a shared Geofabrik service and refuses large areas server-side."""
         if engine != "postpass":
             return
         area_sq_km = boundary_area_sq_km(boundary_geojson)
-        if area_sq_km > src.postpass_max_area_sq_km:
+        if area_sq_km > osm_config.postpass_max_area_sq_km:
             raise ValueError(
                 f"Boundary covers {area_sq_km:,.0f} km2, above the "
-                f"{src.postpass_max_area_sq_km:,.0f} km2 ceiling for osm.engine=postpass. "
+                f"{osm_config.postpass_max_area_sq_km:,.0f} km2 ceiling for osm.engine=postpass. "
                 "Postpass is a shared Geofabrik service; use engine=geofabrik for an area "
                 "this size, or raise osm.postpass_max_area_sq_km deliberately."
             )
 
-    def _prepare_rawdata(self, cfg: RootConfig, src: OsmSourceConfig) -> None:
+    def _prepare_rawdata(self, cfg: RootConfig, osm_config: OsmSourceConfig) -> None:
         self._prepare_live_engine(
             cfg,
-            src,
+            osm_config,
             engine="rawdata",
             fetch=fetch_rawdata_parquet,
-            endpoint=src.rawdata_endpoint,
-            timeout=src.rawdata_timeout_s,
+            endpoint=osm_config.rawdata_endpoint,
+            timeout=osm_config.rawdata_timeout_s,
             dataset_source="OpenStreetMap (HOT Raw Data API {label})",
             source_description=(
                 "Features are exported from the HOT Raw Data API, which tracks OpenStreetMap "
@@ -336,14 +359,14 @@ class OsmRunner(SourceRunner):
             ),
         )
 
-    def _prepare_postpass(self, cfg: RootConfig, src: OsmSourceConfig) -> None:
+    def _prepare_postpass(self, cfg: RootConfig, osm_config: OsmSourceConfig) -> None:
         self._prepare_live_engine(
             cfg,
-            src,
+            osm_config,
             engine="postpass",
             fetch=fetch_country_parquet,
-            endpoint=src.postpass_endpoint,
-            timeout=src.postpass_timeout_s,
+            endpoint=osm_config.postpass_endpoint,
+            timeout=osm_config.postpass_timeout_s,
             dataset_source="OpenStreetMap (Postpass {label})",
             source_description=(
                 "Features are queried from Geofabrik's Postpass database, which tracks "
@@ -351,68 +374,43 @@ class OsmRunner(SourceRunner):
             ),
         )
 
-    def _prepare_planet(self, cfg: RootConfig, src: OsmSourceConfig) -> None:
+    def _prepare_planet(self, cfg: RootConfig, osm_config: OsmSourceConfig) -> None:
         if not dataset_identity(cfg):
             raise ValueError(
                 "osm.engine=planet requires `iso3`, or `output.s3.folder` when the "
                 "export has no country code"
             )
-        if not src.pbf_path:
+        if not osm_config.pbf_path:
             raise ValueError(
                 "osm.engine=planet requires source.osm.pbf_path "
                 "(a local path or an s3:// URL to a planet PBF)"
             )
-        planet_pbf = _ensure_local_pbf(src.pbf_path, Path(src.cache_dir))
-        if not planet_pbf.is_file() and not src.auto_download_planet:
+        planet_pbf = _ensure_local_pbf(osm_config.pbf_path, Path(osm_config.cache_dir))
+        if not planet_pbf.is_file() and not osm_config.auto_download_planet:
             raise FileNotFoundError(
                 f"Planet PBF not found at {planet_pbf}. "
                 "Download it with `oex-cli osm-build-cache`, "
                 "set source.osm.auto_download_planet=true, "
                 "or pass --download-if-missing on the CLI."
             )
-        if src.auto_download_planet:
-            with _download_lock(planet_pbf):
-                published_at = _planet_published_at(src.pbf_url) if _refreshes_planet(src) else None
-                outdated = (
-                    published_at is not None
-                    and planet_pbf.is_file()
-                    and published_at > planet_pbf.stat().st_mtime
-                )
-                if not planet_pbf.is_file() or outdated:
-                    if published_at is not None:
-                        _drop_older_partial(planet_pbf, published_at)
-                    logger.warning(
-                        "Planet PBF at %s is missing or older than %s; downloading it",
-                        planet_pbf,
-                        src.pbf_url,
-                    )
-                    result = download_pbf(
-                        src.pbf_url,
-                        planet_pbf.parent,
-                        md5_url=src.md5_url,
-                        filename=planet_pbf.name,
-                    )
-                    planet_pbf = result.path
+        if osm_config.auto_download_planet:
+            planet_pbf = _refresh_planet_pbf(osm_config, planet_pbf)
 
-        if not src.snapshot or src.snapshot == "latest":
+        if not osm_config.snapshot or osm_config.snapshot == "latest":
             _refuse_stale_planet(planet_pbf, cfg.frequency)
-        snapshot_label = self._planet_snapshot_label(planet_pbf, src.snapshot)
-        country_root = Path(src.cache_dir) / "planet" / dataset_identity(cfg)
-        snapshot_dir = country_root / snapshot_label
+        snapshot_label = self._planet_snapshot_label(planet_pbf, osm_config.snapshot)
+        snapshot_dir = (
+            Path(osm_config.cache_dir) / "planet" / dataset_identity(cfg) / snapshot_label
+        )
         snapshot_dir.mkdir(parents=True, exist_ok=True)
 
-        clip = src.planet_clip_to_boundary
+        clip = osm_config.planet_clip_to_boundary
         country_pbf = snapshot_dir / "country.osm.pbf"
         country_parquet = snapshot_dir / f"country-{_parquet_fingerprint(cfg, clip=clip)}.parquet"
 
         if not country_parquet.exists():
             if clip:
-                if not country_pbf.exists():
-                    boundary = resolve_boundary(cfg.iso3, cfg.boundary)
-                    osmium_polygon_extract(planet_pbf, json.loads(boundary.geojson), country_pbf)
-                else:
-                    logger.info("Reusing existing country PBF %s", country_pbf)
-                source_pbf = country_pbf
+                source_pbf = _clip_planet(cfg, planet_pbf, country_pbf)
             else:
                 logger.info(
                     "planet_clip_to_boundary=false; building parquet from the whole planet "
@@ -426,18 +424,17 @@ class OsmRunner(SourceRunner):
         else:
             logger.info("Reusing existing country parquet %s", country_parquet)
 
-        if clip and not src.keep_pbf and country_pbf.exists():
-            try:
-                country_pbf.unlink()
-            except OSError as exc:
-                logger.warning("Could not remove %s: %s", country_pbf, exc)
+        if clip and not osm_config.keep_pbf and country_pbf.exists():
+            _remove_pbf(country_pbf)
 
-        self._engine = "planet"
-        self._snapshot_dir = snapshot_dir
-        self._snapshot_label = snapshot_label
-        self._snapshot_date = self._infer_snapshot_date(snapshot_dir, snapshot_label)
-        self._dataset_source = f"OpenStreetMap planet ({snapshot_label})"
-        self._country_parquet = country_parquet
+        self._adopt_snapshot(
+            engine="planet",
+            snapshot_dir=snapshot_dir,
+            label=snapshot_label,
+            date=self._infer_snapshot_date(snapshot_label),
+            dataset_source=f"OpenStreetMap planet ({snapshot_label})",
+            country_parquet=country_parquet,
+        )
         logger.info("OSM source: planet, snapshot=%s, parquet=%s", snapshot_label, country_parquet)
 
     def _build_country_parquet(
@@ -460,8 +457,6 @@ class OsmRunner(SourceRunner):
 
         work_dir = snapshot_dir / "_qosm_work"
         if work_dir.exists():
-            import shutil
-
             shutil.rmtree(work_dir)
         work_dir.mkdir(parents=True)
 
@@ -493,66 +488,35 @@ class OsmRunner(SourceRunner):
                 "config_kwargs": {"memory_limit": f"{memory_gb}GB", "threads": threads}
             },
         )
-        manifest = {
-            "snapshot": snapshot_dir.name,
-            "iso3": cfg.iso3.upper(),
-            "engine": engine,
-            "country_parquet": country_parquet.name,
-            "filter_keys": sorted(union_filter.keys()),
-        }
-        (snapshot_dir / "manifest.json").write_text(
-            json.dumps(manifest, indent=2), encoding="utf-8"
-        )
-
-        import shutil
-
-        shutil.rmtree(work_dir, ignore_errors=True)
+        _write_manifest(cfg, snapshot_dir, engine, country_parquet, sorted(union_filter.keys()))
+        shutil.rmtree(work_dir)
 
     @staticmethod
     def _planet_snapshot_label(planet_pbf: Path, requested: str) -> str:
         """Snapshot label for planet engine: explicit override, else PBF mtime ISO date."""
         if requested and requested != "latest":
             return requested
-        ts = datetime.fromtimestamp(planet_pbf.stat().st_mtime, tz=UTC)
-        return ts.date().isoformat()
+        modified_at = datetime.fromtimestamp(planet_pbf.stat().st_mtime, tz=UTC)
+        return modified_at.date().isoformat()
 
-    def _prepare_geofabrik(self, cfg: RootConfig, src: OsmSourceConfig) -> None:
+    def _prepare_geofabrik(self, cfg: RootConfig, osm_config: OsmSourceConfig) -> None:
         if not cfg.iso3:
             raise ValueError("osm.engine=geofabrik requires `iso3` in the config")
 
-        country_root = Path(src.cache_dir) / "geofabrik" / cfg.iso3.lower()
+        country_root = Path(osm_config.cache_dir) / "geofabrik" / cfg.iso3.lower()
         country_root.mkdir(parents=True, exist_ok=True)
 
-        extract = lookup_country(cfg.iso3, index_url=src.geofabrik_index_url)
-        snapshot = self._resolve_geofabrik_snapshot(src.snapshot, extract.pbf_url)
+        extract = lookup_country(cfg.iso3, index_url=osm_config.geofabrik_index_url)
+        snapshot = self._resolve_geofabrik_snapshot(osm_config.snapshot, extract.pbf_url)
         snapshot_dir = country_root / snapshot
         snapshot_dir.mkdir(parents=True, exist_ok=True)
-        fingerprint = _parquet_fingerprint(cfg, clip=src.geofabrik_clip_to_boundary)
+        fingerprint = _parquet_fingerprint(cfg, clip=osm_config.geofabrik_clip_to_boundary)
         country_parquet = snapshot_dir / f"country-{fingerprint}.parquet"
 
         if not country_parquet.exists():
-            pbf_dir = country_root / "_pbf"
-            pbf_path = pbf_dir / f"{extract.geofabrik_id}-latest.osm.pbf"
-
-            if not pbf_path.exists():
-                logger.info(
-                    "Geofabrik extract for %s: %s (%s)",
-                    cfg.iso3,
-                    extract.geofabrik_id,
-                    extract.pbf_url,
-                )
-                result = self._download_geofabrik_with_retry(
-                    extract.pbf_url,
-                    pbf_dir,
-                    md5_url=extract.md5_url,
-                    filename=pbf_path.name,
-                )
-                pbf_path = result.path
-            else:
-                logger.info("Reusing already-downloaded PBF: %s", pbf_path)
-
+            pbf_path = self._geofabrik_pbf(cfg, extract, country_root / "_pbf")
             geometry_filter = None
-            if src.geofabrik_clip_to_boundary:
+            if osm_config.geofabrik_clip_to_boundary:
                 from shapely.geometry import shape
 
                 boundary = resolve_boundary(cfg.iso3, cfg.boundary)
@@ -566,28 +530,45 @@ class OsmRunner(SourceRunner):
                 engine="geofabrik",
                 geometry_filter=geometry_filter,
             )
-
-            if not src.keep_pbf:
-                try:
-                    pbf_path.unlink()
-                    logger.info("Removed PBF after parquet build: %s", pbf_path)
-                except OSError as exc:
-                    logger.warning("Could not remove PBF %s: %s", pbf_path, exc)
+            if not osm_config.keep_pbf:
+                _remove_pbf(pbf_path)
         else:
             logger.info("Reusing existing country parquet %s", country_parquet)
 
-        self._engine = "geofabrik"
-        self._snapshot_dir = snapshot_dir
-        self._snapshot_label = snapshot
-        self._snapshot_date = self._infer_snapshot_date(snapshot_dir, snapshot)
-        self._dataset_source = f"OpenStreetMap (Geofabrik {cfg.iso3.upper()} {snapshot})"
-        self._country_parquet = country_parquet
+        self._adopt_snapshot(
+            engine="geofabrik",
+            snapshot_dir=snapshot_dir,
+            label=snapshot,
+            date=self._infer_snapshot_date(snapshot),
+            dataset_source=f"OpenStreetMap (Geofabrik {cfg.iso3.upper()} {snapshot})",
+            country_parquet=country_parquet,
+        )
         logger.info(
             "OSM source: geofabrik %s, snapshot=%s, parquet=%s",
             cfg.iso3.upper(),
             snapshot,
             country_parquet,
         )
+
+    def _geofabrik_pbf(self, cfg: RootConfig, extract: GeofabrikExtract, pbf_dir: Path) -> Path:
+        """The country's Geofabrik PBF, downloaded unless an earlier run left it."""
+        pbf_path = pbf_dir / f"{extract.geofabrik_id}-latest.osm.pbf"
+        if pbf_path.exists():
+            logger.info("Reusing already-downloaded PBF: %s", pbf_path)
+            return pbf_path
+        logger.info(
+            "Geofabrik extract for %s: %s (%s)",
+            cfg.iso3,
+            extract.geofabrik_id,
+            extract.pbf_url,
+        )
+        result = self._download_geofabrik_with_retry(
+            extract.pbf_url,
+            pbf_dir,
+            md5_url=extract.md5_url,
+            filename=pbf_path.name,
+        )
+        return result.path
 
     @staticmethod
     def _download_geofabrik_with_retry(
@@ -597,12 +578,12 @@ class OsmRunner(SourceRunner):
         md5_url: str | None,
         filename: str,
     ):  # noqa: ANN202 - returns whatever download_pbf returns
-        last_exc: requests.RequestException | None = None
+        last_error: requests.RequestException | None = None
         for attempt in range(1, _GEOFABRIK_DOWNLOAD_ATTEMPTS + 1):
             try:
                 return download_pbf(url, dest_dir, md5_url=md5_url, filename=filename)
             except requests.RequestException as exc:
-                last_exc = exc
+                last_error = exc
                 if attempt < _GEOFABRIK_DOWNLOAD_ATTEMPTS:
                     logger.warning(
                         "Geofabrik download attempt %d/%d failed (%s); retrying in %ds",
@@ -612,8 +593,8 @@ class OsmRunner(SourceRunner):
                         _GEOFABRIK_RETRY_BACKOFF_SECONDS,
                     )
                     time.sleep(_GEOFABRIK_RETRY_BACKOFF_SECONDS)
-        assert last_exc is not None
-        raise last_exc
+        assert last_error is not None
+        raise last_error
 
     @staticmethod
     def _resolve_geofabrik_snapshot(requested: str, pbf_url: str) -> str:
@@ -634,12 +615,12 @@ class OsmRunner(SourceRunner):
         if self._tags_present is None:
             import duckdb
 
-            con = duckdb.connect()
+            conn = duckdb.connect()
             try:
-                con.execute(f"SELECT * FROM read_parquet('{parquet}') LIMIT 0")
-                self._tags_present = any(col[0] == "tags" for col in con.description)
+                conn.execute(f"SELECT * FROM read_parquet('{parquet}') LIMIT 0")
+                self._tags_present = any(column[0] == "tags" for column in conn.description)
             finally:
-                con.close()
+                conn.close()
         if self._tags_present:
             return f"read_parquet('{parquet}')"
         return (
@@ -669,7 +650,7 @@ class OsmRunner(SourceRunner):
             source_expr=self._country_source_expr(),
             select_fields=select_fields,
             where_conditions=where,
-            bbox_cols="geom",
+            bbox_mode="geom",
             dataset_source=self._dataset_source,
             source_url="https://www.openstreetmap.org/",
             source_description=(
@@ -682,16 +663,77 @@ class OsmRunner(SourceRunner):
         )
 
     @staticmethod
-    def _infer_snapshot_date(snapshot_dir: Path, snapshot_label: str) -> datetime:
-        manifest = snapshot_dir / "manifest.json"
-        if manifest.exists():
-            try:
-                payload = json.loads(manifest.read_text(encoding="utf-8"))
-                snap = payload.get("snapshot", snapshot_label)
-                return datetime.fromisoformat(snap).replace(tzinfo=UTC)
-            except (ValueError, KeyError, OSError) as exc:
-                logger.warning("manifest.json at %s is malformed: %s", manifest, exc)
+    def _infer_snapshot_date(snapshot_label: str) -> datetime:
         try:
-            return datetime.fromisoformat(snapshot_label).replace(tzinfo=UTC)
-        except ValueError:
-            return datetime.now(UTC)
+            return parse_utc(snapshot_label)
+        except ValueError as exc:
+            raise ValueError(
+                f"OSM snapshot label {snapshot_label!r} is not an ISO date; set source.osm.snapshot "
+                "to a date such as 2026-05-01, or to latest"
+            ) from exc
+
+
+def _refresh_planet_pbf(osm_config: OsmSourceConfig, planet_pbf: Path) -> Path:
+    """Download the planet when it is missing or older than pbf_url's, under a lock so
+    concurrent runs share one download."""
+    with _download_lock(planet_pbf):
+        published_at = (
+            _planet_published_at(osm_config.pbf_url) if _refreshes_planet(osm_config) else None
+        )
+        outdated = (
+            published_at is not None
+            and planet_pbf.is_file()
+            and published_at > planet_pbf.stat().st_mtime
+        )
+        if planet_pbf.is_file() and not outdated:
+            return planet_pbf
+        if published_at is not None:
+            _drop_older_partial(planet_pbf, published_at)
+        logger.warning(
+            "Planet PBF at %s is missing or older than %s; downloading it",
+            planet_pbf,
+            osm_config.pbf_url,
+        )
+        result = download_pbf(
+            osm_config.pbf_url,
+            planet_pbf.parent,
+            md5_url=osm_config.md5_url,
+            filename=planet_pbf.name,
+        )
+        return result.path
+
+
+def _clip_planet(cfg: RootConfig, planet_pbf: Path, country_pbf: Path) -> Path:
+    """The planet clipped to the boundary, reusing a clip an earlier run left."""
+    if country_pbf.exists():
+        logger.info("Reusing existing country PBF %s", country_pbf)
+        return country_pbf
+    boundary = resolve_boundary(cfg.iso3, cfg.boundary)
+    osmium_polygon_extract(planet_pbf, json.loads(boundary.geojson), country_pbf)
+    return country_pbf
+
+
+def _remove_pbf(pbf_path: Path) -> None:
+    # The parquet is already built, so a PBF left on disk costs space but not correctness.
+    try:
+        pbf_path.unlink()
+        logger.info("Removed PBF after parquet build: %s", pbf_path)
+    except OSError as exc:
+        logger.warning("Could not remove PBF %s: %s", pbf_path, exc)
+
+
+def _write_manifest(
+    cfg: RootConfig,
+    snapshot_dir: Path,
+    engine: str,
+    country_parquet: Path,
+    filter_keys: list[str],
+) -> None:
+    manifest = {
+        "snapshot": snapshot_dir.name,
+        "iso3": cfg.iso3.upper(),
+        "engine": engine,
+        "country_parquet": country_parquet.name,
+        "filter_keys": filter_keys,
+    }
+    (snapshot_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")

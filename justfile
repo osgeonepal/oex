@@ -1,6 +1,5 @@
 set shell := ["bash", "-uc"]
 
-# Default: list available recipes
 default:
     @just --list
 
@@ -13,7 +12,7 @@ setup:
 lint:
     uv run pre-commit run --all-files
 
-# Run the test suite with coverage
+# Run the test suite with coverage; `just test -m network` runs the network tests
 test *ARGS:
     uv run pytest {{ARGS}}
 
@@ -21,22 +20,6 @@ test *ARGS:
 build:
     uv build
 
-# Run the Overture exporter.
-# Examples:
-#   just overture nepal
-#   just overture nepal buildings
-#   just overture --configs-dir configs/
-overture *ARGS:
-    uv run oex-cli overture {{ARGS}}
-
-# Run the OSM exporter.
-# Examples:
-#   just osm nepal
-#   just osm nepal buildings
-#   just osm --configs-dir configs/
-osm *ARGS:
-    uv run oex-cli osm {{ARGS}}
-
-# Download the planet PBF into the configured cache dir.
-osm-build-cache *ARGS:
-    uv run oex-cli osm-build-cache {{ARGS}}
+# Run oex-cli, for example `just run osm nepal buildings`
+run *ARGS:
+    uv run oex-cli {{ARGS}}

@@ -1,6 +1,7 @@
 """The file source reads a user-supplied spatial file and normalises it to lon/lat."""
 
-from datetime import UTC, datetime
+import os
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import duckdb
@@ -20,39 +21,32 @@ from oex.sources.file import (
 
 
 @pytest.fixture
-def utm_shapefile(tmp_path: Path, conn) -> Path:
+def utm_shapefile(tmp_path: Path, spatial_conn) -> Path:
     """Two points near Kathmandu in UTM 45N, written with DuckDB because oex does not depend on
     geopandas."""
     path = tmp_path / "bridges.shp"
-    conn.execute("""
+    spatial_conn.execute("""
         CREATE OR REPLACE TABLE fixture AS
         SELECT * FROM (VALUES
             ('a', 'Damaged',    ST_Point(340000, 3060000)),
             ('b', 'Washed Out', ST_Point(341000, 3061000))
         ) AS t("Bridge_Nm", "Condition", geom)
     """)
-    conn.execute(
+    spatial_conn.execute(
         f"COPY fixture TO '{path}' WITH (FORMAT GDAL, DRIVER 'ESRI Shapefile', SRS 'EPSG:32645')"
     )
     return path
 
 
-@pytest.fixture
-def conn():
-    c = duckdb.connect()
-    c.execute("INSTALL spatial; LOAD spatial;")
-    return c
+def test_a_projected_file_declares_its_crs(spatial_conn, utm_shapefile):
+    assert declared_crs(spatial_conn, str(utm_shapefile)) == "EPSG:32645"
 
 
-def test_a_projected_file_declares_its_crs(conn, utm_shapefile):
-    assert declared_crs(conn, str(utm_shapefile)) == "EPSG:32645"
-
-
-def test_a_file_without_a_prj_declares_nothing(conn, utm_shapefile, tmp_path):
+def test_a_file_without_a_prj_declares_nothing(spatial_conn, utm_shapefile, tmp_path):
     bare = tmp_path / "bare.shp"
     for suffix in (".shp", ".dbf", ".shx"):
         bare.with_suffix(suffix).write_bytes(utm_shapefile.with_suffix(suffix).read_bytes())
-    assert declared_crs(conn, str(bare)) is None
+    assert declared_crs(spatial_conn, str(bare)) is None
 
 
 def test_a_file_with_no_crs_and_no_config_is_refused():
@@ -71,11 +65,6 @@ def test_lonlat_data_is_not_transformed():
     assert geometry_expr("EPSG:4326") == "geom"
 
 
-def test_projected_data_is_transformed_to_crs84():
-    expr = geometry_expr("EPSG:32645")
-    assert "ST_Transform" in expr and "OGC:CRS84" in expr
-
-
 @pytest.mark.parametrize(
     ("crs", "wkt", "expected"),
     [
@@ -87,31 +76,11 @@ def test_projected_data_is_transformed_to_crs84():
         ("EPSG:32645", "POINT(340000 3060000)", (85.378, 27.655)),
     ],
 )
-def test_an_axis_order_crs_is_not_silently_swapped(conn, crs, wkt, expected):
+def test_an_axis_order_crs_is_not_silently_swapped(spatial_conn, crs, wkt, expected):
     """ST_Read hands back x/y, so ST_Transform must be told not to honour axis order."""
     expr = geometry_expr(crs).replace("geom", f"ST_GeomFromText('{wkt}')")
-    lon, lat = conn.execute(f"SELECT ST_X({expr}), ST_Y({expr})").fetchone()
+    lon, lat = spatial_conn.execute(f"SELECT ST_X({expr}), ST_Y({expr})").fetchone()
     assert (lon, lat) == pytest.approx(expected, abs=0.01)
-
-
-def test_a_projected_point_lands_in_the_right_place(conn, utm_shapefile):
-    """Without the transform oex's own earth filter drops every row silently."""
-    expr = geometry_expr("EPSG:32645")
-    lon, lat = conn.execute(
-        f"SELECT ST_X({expr}), ST_Y({expr}) FROM ST_Read('{utm_shapefile}') LIMIT 1"
-    ).fetchone()
-    assert lon == pytest.approx(85.378, abs=0.01)
-    assert lat == pytest.approx(27.655, abs=0.01)
-
-
-def test_untransformed_projected_data_would_be_dropped(conn, utm_shapefile):
-    """This is the failure the transform exists to prevent."""
-    surviving = conn.execute(
-        f"""SELECT count(*) FROM ST_Read('{utm_shapefile}')
-            WHERE ST_YMin(geom) >= -90 AND ST_YMax(geom) <= 90
-              AND ST_XMin(geom) >= -180 AND ST_XMax(geom) <= 180"""
-    ).fetchone()[0]
-    assert surviving == 0
 
 
 def _config(path: Path, **file_kwargs) -> RootConfig:
@@ -139,37 +108,38 @@ def test_the_query_selects_only_the_mapped_columns(utm_shapefile):
     assert query.select_fields == ['"Bridge_Nm" AS "name"', '"Condition" AS "status"']
 
 
-def test_the_source_expression_exposes_exactly_one_geometry_column(utm_shapefile, conn):
+def test_the_source_expression_exposes_exactly_one_geometry_column(utm_shapefile, spatial_conn):
     """The pipeline appends `geometry AS geom`, so a second geometry breaks every writer."""
     cfg = _config(utm_shapefile)
     runner = FileRunner()
     runner.prepare(cfg)
     query = runner.query_for(cfg, cfg.categories[0])
-    columns = conn.execute(f"SELECT * FROM {query.source_expr} LIMIT 0").description
+    columns = spatial_conn.execute(f"SELECT * FROM {query.source_expr} LIMIT 0").description
     names = [c[0] for c in columns]
     assert names.count("geometry") == 1
     assert "geom" not in names
 
 
-def test_the_source_expression_returns_lonlat(utm_shapefile, conn):
+def test_the_source_expression_returns_lonlat(utm_shapefile, spatial_conn):
     cfg = _config(utm_shapefile)
     runner = FileRunner()
     runner.prepare(cfg)
     query = runner.query_for(cfg, cfg.categories[0])
-    lon, lat = conn.execute(
+    lon, lat = spatial_conn.execute(
         f"SELECT ST_X(geometry), ST_Y(geometry) FROM {query.source_expr} LIMIT 1"
     ).fetchone()
     assert lon == pytest.approx(85.378, abs=0.01)
     assert lat == pytest.approx(27.655, abs=0.01)
 
 
-def test_the_snapshot_comes_from_the_file_when_the_config_gives_none(utm_shapefile):
+def test_the_snapshot_comes_from_the_file_mtime_when_the_config_gives_none(utm_shapefile):
+    modified = datetime(2024, 3, 1, 12, tzinfo=UTC).timestamp()
+    os.utime(utm_shapefile, (modified, modified))
     cfg = _config(utm_shapefile)
     runner = FileRunner()
     runner.prepare(cfg)
     query = runner.query_for(cfg, cfg.categories[0])
-    mtime = datetime.fromtimestamp(utm_shapefile.stat().st_mtime, tz=UTC)
-    assert query.snapshot_date.date() == mtime.date()
+    assert query.snapshot_date.date() == date(2024, 3, 1)
 
 
 def test_an_explicit_snapshot_overrides_the_file_mtime(utm_shapefile):
@@ -250,14 +220,26 @@ def test_a_layer_that_is_not_in_the_file_is_refused():
         resolve_layer(["bridges", "roads"], "paths")
 
 
-def test_the_named_layer_is_the_one_read(two_layer_gpkg, conn):
+def test_the_named_layer_is_the_one_read(two_layer_gpkg, spatial_conn):
     cfg = _config(two_layer_gpkg, layer="roads")
     runner = FileRunner()
     runner.prepare(cfg)
     query = runner.query_for(cfg, cfg.categories[0])
-    assert conn.execute(f"SELECT count(*) FROM {query.source_expr}").fetchone()[0] == 2
+    assert spatial_conn.execute(f"SELECT count(*) FROM {query.source_expr}").fetchone()[0] == 2
 
 
 def test_a_multi_layer_file_fails_prepare_when_no_layer_is_named(two_layer_gpkg):
     with pytest.raises(FileSourceError, match="2 layers"):
         FileRunner().prepare(_config(two_layer_gpkg))
+
+
+def test_a_naive_snapshot_is_read_as_utc_on_a_host_east_of_utc(utm_shapefile, set_timezone):
+    set_timezone("Asia/Kathmandu")
+    cfg = _config(utm_shapefile)
+    cfg.source["file"] = FileSourceConfig(enabled=True, snapshot="2024-05-01")
+    runner = FileRunner()
+    runner.prepare(cfg)
+    assert runner.peek_snapshot_label(cfg) == "2024-05-01"
+    assert runner.query_for(cfg, cfg.categories[0]).snapshot_date == datetime(
+        2024, 5, 1, tzinfo=UTC
+    )

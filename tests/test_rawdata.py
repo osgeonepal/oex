@@ -3,6 +3,7 @@ stubbed.
 """
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -42,14 +43,10 @@ def test_false_values_are_skipped() -> None:
     ] == {"building": []}
 
 
-def test_a_filter_with_nothing_usable_fails_loud() -> None:
+@pytest.mark.parametrize("tag_filter", [{"highway": False}, {}], ids=["only false", "empty"])
+def test_a_filter_with_nothing_usable_fails_loud(tag_filter: dict) -> None:
     with pytest.raises(ValueError, match="non-empty osm.filter"):
-        build_filter({"highway": False})
-
-
-def test_empty_filter_fails_loud() -> None:
-    with pytest.raises(ValueError, match="non-empty osm.filter"):
-        build_filter({})
+        build_filter(tag_filter)
 
 
 _POINT = {"type": "Point", "coordinates": [85, 27]}
@@ -190,3 +187,14 @@ def test_submit_fails_loud_when_no_task_id_comes_back(monkeypatch: pytest.Monkey
     monkeypatch.setattr(rawdata.requests, "post", lambda *a, **k: _Response({"queue": 0}))
     with pytest.raises(RuntimeError, match="no task id"):
         rawdata._submit("https://api", SQUARE, {"building": True}, 30)
+
+
+def test_a_status_time_without_an_offset_is_read_as_utc(
+    monkeypatch: pytest.MonkeyPatch, set_timezone
+) -> None:
+    """On a host east of UTC, reading it as local time would date the snapshot hours early."""
+    set_timezone("Asia/Kathmandu")
+    monkeypatch.setattr(
+        rawdata.requests, "get", lambda *a, **k: _Response({"lastUpdated": "2026-05-01T23:30:00"})
+    )
+    assert rawdata._data_timestamp("https://api") == datetime(2026, 5, 1, 23, 30, tzinfo=UTC)

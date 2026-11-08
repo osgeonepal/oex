@@ -10,20 +10,21 @@ import pytest
 from oex.osm.country_parquet import write_country_parquet
 
 
-def test_tags_round_trip_as_a_map(tmp_path: Path) -> None:
+def test_tags_round_trip_as_a_map(spatial_conn: duckdb.DuckDBPyConnection, tmp_path: Path) -> None:
     out = tmp_path / "country.parquet"
     write_country_parquet(
         [("way/1", '{"building":"house","name:ne":"घर"}', "POINT(85 27)")], out, "test"
     )
-    conn = duckdb.connect()
-    conn.execute("INSTALL spatial; LOAD spatial;")
+    conn = spatial_conn
     row = conn.execute(
         f"SELECT tags['building'], tags['name:ne'] FROM read_parquet('{out}')"
     ).fetchall()
     assert row == [("house", "घर")]
 
 
-def test_single_part_geometries_are_downcast(tmp_path: Path) -> None:
+def test_single_part_geometries_are_downcast(
+    spatial_conn: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
     """Upstreams differ on MULTI wrapping; published files must not change shape with the engine."""
     out = tmp_path / "country.parquet"
     write_country_parquet(
@@ -35,8 +36,7 @@ def test_single_part_geometries_are_downcast(tmp_path: Path) -> None:
         out,
         "test",
     )
-    conn = duckdb.connect()
-    conn.execute("INSTALL spatial; LOAD spatial;")
+    conn = spatial_conn
     kinds = dict(
         conn.execute(
             f"SELECT feature_id, ST_GeometryType(geometry) FROM read_parquet('{out}')"

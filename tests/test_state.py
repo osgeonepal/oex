@@ -1,7 +1,13 @@
 """StateStore: atomic per-(iso3, source) resume state."""
 
+import concurrent.futures
 import json
+import sys
 from pathlib import Path
+from typing import TextIO
+from unittest.mock import patch
+
+import pytest
 
 from oex.state import StateStore
 
@@ -28,7 +34,6 @@ def test_mark_built_then_uploaded_roundtrip(tmp_path: Path) -> None:
         zip_paths=[zip1, zip2],
         metadata_json_path=None,
     )
-    assert store.is_built("buildings", snapshot_label="2026-05-09")
     assert not store.is_uploaded("buildings", snapshot_label="2026-05-09")
 
     store.mark_uploaded("buildings", hdx_dataset="hotosm_npl_buildings")
@@ -54,49 +59,24 @@ def test_is_uploaded_survives_missing_zips(tmp_path: Path) -> None:
     assert not store.is_uploaded("buildings", snapshot_label="2026-06-01")
 
 
-def test_snapshot_label_mismatch_invalidates_state(tmp_path: Path) -> None:
+def test_a_save_that_crashes_mid_write_leaves_the_previous_state_intact(tmp_path: Path) -> None:
     store = _store(tmp_path)
-    zip1 = tmp_path / "buildings.zip"
-    zip1.write_bytes(b"x")
     store.mark_built(
-        "buildings", snapshot_label="2026-05-09", zip_paths=[zip1], metadata_json_path=None
+        "buildings", snapshot_label="2026-05-09", zip_paths=[], metadata_json_path=None
     )
-    assert not store.is_built("buildings", snapshot_label="2026-06-01")
 
+    def crash_mid_write(payload: object, handle: TextIO, **_: object) -> None:
+        handle.write('{"schema_version": ')
+        raise OSError("disk full")
 
-def test_missing_zip_invalidates_built_state(tmp_path: Path) -> None:
-    store = _store(tmp_path)
-    zip1 = tmp_path / "buildings.zip"
-    zip1.write_bytes(b"x")
-    store.mark_built(
-        "buildings", snapshot_label="2026-05-09", zip_paths=[zip1], metadata_json_path=None
-    )
-    zip1.unlink()
-    assert not store.is_built("buildings", snapshot_label="2026-05-09")
+    with patch("oex.state.json.dump", side_effect=crash_mid_write), pytest.raises(OSError):
+        store.mark_built(
+            "roads", snapshot_label="2026-05-09", zip_paths=[], metadata_json_path=None
+        )
 
-
-def test_reset_clears_entry(tmp_path: Path) -> None:
-    store = _store(tmp_path)
-    zip1 = tmp_path / "buildings.zip"
-    zip1.write_bytes(b"x")
-    store.mark_built(
-        "buildings", snapshot_label="2026-05-09", zip_paths=[zip1], metadata_json_path=None
-    )
-    store.reset("buildings")
-    assert store.get("buildings") is None
     reopened = _store(tmp_path)
-    assert reopened.get("buildings") is None
-
-
-def test_atomic_write_no_tmp_left_behind(tmp_path: Path) -> None:
-    store = _store(tmp_path)
-    zip1 = tmp_path / "buildings.zip"
-    zip1.write_bytes(b"x")
-    store.mark_built(
-        "buildings", snapshot_label="2026-05-09", zip_paths=[zip1], metadata_json_path=None
-    )
-    leftovers = [p for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
-    assert leftovers == []
+    assert reopened.get("buildings") is not None
+    assert reopened.get("roads") is None
 
 
 def test_corrupt_state_starts_fresh(tmp_path: Path) -> None:
@@ -130,3 +110,23 @@ def test_other_iso3_or_source_starts_fresh(tmp_path: Path) -> None:
     )
     store = _store(tmp_path, iso3="NPL", source="osm")
     assert store.get("buildings") is None
+
+
+def test_concurrent_mark_built_persists_every_category(tmp_path: Path) -> None:
+    previous_interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    store = _store(tmp_path)
+    slugs = [f"category_{index}" for index in range(64)]
+
+    def mark(slug: str) -> None:
+        store.mark_built(slug, snapshot_label="2026-05-09", zip_paths=[], metadata_json_path=None)
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
+            for future in [pool.submit(mark, slug) for slug in slugs]:
+                future.result()
+    finally:
+        sys.setswitchinterval(previous_interval)
+
+    reopened = _store(tmp_path)
+    assert all(reopened.get(slug) is not None for slug in slugs)

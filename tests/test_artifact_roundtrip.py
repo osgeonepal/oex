@@ -61,9 +61,8 @@ categories:
 
 
 @pytest.fixture
-def shapefile(tmp_path: Path) -> Path:
-    conn = duckdb.connect()
-    conn.execute("INSTALL spatial; LOAD spatial;")
+def shapefile(spatial_conn: duckdb.DuckDBPyConnection, tmp_path: Path) -> Path:
+    conn = spatial_conn
     conn.execute(
         "CREATE TABLE f AS SELECT * FROM (VALUES "
         "('a', ST_Point(85.3, 27.6)), ('b', ST_Point(85.4, 27.7))) AS t(\"Bridge_Nm\", geom)"
@@ -247,7 +246,7 @@ def test_the_build_time_on_an_item_leaves_out_the_upload(
     clock = Clock()
     staged: list[Path] = []
 
-    def slow_upload(self, path: Path, slug: str, cat_tag: str) -> str:
+    def slow_upload(self, path: Path, slug: str, log_prefix: str) -> str:
         staged.append(path)
         clock.offset += 1000
         return "https://example.com/bridges.parquet"

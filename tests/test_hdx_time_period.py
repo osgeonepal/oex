@@ -16,7 +16,7 @@ class _Dataset:
 
 def _period(start: str | None, **ctx_fields) -> tuple:
     dataset = _Dataset()
-    apply_time_period(dataset, PublishContext("osm", SNAPSHOT, **ctx_fields), start)
+    apply_time_period(dataset, PublishContext(SNAPSHOT, **ctx_fields), start)
     return dataset.period
 
 

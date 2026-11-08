@@ -4,7 +4,7 @@
 # Usage:
 #   curl -LsSf https://raw.githubusercontent.com/osgeonepal/oex/main/scripts/install.sh | sh
 #
-# No flags. Probes your machine and picks whichever installer it finds, in
+# No flags. Probes your machine and uses the first installer it finds, in
 # this order:
 #   1. uv          (preferred: isolated, no daemon, no sudo)
 #   2. pipx        (isolated)
@@ -22,7 +22,7 @@ log()  { printf '\033[1;34m[oex]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[oex]\033[0m %s\n' "$*"; }
 err()  { printf '\033[1;31m[oex]\033[0m %s\n' "$*" >&2; }
 
-have() { command -v "$1" >/dev/null 2>&1; }
+have() { command -v "$1" >/dev/null; }
 
 verify_on_path() {
     if have oex-cli; then
@@ -93,19 +93,25 @@ WRAPPER
     log "Installed wrapper at $target"
 }
 
-main() {
-    if have uv;     then install_uv                && verify_on_path && return 0; fi
-    if have pipx;   then install_pipx              && verify_on_path && return 0; fi
-    if have conda;  then install_conda             && verify_on_path && return 0; fi
-    if have pip;    then install_pip pip           && verify_on_path && return 0; fi
-    if have pip3;   then install_pip pip3          && verify_on_path && return 0; fi
-    if have docker; then install_docker_wrapper    && verify_on_path && return 0; fi
+install_with_first_installer_found() {
+    if have uv; then install_uv
+    elif have pipx; then install_pipx
+    elif have conda; then install_conda
+    elif have pip; then install_pip pip
+    elif have pip3; then install_pip pip3
+    elif have docker; then install_docker_wrapper
+    else
+        err "None of uv, pipx, conda, pip, pip3, or docker were found on this machine."
+        err "Install one of them, then re-run this script:"
+        err "  uv:     curl -LsSf https://astral.sh/uv/install.sh | sh"
+        err "  docker: https://docs.docker.com/engine/install/"
+        exit 1
+    fi
+}
 
-    err "None of uv, pipx, conda, pip, pip3, or docker were found on this machine."
-    err "Install one of them, then re-run this script:"
-    err "  uv:     curl -LsSf https://astral.sh/uv/install.sh | sh"
-    err "  docker: https://docs.docker.com/engine/install/"
-    exit 1
+main() {
+    install_with_first_installer_found
+    verify_on_path || exit 1
 }
 
 main "$@"

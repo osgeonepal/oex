@@ -1,4 +1,4 @@
-"""Overture source runner: DuckDB httpfs read from s3://overturemaps-us-west-2."""
+"""Overture source runner: reads a release from its public S3 bucket through DuckDB."""
 
 import re
 from datetime import UTC, datetime
@@ -24,18 +24,24 @@ def resolve_release(release: str, *, bucket: str = "overturemaps-us-west-2") -> 
 
     list_url = f"https://{bucket}.s3.us-west-2.amazonaws.com/"
     logger.info("Resolving Overture latest release via %s?prefix=release/", list_url)
-    resp = requests.get(
+    response = requests.get(
         list_url,
         params={"prefix": "release/", "delimiter": "/"},
         timeout=60,
     )
-    resp.raise_for_status()
-    matches = re.findall(r"<Prefix>release/(\d{4}-\d{2}-\d{2}\.\d+)/</Prefix>", resp.text)
+    response.raise_for_status()
+    matches = re.findall(r"<Prefix>release/(\d{4}-\d{2}-\d{2}\.\d+)/</Prefix>", response.text)
     if not matches:
         raise RuntimeError(f"Could not detect Overture release prefixes from {list_url}")
-    latest = sorted(set(matches))[-1]
+    latest = max(matches, key=_release_sort_key)
     logger.info("Overture latest release resolved: %s", latest)
     return latest
+
+
+def _release_sort_key(release: str) -> tuple[str, int]:
+    """The minor counter compares as a number, so `.10` sorts after `.9`."""
+    date, minor = release.split(".")
+    return date, int(minor)
 
 
 def _release_to_date(release: str) -> datetime:
@@ -49,22 +55,24 @@ class OvertureRunner(SourceRunner):
         self._release: str | None = None
 
     def prepare(self, cfg: RootConfig) -> None:
-        src = cast(OvertureSourceConfig, cfg.source["overture"])
-        if not src.enabled:
+        overture_config = cast(OvertureSourceConfig, cfg.source["overture"])
+        if not overture_config.enabled:
             raise RuntimeError("Overture source is disabled in config")
-        self._release = resolve_release(src.release, bucket=src.s3_bucket)
-        logger.info("Overture source: release=%s bucket=%s", self._release, src.s3_bucket)
+        self._release = resolve_release(overture_config.release, bucket=overture_config.s3_bucket)
+        logger.info(
+            "Overture source: release=%s bucket=%s", self._release, overture_config.s3_bucket
+        )
 
     def query_for(self, cfg: RootConfig, category: CategoryConfig) -> SourceQuery:
         if self._release is None:
             raise RuntimeError("OvertureRunner.prepare must run before query_for")
 
-        ov: dict[str, Any] | OvertureSourceConfig = cfg.source["overture"]
+        overture_config: dict[str, Any] | OvertureSourceConfig = cfg.source["overture"]
         bucket: str
-        if isinstance(ov, OvertureSourceConfig):
-            bucket = ov.s3_bucket
+        if isinstance(overture_config, OvertureSourceConfig):
+            bucket = overture_config.s3_bucket
         else:
-            bucket = ov.get("s3_bucket", "overturemaps-us-west-2")
+            bucket = overture_config.get("s3_bucket", "overturemaps-us-west-2")
 
         if not category.overture.enabled:
             raise CategorySkippedError(f"{category.name}: overture disabled for category")
@@ -82,7 +90,7 @@ class OvertureRunner(SourceRunner):
             source_expr=source_expr,
             select_fields=list(category.overture.select),
             where_conditions=list(category.overture.where),
-            bbox_cols="bbox",
+            bbox_mode="bbox",
             dataset_source=f"OvertureMap {self._release}",
             source_url="https://overturemaps.org/",
             source_description=(

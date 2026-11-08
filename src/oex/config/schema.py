@@ -15,7 +15,7 @@ class CombinedHdx:
 
     # Dataset slug. Empty falls back to "{key}_{iso3}".
     name: str = ""
-    # Supports {country} and {iso3}.
+    # May use the {country} and {iso3} placeholders.
     title: str = ""
     notes: str = ""
     caveats: str = ""
@@ -33,24 +33,21 @@ class HdxConfig:
     user_agent: str = "oex"
     methodology: str = "Other"
     methodology_other: str = "Open Source Geographic information"
-    # Supports {country}, {category}, {iso3}. Empty falls back to
-    # "<category> of <iso3>".
+    # May use {country}, {category} and {iso3}. Empty gives "<category> of <country>".
     title_template: str = ""
     # Destructive: deletes every existing resource on the dataset before upload.
     purge_existing_resources: bool = False
     # YYYY-MM-DD the dataset first covered; the HDX time period then runs to each snapshot,
     # unless the data's own dates from a category's temporal.column are known.
     time_period_start: str | None = None
-    # Publish every category as resources on ONE HDX dataset instead of one
-    # dataset per category.
+    # Publish every category as resources on a single HDX dataset.
     combine: bool = False
     combined: CombinedHdx = field(default_factory=CombinedHdx)
 
 
 @dataclass
 class DuckdbConfig:
-    # 8 retries / 500 ms initial / 2x backoff and a 120 s timeout absorb
-    # transient S3 blips so a 200-country batch doesn't abort on one shard.
+    # The defaults absorb transient S3 errors, so one shard does not abort a long batch.
     http_retries: int = 8
     http_retry_wait_ms: int = 500
     http_retry_backoff: float = 2.0
@@ -93,8 +90,8 @@ class ReportConfig:
 class PmtilesConfig:
     enabled: bool = False
     min_zoom: int = 0
-    # tippecanoe may add up to max_extra_zooms past max_zoom before it drops the densest features.
     max_zoom: int = 12
+    # Zooms tippecanoe may add past max_zoom before it drops the densest features.
     max_extra_zooms: int = 4
 
 
@@ -195,9 +192,9 @@ class OsmSourceConfig:
     pbf_path: str | None = None
     planet_fallback: bool = False
     auto_download_planet: bool = False
-    # Postpass is a shared Geofabrik service, so the engine refuses areas above
-    # this rather than letting a country-sized boundary through by accident.
     postpass_endpoint: str = "https://postpass.geofabrik.de/api/interpreter"
+    # Postpass is a shared Geofabrik service, so the engine refuses areas above this
+    # rather than letting a country-sized boundary through by accident.
     postpass_max_area_sq_km: float = 2000.0
     rawdata_endpoint: str = "https://api-prod.raw-data.hotosm.org/v1"
     postpass_timeout_s: int = 600
@@ -250,7 +247,7 @@ class CategoryHdx:
         "Data may contain errors. Verified at the community level only; "
         "individual features may need correction."
     )
-    # HDX dataset_source override. When unset, defaults to "OpenStreetMap" or "Overture".
+    # Unset uses the source's long name, such as OpenStreetMap.
     dataset_source: str | None = None
 
 
@@ -266,8 +263,7 @@ class CategoryOverture:
 
 @dataclass
 class CategoryOsm:
-    # `filter` is the quackosm tag filter applied at parquet BUILD time.
-    # `where` is SQL applied at QUERY time over the already-built parquet.
+    # `filter` selects OSM tags when the parquet cache is built; `where` filters that cache in SQL.
     enabled: bool = True
     select: list[str] = field(default_factory=list)
     where: list[str] = field(default_factory=list)
@@ -286,7 +282,7 @@ class CategoryFile:
     crs: str = ""
     # Required when the file holds more than one layer, which oex will not pick between.
     layer: str = ""
-    # Output column -> source column. Explicit, so a rename upstream fails loud.
+    # Maps each output column to a source column, so an upstream rename fails loud.
     select: dict[str, str] = field(default_factory=dict)
     where: list[str] = field(default_factory=list)
     tiles: bool = True
@@ -313,7 +309,7 @@ class CategoryConfig:
     # Overrides output.zip_formats for this category. None inherits.
     zip_formats: list[str] | None = None
     skip_pcodes: bool = False
-    # Override source.pcodes.boundary_resolution per category. None inherits.
+    # Overrides source.pcodes.boundary_resolution for this category. None inherits.
     boundary_resolution: str | None = None
     hdx: CategoryHdx = field(default_factory=CategoryHdx)
     overture: CategoryOverture = field(default_factory=CategoryOverture)

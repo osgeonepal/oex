@@ -16,15 +16,15 @@ def split_artifact_filename(filename: str, known_slugs: Iterable[str] = ()) -> t
     """(slug, source, format) from a filename without its dataset prefix. The source token is
     optional, so it is matched by name, and `known_slugs` settles a slug like `roads_osm`."""
     if filename.endswith(".zip"):
-        rest, _, fmt = filename[: -len(".zip")].rpartition("_")
+        rest, _, format_name = filename[: -len(".zip")].rpartition("_")
     else:
-        rest, _, fmt = filename.rpartition(".")
+        rest, _, format_name = filename.rpartition(".")
     if rest in set(known_slugs):
-        return rest, "", fmt
+        return rest, "", format_name
     head, _, maybe_source = rest.rpartition("_")
     if maybe_source in SOURCE_LABELS:
-        return head, maybe_source, fmt
-    return rest, "", fmt
+        return head, maybe_source, format_name
+    return rest, "", format_name
 
 
 COMBINED_SLUG = "combined"
@@ -32,7 +32,8 @@ COMBINED_SLUG = "combined"
 # Kept lowercase mid-phrase so "Points of Interest" reads naturally.
 _TITLE_LOWER_WORDS = {"a", "an", "and", "at", "by", "for", "in", "of", "on", "or", "the", "to"}
 
-# In the order a reader is offered them. HDX resource names use hdx_publisher.FORMAT_LABEL.
+# In the order a reader is offered them, on the report page and on HDX. HDX resource names use
+# hdx_publisher.FORMAT_LABEL.
 ASSET_TITLES = {
     "gpkg": "GeoPackage",
     "shp": "Shapefile",
@@ -51,8 +52,8 @@ def category_label(category: CategoryConfig) -> str:
 def _title_case_category(name: str) -> str:
     words = name.replace("_", " ").split()
     return " ".join(
-        w.lower() if i > 0 and w.lower() in _TITLE_LOWER_WORDS else w.capitalize()
-        for i, w in enumerate(words)
+        word.lower() if position > 0 and word.lower() in _TITLE_LOWER_WORDS else word.capitalize()
+        for position, word in enumerate(words)
     )
 
 
@@ -65,9 +66,9 @@ def resource_prefix(cfg: RootConfig) -> str:
     combining, otherwise ``{key}_{iso3}`` or the S3 folder id."""
     if cfg.hdx.combine:
         return combined_dataset_name(cfg)
-    ident = cfg.output.s3.folder or cfg.iso3.lower()
+    area_id = cfg.output.s3.folder or cfg.iso3.lower()
     # An empty key means the folder id is already the whole prefix (hotosm_project_1).
-    return f"{cfg.key}_{ident}" if cfg.key else ident
+    return f"{cfg.key}_{area_id}" if cfg.key else area_id
 
 
 def category_dataset_name(cfg: RootConfig, category: CategoryConfig) -> str:

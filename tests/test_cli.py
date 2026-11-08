@@ -1,5 +1,6 @@
 """CLI argument disambiguation."""
 
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,7 +21,7 @@ def _cfg(osm: bool, overture: bool) -> RootConfig:
     return cfg
 
 
-def _fake_result(source_name: str) -> SimpleNamespace:
+def _fake_result(source_name: str, failed: int = 0) -> SimpleNamespace:
     return SimpleNamespace(
         iso3="COD",
         source_name=source_name,
@@ -28,7 +29,7 @@ def _fake_result(source_name: str) -> SimpleNamespace:
         unchanged=0,
         empty=0,
         skipped=0,
-        failed=0,
+        failed=failed,
         total_duration_s=1.0,
     )
 
@@ -59,14 +60,12 @@ def test_resolve_with_configs_dir_behaves_like_config() -> None:
     assert _resolve_args("buildings", None, Path("configs/"), None) == (None, "buildings")
 
 
-def test_overrides_download_if_missing_true_sets_auto_download() -> None:
-    overrides = _build_overrides("NPL", None, None, download_if_missing=True)
-    assert overrides["source.osm.auto_download_planet"] is True
-
-
-def test_overrides_download_if_missing_false_disables_auto_download() -> None:
-    overrides = _build_overrides("NPL", None, None, download_if_missing=False)
-    assert overrides["source.osm.auto_download_planet"] is False
+@pytest.mark.parametrize("download_if_missing", [True, False])
+def test_overrides_download_if_missing_sets_auto_download_to_the_flag(
+    download_if_missing: bool,
+) -> None:
+    overrides = _build_overrides("NPL", None, None, download_if_missing=download_if_missing)
+    assert overrides["source.osm.auto_download_planet"] is download_if_missing
 
 
 def test_overrides_download_if_missing_unset_does_not_appear() -> None:
@@ -84,11 +83,6 @@ def test_overrides_explicit_iso3_lowercase_is_normalised() -> None:
     assert overrides["iso3"] == "NPL"
 
 
-def test_overrides_dataset_name_flag_sets_field() -> None:
-    overrides = _build_overrides("COD", None, None, dataset_name="Democratic Republic of the Congo")
-    assert overrides["dataset_name"] == "Democratic Republic of the Congo"
-
-
 def test_overrides_dataset_name_unset_does_not_appear() -> None:
     overrides = _build_overrides("NPL", None, None)
     assert "dataset_name" not in overrides
@@ -101,19 +95,15 @@ def test_overrides_dataset_name_empty_string_appears() -> None:
     assert overrides["dataset_name"] == ""
 
 
-def test_enabled_sources_returns_both_in_run_order(monkeypatch) -> None:
-    monkeypatch.setattr(cli, "load_config", lambda _p, _o: _cfg(osm=True, overture=True))
-    assert _enabled_sources(None, {}) == ["osm", "overture"]
-
-
-def test_enabled_sources_skips_disabled_source(monkeypatch) -> None:
-    monkeypatch.setattr(cli, "load_config", lambda _p, _o: _cfg(osm=False, overture=True))
-    assert _enabled_sources(None, {}) == ["overture"]
-
-
-def test_enabled_sources_empty_when_none_enabled(monkeypatch) -> None:
-    monkeypatch.setattr(cli, "load_config", lambda _p, _o: _cfg(osm=False, overture=False))
-    assert _enabled_sources(None, {}) == []
+@pytest.mark.parametrize(
+    ("osm", "overture", "expected"),
+    [(True, True, ["osm", "overture"]), (False, True, ["overture"]), (False, False, [])],
+)
+def test_enabled_sources_lists_only_enabled_sources_in_run_order(
+    monkeypatch, osm: bool, overture: bool, expected: list[str]
+) -> None:
+    monkeypatch.setattr(cli, "load_config", lambda _p, _o: _cfg(osm=osm, overture=overture))
+    assert _enabled_sources(None, {}) == expected
 
 
 def test_all_runs_each_enabled_source_in_order(monkeypatch) -> None:
@@ -163,3 +153,67 @@ def test_metadata_applies_iso3_before_checking_the_config(tmp_path) -> None:
     result = CliRunner().invoke(app, ["metadata", "--config", str(config), "--iso3", "NPL"])
     assert result.exit_code == 0, result.output
     assert "no hdx.combined.name, skipping" in result.output
+
+
+def test_log_level_option_sets_the_root_logger_level(monkeypatch) -> None:
+    root = logging.getLogger()
+    monkeypatch.setattr(root, "level", root.level)
+    result = CliRunner().invoke(app, ["--log-level", "DEBUG", "metadata", "--help"])
+    assert result.exit_code == 0, result.output
+    assert root.level == logging.DEBUG
+
+
+@pytest.mark.parametrize("dataset_name", ["Nepal: Koshi", "[Region] A", "No"])
+def test_dataset_name_flag_is_kept_as_the_literal_string(dataset_name: str) -> None:
+    cfg = cli._load_with_overrides(
+        None, _build_overrides(None, None, None, dataset_name=dataset_name)
+    )
+    assert cfg.dataset_name == dataset_name
+
+
+@pytest.mark.parametrize(
+    ("args", "failed_per_run", "expected_exit"),
+    [
+        (["osm", "COD", "--config", "x.yaml"], [0], 0),
+        (["osm", "COD", "--config", "x.yaml"], [1], 1),
+        (["overture", "COD", "--config", "x.yaml"], [2], 1),
+        (["file", "--config", "x.yaml"], [1], 1),
+        (["all", "COD", "--config", "x.yaml"], [0, 0], 0),
+        (["all", "COD", "--config", "x.yaml"], [0, 1], 1),
+    ],
+    ids=[
+        "osm clean",
+        "osm failure",
+        "overture failure",
+        "file failure",
+        "all clean",
+        "all with the second source failing",
+    ],
+)
+def test_an_export_command_exits_non_zero_when_any_category_failed(
+    monkeypatch, args: list[str], failed_per_run: list[int], expected_exit: int
+) -> None:
+    """Unattended sweeps read only the exit code, so a failed category must not exit 0."""
+    failures = iter(failed_per_run)
+    monkeypatch.setattr(cli, "_enabled_sources", lambda _y, _o: ["osm", "overture"])
+    monkeypatch.setattr(cli, "_run_one", lambda *_: _fake_result("s", failed=next(failures)))
+    result = CliRunner().invoke(app, args)
+    assert result.exit_code == expected_exit, result.output
+    assert next(failures, None) is None
+
+
+def test_metadata_exits_non_zero_when_a_dataset_update_fails(monkeypatch, tmp_path) -> None:
+    config = tmp_path / "base.yaml"
+    config.write_text("key: t\nhdx:\n  combined:\n    name: hot_npl\n", encoding="utf-8")
+
+    class _RefusingPublisher:
+        def __init__(self, hdx_config: object) -> None:
+            pass
+
+        def update_metadata(self, cfg: object, *, dry_run: bool, prune: bool) -> None:
+            raise RuntimeError("dataset owned by another organisation")
+
+    monkeypatch.setattr("oex.hdx_publisher.HdxPublisher", _RefusingPublisher)
+    result = CliRunner().invoke(app, ["metadata", "--config", str(config), "--iso3", "NPL"])
+    assert result.exit_code == 1
+    assert "dataset owned by another organisation" in result.output

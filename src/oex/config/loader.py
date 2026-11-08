@@ -1,8 +1,8 @@
-"""Layered YAML config: bundled defaults < user YAML < dotlist overrides."""
+"""Layered YAML config: bundled defaults < user YAML < dotted-key overrides."""
 
 import os
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from datetime import date
 from importlib import resources
 from pathlib import Path
@@ -28,19 +28,19 @@ def _load_yaml(source: str | os.PathLike[str]) -> DictConfig:
         text = source
     else:
         raise ConfigError(f"Cannot load config from {source!r}")
-    cfg = OmegaConf.create(text)
-    if not isinstance(cfg, DictConfig):
+    loaded = OmegaConf.create(text)
+    if not isinstance(loaded, DictConfig):
         raise ConfigError("Top-level YAML must be a mapping")
-    return cfg
+    return loaded
 
 
 def _load_defaults() -> DictConfig:
-    pkg = resources.files("oex.defaults")
-    text = (pkg / "base.yaml").read_text(encoding="utf-8")
-    cfg = OmegaConf.create(text)
-    if not isinstance(cfg, DictConfig):
+    package = resources.files("oex.defaults")
+    text = (package / "base.yaml").read_text(encoding="utf-8")
+    loaded = OmegaConf.create(text)
+    if not isinstance(loaded, DictConfig):
         raise ConfigError("base.yaml is malformed")
-    return cfg
+    return loaded
 
 
 def _load_categories_file(path: str | os.PathLike[str]) -> ListConfig:
@@ -52,7 +52,7 @@ def _load_categories_file(path: str | os.PathLike[str]) -> ListConfig:
 
 def load_config(
     user_config: str | os.PathLike[str] | None = None,
-    overrides: list[str] | None = None,
+    overrides: dict[str, object] | None = None,
 ) -> RootConfig:
     """Build a RootConfig. categories precedence: defaults < categories_file < inline `categories:`."""
     # Merge plain (untyped) configs first so user YAML can replace the
@@ -71,8 +71,7 @@ def load_config(
 
         merged = cast(DictConfig, OmegaConf.merge(merged, user))
 
-    if overrides:
-        merged = cast(DictConfig, OmegaConf.merge(merged, OmegaConf.from_dotlist(overrides)))
+    _set_overrides(merged, overrides or {})
 
     OmegaConf.resolve(merged)
 
@@ -115,9 +114,11 @@ def _validate_theme(cfg: RootConfig) -> None:
 
 
 def _validate_pmtiles(cfg: RootConfig) -> None:
-    extra = cfg.output.pmtiles.max_extra_zooms
-    if extra < 0:
-        raise ConfigError(f"output.pmtiles.max_extra_zooms must be 0 or more, got {extra}")
+    max_extra_zooms = cfg.output.pmtiles.max_extra_zooms
+    if max_extra_zooms < 0:
+        raise ConfigError(
+            f"output.pmtiles.max_extra_zooms must be 0 or more, got {max_extra_zooms}"
+        )
 
 
 def _validate_time_period_start(cfg: RootConfig) -> None:
@@ -132,32 +133,36 @@ def _validate_time_period_start(cfg: RootConfig) -> None:
 
 def _validate_formats(cfg: RootConfig) -> None:
     """A typo here would otherwise surface only as a category silently skipped."""
-    wanted = {(None, fmt) for fmt in cfg.output.formats}
+    wanted = {(None, format_name) for format_name in cfg.output.formats}
     wanted |= {
-        (category.name, fmt) for category in cfg.categories for fmt in (category.formats or [])
+        (category.name, format_name)
+        for category in cfg.categories
+        for format_name in (category.formats or [])
     }
-    for name, fmt in sorted(wanted, key=lambda item: (item[0] or "", item[1])):
-        if fmt not in SUPPORTED_FORMATS:
-            where = f"categories[{name}].formats" if name else "output.formats"
+    for name, format_name in sorted(wanted, key=lambda item: (item[0] or "", item[1])):
+        if format_name not in SUPPORTED_FORMATS:
+            setting = f"categories[{name}].formats" if name else "output.formats"
             raise ConfigError(
-                f"{where}={fmt!r} is not a supported format; "
+                f"{setting}={format_name!r} is not a supported format; "
                 f"must be one of {sorted(SUPPORTED_FORMATS)}"
             )
 
-    zipped = {(None, fmt) for fmt in cfg.output.zip_formats or []}
+    zipped = {(None, format_name) for format_name in cfg.output.zip_formats or []}
     zipped |= {
-        (category.name, fmt) for category in cfg.categories for fmt in (category.zip_formats or [])
+        (category.name, format_name)
+        for category in cfg.categories
+        for format_name in (category.zip_formats or [])
     }
-    for name, fmt in sorted(zipped, key=lambda item: (item[0] or "", item[1])):
-        where = f"categories[{name}].zip_formats" if name else "output.zip_formats"
-        if fmt not in SUPPORTED_FORMATS:
+    for name, format_name in sorted(zipped, key=lambda item: (item[0] or "", item[1])):
+        setting = f"categories[{name}].zip_formats" if name else "output.zip_formats"
+        if format_name not in SUPPORTED_FORMATS:
             raise ConfigError(
-                f"{where}={fmt!r} is not a supported format; "
+                f"{setting}={format_name!r} is not a supported format; "
                 f"must be one of {sorted(SUPPORTED_FORMATS)}"
             )
-        if fmt in NEVER_ZIPPED:
+        if format_name in NEVER_ZIPPED:
             raise ConfigError(
-                f"{where}={fmt!r} has no effect: {fmt} is always published unzipped so it "
+                f"{setting}={format_name!r} has no effect: {format_name} is always published unzipped so it "
                 "can be read in place over HTTP. Remove it from zip_formats."
             )
 
@@ -209,12 +214,23 @@ def _validate_osm_engine(cfg: RootConfig) -> None:
         )
 
 
+def _set_overrides(config: DictConfig, overrides: Mapping[str, object]) -> None:
+    """Values are set as given, so a flag like "Nepal: Koshi" is never parsed as YAML."""
+    if not isinstance(overrides, Mapping):
+        raise TypeError(
+            f"overrides must map dotted keys to values, such as {{'iso3': 'NPL'}}; "
+            f"got {type(overrides).__name__}"
+        )
+    for key, value in overrides.items():
+        OmegaConf.update(config, key, value)
+
+
 def apply_overrides(cfg: RootConfig, overrides: dict[str, Any]) -> RootConfig:
-    """Apply a dict of dotted overrides to an already-loaded config."""
+    """`overrides` keys are dotted paths, such as `output.dir`; None values are left unset."""
     structured: DictConfig = cast(DictConfig, OmegaConf.structured(cfg))
-    dotlist = [f"{k}={v}" for k, v in overrides.items() if v is not None]
-    if dotlist:
-        structured = cast(DictConfig, OmegaConf.merge(structured, OmegaConf.from_dotlist(dotlist)))
+    _set_overrides(
+        structured, {key: value for key, value in overrides.items() if value is not None}
+    )
     OmegaConf.resolve(structured)
     container: Any = OmegaConf.to_object(structured)
     if not isinstance(container, RootConfig):
@@ -226,16 +242,18 @@ def select_categories(cfg: RootConfig, theme: str | None) -> RootConfig:
     """Restrict the config to a single category whose slugified name matches `theme`."""
     if theme is None:
         return cfg
-    needle = theme.strip().lower().replace("-", "_").replace(" ", "_")
-    kept = [c for c in cfg.categories if c.name.lower().replace(" ", "_") == needle]
+    wanted = theme.strip().lower().replace("-", "_").replace(" ", "_")
+    kept = [
+        category for category in cfg.categories if category.name.lower().replace(" ", "_") == wanted
+    ]
     if not kept:
-        available = ", ".join(c.name for c in cfg.categories) or "<none>"
+        available = ", ".join(category.name for category in cfg.categories) or "<none>"
         raise ConfigError(f"Theme {theme!r} not found. Available: {available}")
-    new_cfg = OmegaConf.to_object(OmegaConf.structured(cfg))
-    if not isinstance(new_cfg, RootConfig):
+    selected = OmegaConf.to_object(OmegaConf.structured(cfg))
+    if not isinstance(selected, RootConfig):
         raise ConfigError("select_categories failed to round-trip RootConfig")
-    new_cfg.categories = kept
-    return new_cfg
+    selected.categories = kept
+    return selected
 
 
 def iter_configs(configs_dir: str | os.PathLike[str]) -> Iterator[Path]:

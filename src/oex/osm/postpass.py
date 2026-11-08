@@ -3,7 +3,6 @@ the PBF engines produce.
 """
 
 import json
-from datetime import datetime
 from pathlib import Path
 
 import requests
@@ -13,6 +12,8 @@ from oex.logging_setup import get_logger
 from oex.osm.category_filter import OsmTagsFilter
 from oex.osm.country_parquet import LiveSnapshot, write_country_parquet
 from oex.osm.errors import OsmEngineUnavailableError
+from oex.sql import sql_string
+from oex.timestamps import parse_utc
 
 logger = get_logger(__name__)
 
@@ -26,24 +27,18 @@ def boundary_area_sq_km(boundary_geojson: str) -> float:
     return area_sq_km(json.loads(boundary_geojson))
 
 
-def _escape(value: str) -> str:
-    return value.replace("'", "''")
-
-
 def hstore_predicate(tag_filter: OsmTagsFilter) -> str:
-    """SQL predicate over the hstore `tags` column matching an oex tag filter.
-
-    Mirrors `category_where_predicate`, which targets a DuckDB MAP instead.
-    """
+    """SQL predicate over the hstore `tags` column matching an oex tag filter; mirrors
+    `category_where_predicate`, which targets a DuckDB MAP."""
     clauses: list[str] = []
     for key, value in sorted(tag_filter.items()):
         if value is True:
-            clauses.append(f"exist(tags, '{_escape(key)}')")
+            clauses.append(f"exist(tags, {sql_string(key)})")
         elif isinstance(value, list):
-            values = ", ".join(f"'{_escape(v)}'" for v in value)
-            clauses.append(f"tags->'{_escape(key)}' IN ({values})")
+            values = ", ".join(sql_string(item) for item in value)
+            clauses.append(f"tags->{sql_string(key)} IN ({values})")
         elif value:
-            clauses.append(f"tags->'{_escape(key)}' = '{_escape(value)}'")
+            clauses.append(f"tags->{sql_string(key)} = {sql_string(value)}")
     if not clauses:
         raise ValueError(
             "postpass engine needs at least one enabled category with a non-empty osm.filter"
@@ -60,7 +55,7 @@ def _feature_id_expr(table: str) -> str:
 def build_sql(table: str, predicate: str, boundary_geojson: str) -> str:
     """One table's query: geometry travels as WKT so `tags` stays a flat JSON string."""
     return (
-        f"WITH aoi AS (SELECT ST_GeomFromGeoJSON('{_escape(boundary_geojson)}') AS g) "
+        f"WITH aoi AS (SELECT ST_GeomFromGeoJSON({sql_string(boundary_geojson)}) AS g) "
         f"SELECT {_feature_id_expr(table)} AS feature_id, "
         f"COALESCE(hstore_to_json(tags)::text, '{{}}') AS tags_json, "
         f"ST_AsText(way) AS wkt, NULL::geometry AS way "
@@ -80,8 +75,11 @@ def _post(endpoint: str, sql: str, timeout: int) -> dict:
 
 def _rows(payload: dict) -> list[tuple[str, str, str]]:
     """Flatten a Postpass FeatureCollection into (feature_id, tags_json, wkt) rows."""
-    properties = (feature["properties"] for feature in payload["features"])
-    return [(p["feature_id"], p["tags_json"], p["wkt"]) for p in properties if p["wkt"] is not None]
+    return [
+        (properties["feature_id"], properties["tags_json"], properties["wkt"])
+        for properties in (feature["properties"] for feature in payload["features"])
+        if properties["wkt"] is not None
+    ]
 
 
 def fetch_country_parquet(
@@ -116,7 +114,7 @@ def fetch_country_parquet(
     logger.info("Postpass snapshot %s: %d features -> %s", label, len(rows), out_path)
     return LiveSnapshot(
         parquet=out_path,
-        timestamp=datetime.fromisoformat(label.replace("Z", "+00:00")),
+        timestamp=parse_utc(label),
         label=label,
         feature_count=len(rows),
     )

@@ -16,8 +16,8 @@ from oex.s3 import resolve as s3_resolve
 logger = get_logger(__name__)
 
 CATALOG_FILE = "catalog.json"
-JSON = pystac.MediaType.JSON
-_ATTEMPTS = 6
+JSON_MEDIA_TYPE = pystac.MediaType.JSON
+_WRITE_ATTEMPTS = 6
 
 
 class CatalogConflictError(RuntimeError):
@@ -72,31 +72,41 @@ def layout(cfg: RootConfig) -> CatalogLayout | None:
 
 
 def link_collections(
-    where: CatalogLayout,
+    catalog_layout: CatalogLayout,
     stac: StacCatalogConfig,
     store: CatalogStore,
     collections: list[tuple[str, str]],
     *,
     area_title: str,
 ) -> None:
-    root = where.root.url
-    parent = where.group.url if where.group else root
+    root = catalog_layout.root.url
+    parent = catalog_layout.group.url if catalog_layout.group else root
     area = _catalog(
-        where.area_id, area_title, f"Layers for {area_title}.", where.area.url, root, parent
+        catalog_layout.area_id,
+        area_title,
+        f"Layers for {area_title}.",
+        catalog_layout.area.url,
+        root,
+        parent,
     )
-    _upsert(store, where.area.key, area, collections)
-    top = (area_title, where.area.url)
-    if where.group and stac.group:
+    _upsert(store, catalog_layout.area.key, area, collections)
+    child_link = (area_title, catalog_layout.area.url)
+    if catalog_layout.group and stac.group:
         title = stac.group_title or stac.group.replace("_", " ").title()
         group = _catalog(
-            stac.group, title, f"{title} under {stac.title}.", where.group.url, root, root
+            stac.group, title, f"{title} under {stac.title}.", catalog_layout.group.url, root, root
         )
-        _upsert(store, where.group.key, group, [top])
-        top = (title, where.group.url)
+        _upsert(store, catalog_layout.group.key, group, [child_link])
+        child_link = (title, catalog_layout.group.url)
     _upsert(
-        store, where.root.key, _catalog(stac.id, stac.title, stac.description, root, root), [top]
+        store,
+        catalog_layout.root.key,
+        _catalog(stac.id, stac.title, stac.description, root, root),
+        [child_link],
     )
-    logger.info("catalog: %d Collection(s) linked under %s", len(collections), where.area.url)
+    logger.info(
+        "catalog: %d Collection(s) linked under %s", len(collections), catalog_layout.area.url
+    )
 
 
 def _catalog(
@@ -108,11 +118,11 @@ def _catalog(
     parent_url: str | None = None,
 ) -> dict:
     links = [
-        {"rel": "self", "href": self_url, "type": JSON},
-        {"rel": "root", "href": root_url, "type": JSON},
+        {"rel": "self", "href": self_url, "type": JSON_MEDIA_TYPE},
+        {"rel": "root", "href": root_url, "type": JSON_MEDIA_TYPE},
     ]
     if parent_url:
-        links.append({"rel": "parent", "href": parent_url, "type": JSON})
+        links.append({"rel": "parent", "href": parent_url, "type": JSON_MEDIA_TYPE})
     return {
         "type": "Catalog",
         "stac_version": pystac.get_stac_version(),
@@ -124,7 +134,7 @@ def _catalog(
 
 
 def _upsert(store: CatalogStore, key: str, fresh: dict, children: list[tuple[str, str]]) -> None:
-    for attempt in range(_ATTEMPTS):
+    for attempt in range(_WRITE_ATTEMPTS):
         current, version = store.read(key)
         merged = _with_children(current or fresh, children)
         if current is not None and merged == current:
@@ -134,14 +144,14 @@ def _upsert(store: CatalogStore, key: str, fresh: dict, children: list[tuple[str
             return
         except CatalogConflictError:
             time.sleep(min(2**attempt, 30) * random.uniform(0.5, 1.5))
-    raise CatalogConflictError(f"{key}: still changing after {_ATTEMPTS} attempts")
+    raise CatalogConflictError(f"{key}: still changing after {_WRITE_ATTEMPTS} attempts")
 
 
 def _with_children(document: dict, children: list[tuple[str, str]]) -> dict:
     links = [link for link in document["links"] if link["rel"] != "child"]
     by_href = {link["href"]: link for link in document["links"] if link["rel"] == "child"}
     for title, href in children:
-        by_href[href] = {"rel": "child", "href": href, "type": JSON, "title": title}
+        by_href[href] = {"rel": "child", "href": href, "type": JSON_MEDIA_TYPE, "title": title}
     ordered = sorted(by_href.values(), key=lambda link: (link.get("title") or "", link["href"]))
     return {**document, "links": links + ordered}
 
@@ -166,11 +176,16 @@ class S3CatalogStore:
         import botocore.exceptions
 
         condition = {"IfMatch": version} if version else {"IfNoneMatch": "*"}
-        extra = {"ACL": self._acl} if self._acl else {}
+        extra_args = {"ACL": self._acl} if self._acl else {}
         body = json.dumps(document, indent=2, ensure_ascii=False).encode("utf-8")
         try:
             self._client.put_object(
-                Bucket=self._bucket, Key=key, Body=body, ContentType=JSON, **condition, **extra
+                Bucket=self._bucket,
+                Key=key,
+                Body=body,
+                ContentType=JSON_MEDIA_TYPE,
+                **condition,
+                **extra_args,
             )
         except botocore.exceptions.ClientError as error:
             if error.response["Error"]["Code"] in (

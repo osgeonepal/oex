@@ -100,8 +100,8 @@ class Download:
     @property
     def label(self) -> str:
         """`polygons_shp` reads "Shapefile (polygons)", with the size when it is known."""
-        partition, _, fmt = self.format.rpartition("_")
-        title = ASSET_TITLES.get(fmt, fmt.upper())
+        partition, _, format_name = self.format.rpartition("_")
+        title = ASSET_TITLES.get(format_name, format_name.upper())
         details = [part for part in (partition, _file_size(self.size)) if part]
         return f"{title} ({', '.join(details)})" if details else title
 
@@ -120,12 +120,12 @@ def downloads_from_assets(assets: Mapping[str, Mapping[str, Any]]) -> list[Downl
     order = list(ASSET_TITLES)
 
     def rank(key: str) -> tuple[int, str]:
-        fmt = key.rpartition("_")[2]
-        return (order.index(fmt) if fmt in order else len(order), key)
+        format_name = key.rpartition("_")[2]
+        return (order.index(format_name) if format_name in order else len(order), key)
 
     return [
         Download(format=key, href=asset["href"], size=asset.get("file:size"))
-        for key, asset in sorted(assets.items(), key=lambda kv: rank(kv[0]))
+        for key, asset in sorted(assets.items(), key=lambda item: rank(item[0]))
         if asset.get("href")
     ]
 
@@ -207,11 +207,11 @@ def _header(title: str, layers: list[PageLayer]) -> str:
     licence_html = " &middot; ".join(
         outbound_link(url, escape(label)) if url else escape(label) for label, url in licences
     )
-    meta = [f"{count}<b>{format_int(total)}</b> features", *map(escape, snapshots), licence_html]
+    facts = [f"{count}<b>{format_int(total)}</b> features", *map(escape, snapshots), licence_html]
     return (
         '<div class="ds-head">'
         f"<h1>{escape(title)}</h1>"
-        f'<p class="ds-meta">{" &middot; ".join(meta)}</p>'
+        f'<p class="ds-meta">{" &middot; ".join(facts)}</p>'
         "</div>\n"
     )
 
@@ -304,7 +304,11 @@ def _detail_head(layer: PageLayer, *, named: bool) -> str:
 
 def _code_links(layer: PageLayer) -> list[tuple[str, str]]:
     links = [("STAC Item", layer.metadata_href)]
-    links += [("GeoParquet", d.href) for d in layer.downloads if d.format == "geoparquet"]
+    links += [
+        ("GeoParquet", download.href)
+        for download in layer.downloads
+        if download.format == "geoparquet"
+    ]
     links.append(("Vector tiles (PMTiles)", layer.tileset[0] if layer.tileset else None))
     return [(label, href) for label, href in links if href]
 
@@ -313,7 +317,8 @@ def _download_controls(layer: PageLayer) -> str:
     if not layer.downloads:
         return ""
     options = "".join(
-        f'<option value="{escape(d.href)}">{escape(d.label)}</option>' for d in layer.downloads
+        f'<option value="{escape(download.href)}">{escape(download.label)}</option>'
+        for download in layer.downloads
     )
     return (
         f'<select class="fmt" aria-label="Download format for {escape(layer.label)}">'

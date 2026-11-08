@@ -1,10 +1,11 @@
+import hashlib
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 import requests
 
-from oex.osm.fetch_planet import download_pbf
+from oex.osm.fetch_planet import Md5UnavailableError, download_pbf
 
 URL = "https://example.com/nepal-latest.osm.pbf"
 BODY = b"0123456789"
@@ -77,3 +78,59 @@ def test_a_download_that_fails_its_md5_is_discarded(tmp_path: Path) -> None:
     ):
         download_pbf(URL, tmp_path, md5_url=URL + ".md5")
     assert list(tmp_path.iterdir()) == []
+
+
+class _UnreachableSidecar:
+    text = ""
+
+    def raise_for_status(self) -> None:
+        raise requests.HTTPError("503 Service Unavailable")
+
+
+class _MalformedSidecar:
+    text = "<html>not an md5</html>"
+
+    def raise_for_status(self) -> None:
+        pass
+
+
+@pytest.mark.parametrize("sidecar", [_UnreachableSidecar(), _MalformedSidecar()])
+def test_a_download_whose_md5_cannot_be_checked_raises_and_is_not_moved_into_place(
+    tmp_path: Path, sidecar: object
+) -> None:
+    with (
+        patch("oex.http.session.head", return_value=_Head()),
+        patch("oex.osm.fetch_planet.requests.get", return_value=_Stream([BODY])),
+        patch("oex.http.session.get", return_value=sidecar),
+        pytest.raises(Md5UnavailableError),
+    ):
+        download_pbf(URL, tmp_path, md5_url=URL + ".md5")
+    assert not (tmp_path / "nepal-latest.osm.pbf").exists()
+
+
+class _MatchingSidecar:
+    text = hashlib.md5(BODY).hexdigest() + "  nepal-latest.osm.pbf\n"
+
+    def raise_for_status(self) -> None:
+        pass
+
+
+def test_a_complete_download_is_checked_again_without_downloading_it_again(tmp_path: Path) -> None:
+    """An md5 sidecar outage must not cost a full re-download of a large extract."""
+    with (
+        patch("oex.http.session.head", return_value=_Head()),
+        patch("oex.osm.fetch_planet.requests.get", return_value=_Stream([BODY])),
+        patch("oex.http.session.get", return_value=_UnreachableSidecar()),
+        pytest.raises(Md5UnavailableError),
+    ):
+        download_pbf(URL, tmp_path, md5_url=URL + ".md5")
+
+    with (
+        patch("oex.http.session.head", return_value=_Head()),
+        patch("oex.osm.fetch_planet.requests.get") as get,
+        patch("oex.http.session.get", return_value=_MatchingSidecar()),
+    ):
+        result = download_pbf(URL, tmp_path, md5_url=URL + ".md5")
+    get.assert_not_called()
+    assert result.md5_verified
+    assert result.path.read_bytes() == BODY

@@ -2,8 +2,9 @@
 
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -20,32 +21,14 @@ from oex.config.schema import (
     S3Config,
 )
 from oex.exporter import BuiltCategory, CategoryResult, Exporter
-from oex.metadata import ColumnReport, MetadataReport
 from oex.naming import layer_dataset_name
 from oex.report import SourceMetadata
+from oex.s3 import artifact_key
 from oex.stac import LayerAssets
+from oex.writers import TileLayer
 
-
-def _source_metadata(name: str = "overture") -> SourceMetadata:
-    return SourceMetadata(
-        source_name=name,
-        snapshot_label="2026-06-17.0",
-        dataset_source="Overture",
-        generated_utc="2026-07-01T14:00:00Z",
-        oex_version="0.4.2",
-        license_label="ODbL 1.0",
-        license_url="https://opendatacommons.org/licenses/odbl/1-0/",
-        pcode_source_date=None,
-        boundary="user geom",
-        metadata=MetadataReport(
-            feature_count=500,
-            geometry_types={"POLYGON": 500},
-            bbox=(85.30, 27.68, 85.36, 27.73),
-            columns=[ColumnReport("name", "VARCHAR", 250, 50.0, 40, [])],
-            summary="500 features.",
-            temporal=None,
-        ),
-    )
+MakeExporter = Callable[..., Exporter]
+MakeSourceMetadata = Callable[..., SourceMetadata]
 
 
 def _combined_cfg(tmp_path: Path) -> RootConfig:
@@ -63,14 +46,16 @@ def _combined_cfg(tmp_path: Path) -> RootConfig:
     )
 
 
-def _built(cfg: RootConfig, out_root: Path, name: str) -> BuiltCategory:
+def _built(
+    cfg: RootConfig, out_root: Path, name: str, make_source_metadata: MakeSourceMetadata
+) -> BuiltCategory:
     zip_path = out_root / f"hotosm_npl_{name}_overture_gpkg.zip"
     zip_path.write_bytes(b"z" * 128)
     return BuiltCategory(
         result=CategoryResult(name=name, status="ok", feature_count=500, zip_paths=[zip_path]),
         category=next(c for c in cfg.categories if c.name == name),
         zip_paths=[zip_path],
-        source_metadata=_source_metadata(),
+        source_metadata=make_source_metadata("overture"),
         geoparquet_path=out_root / "_layers" / f"{name}.parquet",
     )
 
@@ -85,8 +70,10 @@ def _artifacts(out_root: Path, name: str) -> list[Path]:
     return paths
 
 
-def _layer_assets(cfg: RootConfig, out_root: Path, name: str) -> LayerAssets:
-    built = _built(cfg, out_root, name)
+def _layer_assets(
+    cfg: RootConfig, out_root: Path, name: str, make_source_metadata: MakeSourceMetadata
+) -> LayerAssets:
+    built = _built(cfg, out_root, name, make_source_metadata)
     assert built.source_metadata is not None
     return LayerAssets(
         category=built.category,
@@ -96,30 +83,28 @@ def _layer_assets(cfg: RootConfig, out_root: Path, name: str) -> LayerAssets:
     )
 
 
-def test_combined_run_without_push_writes_tileset_and_overview(tmp_path: Path) -> None:
+def test_combined_run_without_push_writes_tileset_and_overview(
+    make_exporter: MakeExporter,
+    make_source_metadata: MakeSourceMetadata,
+    fake_pmtiles_build: list[TileLayer],
+    tmp_path: Path,
+) -> None:
     cfg = _combined_cfg(tmp_path)
-    runner = MagicMock()
-    runner.name = "overture"
-    exporter = Exporter(cfg, runner)
+    exporter = make_exporter(cfg, "overture")
     out_root = tmp_path / "npl" / "overture"
     (out_root / "_layers").mkdir(parents=True)
-    built_list = [_built(cfg, out_root, "buildings"), _built(cfg, out_root, "roads")]
+    built_list = [
+        _built(cfg, out_root, "buildings", make_source_metadata),
+        _built(cfg, out_root, "roads", make_source_metadata),
+    ]
 
-    def fake_build(conn, layers, out_path, **kwargs):  # noqa: ANN001, ANN202
-        out_path.write_bytes(b"PMTiles")
-        return out_path
-
-    with (
-        patch("oex.exporter.build_combined_pmtiles", side_effect=fake_build),
-        patch("oex.exporter.connect", return_value=MagicMock()),
-    ):
-        exporter._finish_combined(
-            built_list,
-            out_root,
-            None,
-            peeked_label=None,
-            boundary_bbox=(85.30, 27.68, 85.36, 27.73),
-        )
+    exporter._finish_combined(
+        built_list,
+        out_root,
+        None,
+        peeked_label=None,
+        boundary_bbox=(85.30, 27.68, 85.36, 27.73),
+    )
 
     assert (out_root / "hotosm_npl.pmtiles").exists()
     overview = out_root / "hotosm_npl_overview.html"
@@ -129,21 +114,22 @@ def test_combined_run_without_push_writes_tileset_and_overview(tmp_path: Path) -
     assert "pmtiles://hotosm_npl.pmtiles" in html
     assert "Buildings" in html and "Roads" in html
     # One shared tileset, so each layer draws only its own features from it.
-    assert "'buildings|overture'" in html and "'roads|overture'" in html
+    assert '"buildings|overture"' in html and '"roads|overture"' in html
     # Local outputs survive: nothing was uploaded, so nothing may be cleaned up.
     assert all(b.zip_paths[0].exists() for b in built_list)
 
 
-def test_combined_metadata_is_one_file_per_source_covering_its_layers(tmp_path: Path) -> None:
-    import json
-
+def test_combined_metadata_is_one_file_per_source_covering_its_layers(
+    make_exporter: MakeExporter, make_source_metadata: MakeSourceMetadata, tmp_path: Path
+) -> None:
     cfg = _combined_cfg(tmp_path)
-    runner = MagicMock()
-    runner.name = "overture"
-    exporter = Exporter(cfg, runner)
+    exporter = make_exporter(cfg, "overture")
     out_root = tmp_path / "npl" / "overture"
     (out_root / "_layers").mkdir(parents=True)
-    built = [_built(cfg, out_root, "buildings"), _built(cfg, out_root, "roads")]
+    built = [
+        _built(cfg, out_root, "buildings", make_source_metadata),
+        _built(cfg, out_root, "roads", make_source_metadata),
+    ]
 
     path = exporter._write_combined_metadata(built, out_root, "hotosm_npl")
 
@@ -163,41 +149,36 @@ def test_combined_metadata_is_one_file_per_source_covering_its_layers(tmp_path: 
     ]
 
 
-def test_combined_run_without_push_skips_overview_when_report_disabled(tmp_path: Path) -> None:
+def test_combined_run_without_push_skips_overview_when_report_disabled(
+    make_exporter: MakeExporter,
+    make_source_metadata: MakeSourceMetadata,
+    fake_pmtiles_build: list[TileLayer],
+    tmp_path: Path,
+) -> None:
     cfg = _combined_cfg(tmp_path)
     cfg.output.report.enabled = False
-    runner = MagicMock()
-    runner.name = "overture"
-    exporter = Exporter(cfg, runner)
+    exporter = make_exporter(cfg, "overture")
     out_root = tmp_path / "npl" / "overture"
     (out_root / "_layers").mkdir(parents=True)
 
-    def fake_build(conn, layers, out_path, **kwargs):  # noqa: ANN001, ANN202
-        out_path.write_bytes(b"PMTiles")
-        return out_path
-
-    with (
-        patch("oex.exporter.build_combined_pmtiles", side_effect=fake_build),
-        patch("oex.exporter.connect", return_value=MagicMock()),
-    ):
-        exporter._finish_combined(
-            [_built(cfg, out_root, "buildings")],
-            out_root,
-            None,
-            peeked_label=None,
-            boundary_bbox=(85.30, 27.68, 85.36, 27.73),
-        )
+    exporter._finish_combined(
+        [_built(cfg, out_root, "buildings", make_source_metadata)],
+        out_root,
+        None,
+        peeked_label=None,
+        boundary_bbox=(85.30, 27.68, 85.36, 27.73),
+    )
 
     assert (out_root / "hotosm_npl.pmtiles").exists()
     assert not (out_root / "hotosm_npl_overview.html").exists()
 
 
-def test_local_report_maps_the_category_tileset(tmp_path: Path) -> None:
+def test_local_report_maps_the_category_tileset(
+    make_exporter: MakeExporter, make_source_metadata: MakeSourceMetadata, tmp_path: Path
+) -> None:
     cfg = _combined_cfg(tmp_path)
     cfg.hdx.combine = False
-    runner = MagicMock()
-    runner.name = "overture"
-    exporter = Exporter(cfg, runner)
+    exporter = make_exporter(cfg, "overture")
     out_root = tmp_path / "npl" / "overture"
     out_root.mkdir(parents=True)
     pmtiles_path = out_root / "hotosm_npl_buildings_overture.pmtiles"
@@ -206,17 +187,17 @@ def test_local_report_maps_the_category_tileset(tmp_path: Path) -> None:
 
     exporter._write_local_report(
         category=cfg.categories[0],
-        source_metadata=_source_metadata(),
+        source_metadata=make_source_metadata("overture"),
         report_path=report_path,
         zip_paths=_artifacts(out_root, "buildings"),
         pmtiles_path=pmtiles_path,
         boundary_bbox=(85.30, 27.68, 85.36, 27.73),
-        cat_tag="[buildings/overture]",
+        log_prefix="[buildings/overture]",
     )
 
     html = report_path.read_text(encoding="utf-8")
     assert "pmtiles://hotosm_npl_buildings_overture.pmtiles" in html
-    assert "'source-layer': 'buildings'" in html
+    assert "'source-layer': \"buildings\"" in html
     # The layer's own tileset has no `category` property to filter on.
     assert "['get', 'category']" not in html
     assert 'id="map"' in html
@@ -227,23 +208,23 @@ def test_local_report_maps_the_category_tileset(tmp_path: Path) -> None:
     assert "Buildings" in html
 
 
-def test_local_report_without_tiles_has_no_map(tmp_path: Path) -> None:
+def test_local_report_without_tiles_has_no_map(
+    make_exporter: MakeExporter, make_source_metadata: MakeSourceMetadata, tmp_path: Path
+) -> None:
     cfg = _combined_cfg(tmp_path)
-    runner = MagicMock()
-    runner.name = "overture"
-    exporter = Exporter(cfg, runner)
+    exporter = make_exporter(cfg, "overture")
     out_root = tmp_path / "npl" / "overture"
     out_root.mkdir(parents=True)
     report_path = out_root / "report.html"
 
     exporter._write_local_report(
         category=cfg.categories[0],
-        source_metadata=_source_metadata(),
+        source_metadata=make_source_metadata("overture"),
         report_path=report_path,
-        zip_paths=[_built(cfg, out_root, "buildings").zip_paths[0]],
+        zip_paths=[_built(cfg, out_root, "buildings", make_source_metadata).zip_paths[0]],
         pmtiles_path=None,
         boundary_bbox=(85.30, 27.68, 85.36, 27.73),
-        cat_tag="[buildings/overture]",
+        log_prefix="[buildings/overture]",
     )
 
     html = report_path.read_text(encoding="utf-8")
@@ -251,7 +232,7 @@ def test_local_report_without_tiles_has_no_map(tmp_path: Path) -> None:
     assert "pmtiles" not in html
 
 
-def test_s3_preflight_runs_without_hdx_push(tmp_path: Path) -> None:
+def test_s3_preflight_runs_without_hdx_push(make_exporter: MakeExporter, tmp_path: Path) -> None:
     """Layer staging uploads on output.s3.enabled, so the bucket check cannot sit under push."""
     cfg = RootConfig(
         iso3="NPL",
@@ -268,9 +249,7 @@ def test_s3_preflight_runs_without_hdx_push(tmp_path: Path) -> None:
         duckdb=DuckdbConfig(temp_dir=str(tmp_path / "ddb")),
         categories=[CategoryConfig(name="buildings")],
     )
-    runner = MagicMock()
-    runner.name = "overture"
-    exporter = Exporter(cfg, runner)
+    exporter = make_exporter(cfg, "overture")
 
     with (
         patch("oex.s3.preflight", side_effect=RuntimeError("S3 preflight: cannot reach bucket")),
@@ -279,19 +258,17 @@ def test_s3_preflight_runs_without_hdx_push(tmp_path: Path) -> None:
         exporter.run()
 
 
-def test_the_combined_collection_names_the_merged_tileset(tmp_path: Path) -> None:
+def test_the_combined_collection_names_the_merged_tileset(
+    make_exporter: MakeExporter, make_source_metadata: MakeSourceMetadata, tmp_path: Path
+) -> None:
     """The dataset's one viewable asset is the merged tileset, so it belongs on the Collection."""
-    import json
-
     cfg = _combined_cfg(tmp_path)
     cfg.output.s3.enabled = True
     cfg.output.s3.bucket = "example-bucket"
-    runner = MagicMock()
-    runner.name = "overture"
-    exporter = Exporter(cfg, runner)
+    exporter = make_exporter(cfg, "overture")
     out_root = tmp_path / "npl" / "overture"
     (out_root / "_layers").mkdir(parents=True)
-    built = [_built(cfg, out_root, "buildings")]
+    built = [_built(cfg, out_root, "buildings", make_source_metadata)]
     tiles = out_root / "hotosm_npl.pmtiles"
     tiles.write_bytes(b"\x00")
 
@@ -303,14 +280,14 @@ def test_the_combined_collection_names_the_merged_tileset(tmp_path: Path) -> Non
     assert assets["pmtiles"]["href"].endswith("/combined/hotosm_npl.pmtiles")
 
 
-def test_an_artifact_url_matches_the_key_the_publisher_uploads_to(tmp_path: Path) -> None:
+def test_an_artifact_url_matches_the_key_the_publisher_uploads_to(
+    make_exporter: MakeExporter, tmp_path: Path
+) -> None:
     """A derived href that disagrees with the upload key is a 404 on every asset."""
-    from oex.s3 import artifact_key
-
     cfg = _combined_cfg(tmp_path)
     cfg.output.s3.enabled = True
     cfg.output.s3.bucket = "example-bucket"
-    exporter = Exporter(cfg, MagicMock())
+    exporter = make_exporter(cfg)
     url = exporter._artifact_url(tmp_path / "hotosm_npl.pmtiles", "combined")
     key = artifact_key(
         cfg.output.s3.prefix,
@@ -323,34 +300,30 @@ def test_an_artifact_url_matches_the_key_the_publisher_uploads_to(tmp_path: Path
     assert url is not None and url.endswith(key)
 
 
-def test_pushing_to_hdx_without_s3_is_refused(tmp_path: Path) -> None:
+def test_pushing_to_hdx_without_s3_is_refused(make_exporter: MakeExporter, tmp_path: Path) -> None:
     """Items are published to the bucket and linked by URL, so without one the Collection
     would name a layer file that was uploaded nowhere."""
     cfg = _combined_cfg(tmp_path)
     cfg.hdx.push = True
     cfg.output.s3 = S3Config(enabled=False)
-    runner = MagicMock()
-    runner.name = "osm"
 
     with pytest.raises(ValueError, match="output.s3.enabled is false"):
-        Exporter(cfg, runner).run()
+        make_exporter(cfg, "osm").run()
 
 
-def test_an_items_file_is_staged_at_the_key_the_collection_links_to(tmp_path: Path) -> None:
+def test_an_items_file_is_staged_at_the_key_the_collection_links_to(
+    make_exporter: MakeExporter, make_source_metadata: MakeSourceMetadata, tmp_path: Path
+) -> None:
     """The Collection links each Item by URL; if the upload key and that URL disagree,
     every layer of the dataset is a 404 and nothing in the run notices."""
-    import json
-
     cfg = _combined_cfg(tmp_path)
     cfg.output.s3 = S3Config(
         enabled=True, bucket="example-bucket", prefix="ISO3", region="us-east-1"
     )
-    runner = MagicMock()
-    runner.name = "overture"
-    exporter = Exporter(cfg, runner)
+    exporter = make_exporter(cfg, "overture")
     out_root = tmp_path / "npl" / "overture"
     (out_root / "_layers").mkdir(parents=True)
-    layer = _layer_assets(cfg, out_root, "buildings")
+    layer = _layer_assets(cfg, out_root, "buildings", make_source_metadata)
 
     with patch("oex.exporter.s3_upload") as upload:
         exporter._write_layer_metadata(layer, out_root, None)
@@ -358,7 +331,7 @@ def test_an_items_file_is_staged_at_the_key_the_collection_links_to(tmp_path: Pa
     staged_key = upload.call_args.kwargs["key"]
     with patch("oex.exporter.s3_upload"):
         path = exporter._write_combined_metadata(
-            [_built(cfg, out_root, "buildings")], out_root, "hotosm_npl"
+            [_built(cfg, out_root, "buildings", make_source_metadata)], out_root, "hotosm_npl"
         )
     assert path is not None
     linked = [
@@ -369,34 +342,30 @@ def test_an_items_file_is_staged_at_the_key_the_collection_links_to(tmp_path: Pa
     assert linked == [f"https://example-bucket.s3.amazonaws.com/{staged_key}"]
 
 
-def test_a_local_run_writes_the_collection_that_ties_its_layers_together(tmp_path: Path) -> None:
+def test_a_local_run_writes_the_collection_that_ties_its_layers_together(
+    make_exporter: MakeExporter,
+    make_source_metadata: MakeSourceMetadata,
+    fake_pmtiles_build: list[TileLayer],
+    tmp_path: Path,
+) -> None:
     """Without it the output directory is a pile of Items with no entry point, and the
     catalog only exists once someone pushes to HDX."""
-    import json
-
     cfg = _combined_cfg(tmp_path)
-    runner = MagicMock()
-    runner.name = "overture"
-    exporter = Exporter(cfg, runner)
+    exporter = make_exporter(cfg, "overture")
     out_root = tmp_path / "npl" / "overture"
     (out_root / "_layers").mkdir(parents=True)
-    built_list = [_built(cfg, out_root, "buildings"), _built(cfg, out_root, "roads")]
+    built_list = [
+        _built(cfg, out_root, "buildings", make_source_metadata),
+        _built(cfg, out_root, "roads", make_source_metadata),
+    ]
 
-    def fake_build(conn, layers, out_path, **kwargs):  # noqa: ANN001, ANN202
-        out_path.write_bytes(b"PMTiles")
-        return out_path
-
-    with (
-        patch("oex.exporter.build_combined_pmtiles", side_effect=fake_build),
-        patch("oex.exporter.connect", return_value=MagicMock()),
-    ):
-        exporter._finish_combined(
-            built_list,
-            out_root,
-            None,
-            peeked_label=None,
-            boundary_bbox=(85.30, 27.68, 85.36, 27.73),
-        )
+    exporter._finish_combined(
+        built_list,
+        out_root,
+        None,
+        peeked_label=None,
+        boundary_bbox=(85.30, 27.68, 85.36, 27.73),
+    )
 
     collection = out_root / "hotosm_npl_overture_metadata.json"
     assert collection.exists()
@@ -408,7 +377,9 @@ def test_a_local_run_writes_the_collection_that_ties_its_layers_together(tmp_pat
     ]
 
 
-def test_a_run_without_hdx_stages_the_collection_the_items_point_at(tmp_path: Path) -> None:
+def test_a_run_without_hdx_stages_the_collection_the_items_point_at(
+    make_exporter: MakeExporter, make_source_metadata: MakeSourceMetadata, tmp_path: Path
+) -> None:
     """S3 on and push off publishes Items whose root and collection links name the
     Collection, so a Collection that never reaches the bucket makes all of them 404."""
     cfg = _combined_cfg(tmp_path)
@@ -416,15 +387,15 @@ def test_a_run_without_hdx_stages_the_collection_the_items_point_at(tmp_path: Pa
     cfg.output.s3 = S3Config(
         enabled=True, bucket="example-bucket", prefix="ISO3", region="us-east-1"
     )
-    runner = MagicMock()
-    runner.name = "overture"
-    exporter = Exporter(cfg, runner)
+    exporter = make_exporter(cfg, "overture")
     out_root = tmp_path / "npl" / "overture"
     (out_root / "_layers").mkdir(parents=True)
-    built = [_built(cfg, out_root, "buildings")]
+    built = [_built(cfg, out_root, "buildings", make_source_metadata)]
 
     with patch("oex.exporter.s3_upload") as upload:
-        exporter._write_layer_metadata(_layer_assets(cfg, out_root, "buildings"), out_root, None)
+        exporter._write_layer_metadata(
+            _layer_assets(cfg, out_root, "buildings", make_source_metadata), out_root, None
+        )
         exporter._write_combined_metadata(built, out_root, "hotosm_npl")
 
     staged = [call.kwargs["key"] for call in upload.call_args_list]
@@ -434,47 +405,45 @@ def test_a_run_without_hdx_stages_the_collection_the_items_point_at(tmp_path: Pa
     ]
 
 
-def test_a_combined_runs_category_page_links_the_combined_hdx_dataset(tmp_path: Path) -> None:
+def test_a_combined_runs_category_page_links_the_combined_hdx_dataset(
+    make_exporter: MakeExporter, make_source_metadata: MakeSourceMetadata, tmp_path: Path
+) -> None:
     """Combining publishes to one dataset, so a per-category link would name one never made."""
     cfg = _combined_cfg(tmp_path)
     cfg.hdx.push = True
     cfg.hdx.site = "prod"
-    runner = MagicMock()
-    runner.name = "overture"
     out_root = tmp_path / "npl" / "overture"
     out_root.mkdir(parents=True)
     report_path = out_root / "report.html"
-    Exporter(cfg, runner)._write_local_report(
+    make_exporter(cfg, "overture")._write_local_report(
         category=cfg.categories[0],
-        source_metadata=_source_metadata(),
+        source_metadata=make_source_metadata("overture"),
         report_path=report_path,
-        zip_paths=[_built(cfg, out_root, "buildings").zip_paths[0]],
+        zip_paths=[_built(cfg, out_root, "buildings", make_source_metadata).zip_paths[0]],
         pmtiles_path=None,
         boundary_bbox=(85.30, 27.68, 85.36, 27.73),
-        cat_tag="[buildings/overture]",
+        log_prefix="[buildings/overture]",
     )
     html = report_path.read_text(encoding="utf-8")
     assert "https://data.humdata.org/dataset/hotosm_npl<" in html
     assert "dataset/hotosm_npl_buildings" not in html
 
 
-def test_an_s3_folder_does_not_change_the_hdx_dataset_an_item_links(tmp_path: Path) -> None:
+def test_an_s3_folder_does_not_change_the_hdx_dataset_an_item_links(
+    make_exporter: MakeExporter, make_source_metadata: MakeSourceMetadata, tmp_path: Path
+) -> None:
     """The folder renames the files, not the dataset the publisher writes to."""
-    from oex.stac import LayerAssets
-
     cfg = _combined_cfg(tmp_path)
     cfg.hdx.combine = False
     cfg.hdx.push = True
     cfg.hdx.site = "prod"
     cfg.output.s3.folder = "kathmandu"
-    runner = MagicMock()
-    runner.name = "overture"
-    exporter = Exporter(cfg, runner)
+    exporter = make_exporter(cfg, "overture")
     out_root = tmp_path / "npl" / "overture"
     out_root.mkdir(parents=True)
     layer = LayerAssets(
         category=cfg.categories[0],
-        source_metadata=_source_metadata(),
+        source_metadata=make_source_metadata("overture"),
         dataset_name=layer_dataset_name(cfg, cfg.categories[0]),
     )
     item_path = exporter._write_layer_metadata(layer, out_root, None)
@@ -484,10 +453,10 @@ def test_an_s3_folder_does_not_change_the_hdx_dataset_an_item_links(tmp_path: Pa
     ]
 
 
-def test_each_category_collection_links_the_other_categories_of_its_area(tmp_path: Path) -> None:
+def test_each_category_collection_links_the_other_categories_of_its_area(
+    make_exporter: MakeExporter, make_source_metadata: MakeSourceMetadata, tmp_path: Path
+) -> None:
     """A STAC client moves between an area's datasets the way a reader does on the page."""
-    from oex.stac import LayerAssets
-
     cfg = _combined_cfg(tmp_path)
     cfg.hdx.combine = False
     cfg.output.report.related_datasets = True
@@ -496,14 +465,12 @@ def test_each_category_collection_links_the_other_categories_of_its_area(tmp_pat
     cfg.output.s3.bucket = "bucket"
     cfg.output.s3.prefix = "ISO3"
     cfg.output.s3.region = "us-east-1"
-    runner = MagicMock()
-    runner.name = "osm"
-    exporter = Exporter(cfg, runner)
+    exporter = make_exporter(cfg, "osm")
     out_root = tmp_path / "npl" / "osm"
     out_root.mkdir(parents=True)
     layer = LayerAssets(
         category=cfg.categories[0],
-        source_metadata=_source_metadata("osm"),
+        source_metadata=make_source_metadata("osm"),
         dataset_name=layer_dataset_name(cfg, cfg.categories[0]),
     )
     collection_path = out_root / "collection.json"
@@ -523,22 +490,23 @@ def test_each_category_collection_links_the_other_categories_of_its_area(tmp_pat
     assert not [link for link in links if link["rel"] == "related"]
 
 
-def _page_link(cfg: RootConfig, tmp_path: Path) -> list[str]:
-    from oex.stac import LayerAssets
-
+def _page_link(
+    cfg: RootConfig,
+    tmp_path: Path,
+    make_exporter: MakeExporter,
+    make_source_metadata: MakeSourceMetadata,
+) -> list[str]:
     cfg.hdx.push = True
     cfg.output.s3.enabled = True
     cfg.output.s3.bucket = "bucket"
     cfg.output.s3.prefix = "ISO3"
     cfg.output.s3.region = "us-east-1"
-    runner = MagicMock()
-    runner.name = "osm"
-    exporter = Exporter(cfg, runner)
+    exporter = make_exporter(cfg, "osm")
     out_root = tmp_path / "npl" / "osm"
     out_root.mkdir(parents=True, exist_ok=True)
     layer = LayerAssets(
         category=cfg.categories[0],
-        source_metadata=_source_metadata("osm"),
+        source_metadata=make_source_metadata("osm"),
         dataset_name=layer_dataset_name(cfg, cfg.categories[0]),
     )
     collection_path = out_root / "collection.json"
@@ -557,16 +525,21 @@ def _page_link(cfg: RootConfig, tmp_path: Path) -> list[str]:
     return pages
 
 
-def test_stac_links_the_page_the_publisher_uploads(tmp_path: Path) -> None:
+def test_stac_links_the_page_the_publisher_uploads(
+    make_exporter: MakeExporter, make_source_metadata: MakeSourceMetadata, tmp_path: Path
+) -> None:
     """STAC clients offer an `alternate` text/html link as the human view of the data."""
     cfg = _combined_cfg(tmp_path)
     cfg.hdx.combine = False
     page = "https://bucket.s3.amazonaws.com/ISO3/NPL/buildings/hotosm_npl_buildings_report.html"
     # The Item and its Collection both name it.
-    assert _page_link(cfg, tmp_path) == [page, page]
+    assert _page_link(cfg, tmp_path, make_exporter, make_source_metadata) == [page, page]
     combined = _combined_cfg(tmp_path)
     overview = "https://bucket.s3.amazonaws.com/ISO3/NPL/overview/hotosm_npl_overview.html"
-    assert _page_link(combined, tmp_path) == [overview, overview]
+    assert _page_link(combined, tmp_path, make_exporter, make_source_metadata) == [
+        overview,
+        overview,
+    ]
     no_page = _combined_cfg(tmp_path)
     no_page.output.report.enabled = False
-    assert _page_link(no_page, tmp_path) == []
+    assert _page_link(no_page, tmp_path, make_exporter, make_source_metadata) == []

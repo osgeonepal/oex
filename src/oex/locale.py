@@ -13,7 +13,7 @@ def primary_osm_language(iso3: str) -> str | None:
 
 
 def local_osm_languages(iso3: str) -> list[str]:
-    """Up to three non-English official languages. Babel lists English first for some
+    """Non-English official languages, at most _MAX_LOCAL_LANGUAGES. Babel lists English first for some
     multilingual countries, and `name_en` is already in the schema's select."""
     if not iso3:
         return []
@@ -24,10 +24,10 @@ def local_osm_languages(iso3: str) -> list[str]:
 
     languages = get_official_languages(country.alpha_2, regional=False, de_facto=True)
     selected: list[str] = []
-    for lang in languages:
-        if lang == "en" or lang in selected:
+    for language in languages:
+        if language == "en" or language in selected:
             continue
-        selected.append(lang)
+        selected.append(language)
         if len(selected) >= _MAX_LOCAL_LANGUAGES:
             break
     return selected

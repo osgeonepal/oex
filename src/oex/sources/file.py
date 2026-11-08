@@ -12,6 +12,8 @@ import requests
 from oex.config.schema import CategoryConfig, FileSourceConfig, RootConfig
 from oex.logging_setup import get_logger
 from oex.sources.base import CategorySkippedError, SourceQuery, SourceRunner
+from oex.sql import sql_identifier, sql_string
+from oex.timestamps import parse_utc
 
 logger = get_logger(__name__)
 
@@ -23,13 +25,9 @@ class FileSourceError(RuntimeError):
     """The configured file cannot be used as a source."""
 
 
-def _quote(value: str) -> str:
-    return value.replace("'", "''")
-
-
 def layer_names(conn: duckdb.DuckDBPyConnection, path: str) -> list[str]:
     row = conn.execute(
-        f"SELECT [l.name for l in layers] FROM ST_Read_Meta('{_quote(path)}')"
+        f"SELECT [l.name for l in layers] FROM ST_Read_Meta({sql_string(path)})"
     ).fetchone()
     return list(row[0]) if row and row[0] else []
 
@@ -53,17 +51,17 @@ def resolve_layer(available: list[str], configured: str) -> str:
 def read_expr(path: str, source_crs: str, layer: str = "") -> str:
     """Exactly one `geometry` column in lon/lat; the file's own geometry column is dropped so
     a second one cannot reach the writer."""
-    layer_arg = f", layer='{_quote(layer)}'" if layer else ""
+    layer_arg = f", layer={sql_string(layer)}" if layer else ""
     return (
         f"(SELECT * EXCLUDE (geom), {geometry_expr(source_crs)} AS geometry "
-        f"FROM ST_Read('{_quote(path)}'{layer_arg}))"
+        f"FROM ST_Read({sql_string(path)}{layer_arg}))"
     )
 
 
 def declared_crs(conn: duckdb.DuckDBPyConnection, path: str) -> str | None:
     """`AUTH:CODE` the file declares, or None when it carries no CRS at all."""
     row = conn.execute(
-        f"SELECT layers[1].geometry_fields[1].crs FROM ST_Read_Meta('{_quote(path)}')"
+        f"SELECT layers[1].geometry_fields[1].crs FROM ST_Read_Meta({sql_string(path)})"
     ).fetchone()
     crs = row[0] if row else None
     if not crs or not crs.get("auth_name") or not crs.get("auth_code"):
@@ -89,7 +87,7 @@ def geometry_expr(source_crs: str) -> str:
     latitude-first CRS such as EPSG:4258 would come out swapped."""
     if source_crs.upper() in _LONLAT_CRS:
         return "geom"
-    return f"ST_Transform(geom, '{_quote(source_crs)}', 'OGC:CRS84', always_xy := true)"
+    return f"ST_Transform(geom, {sql_string(source_crs)}, 'OGC:CRS84', always_xy := true)"
 
 
 def file_timestamp(path: str) -> datetime:
@@ -118,8 +116,8 @@ def file_timestamp(path: str) -> datetime:
     return datetime.fromtimestamp(local.stat().st_mtime, tz=UTC)
 
 
-def category_path(category: CategoryConfig, src: FileSourceConfig) -> str:
-    path = category.file.path or src.path
+def category_path(category: CategoryConfig, file_config: FileSourceConfig) -> str:
+    path = category.file.path or file_config.path
     if not path:
         raise FileSourceError(
             f"category {category.name!r} has no `file.path` and source.file.path is empty"
@@ -137,14 +135,14 @@ class FileRunner(SourceRunner):
         self._layer_by_path: dict[str, str] = {}
 
     def prepare(self, cfg: RootConfig) -> None:
-        src = _file_config(cfg)
-        if not src.enabled:
+        file_config = _file_config(cfg)
+        if not file_config.enabled:
             raise FileSourceError("source.file.enabled is false")
         paths = sorted(
             {
-                category_path(c, src)
-                for c in cfg.categories
-                if c.file.enabled and (c.file.path or src.path)
+                category_path(category, file_config)
+                for category in cfg.categories
+                if category.file.enabled and (category.file.path or file_config.path)
             }
         )
         if not paths:
@@ -152,27 +150,15 @@ class FileRunner(SourceRunner):
 
         conn = duckdb.connect()
         conn.execute("INSTALL spatial; LOAD spatial;")
-        if any(urlparse(p).scheme in ("http", "https", "s3") for p in paths):
+        if any(urlparse(path).scheme in ("http", "https", "s3") for path in paths):
             conn.execute("INSTALL httpfs; LOAD httpfs;")
 
         for path in paths:
-            configured = next(
-                (
-                    c.file.crs
-                    for c in cfg.categories
-                    if c.file.enabled and category_path(c, src) == path and c.file.crs
-                ),
-                src.crs,
+            configured_crs = _first_category_setting(
+                cfg, file_config, path, "crs", default=file_config.crs
             )
-            self._crs_by_path[path] = resolve_crs(declared_crs(conn, path), configured)
-            layer = next(
-                (
-                    c.file.layer
-                    for c in cfg.categories
-                    if c.file.enabled and category_path(c, src) == path and c.file.layer
-                ),
-                "",
-            )
+            self._crs_by_path[path] = resolve_crs(declared_crs(conn, path), configured_crs)
+            layer = _first_category_setting(cfg, file_config, path, "layer", default="")
             self._layer_by_path[path] = resolve_layer(layer_names(conn, path), layer)
             logger.info(
                 "file source %s: reading %sas %s",
@@ -182,17 +168,17 @@ class FileRunner(SourceRunner):
             )
         conn.close()
 
-        if src.snapshot:
-            self._snapshot_date = datetime.fromisoformat(src.snapshot).astimezone(UTC)
+        if file_config.snapshot:
+            self._snapshot_date = parse_utc(file_config.snapshot)
         else:
-            self._snapshot_date = max(file_timestamp(p) for p in paths)
+            self._snapshot_date = max(file_timestamp(path) for path in paths)
         self._snapshot_label = self._snapshot_date.strftime("%Y-%m-%d")
 
     def query_for(self, cfg: RootConfig, category: CategoryConfig) -> SourceQuery:
         if not category.file.enabled:
             raise CategorySkippedError(f"{category.name}: file source disabled")
-        src = _file_config(cfg)
-        path = category_path(category, src)
+        file_config = _file_config(cfg)
+        path = category_path(category, file_config)
         if not category.file.select:
             raise FileSourceError(
                 f"category {category.name!r} needs `file.select` mapping output columns "
@@ -202,14 +188,14 @@ class FileRunner(SourceRunner):
             raise FileSourceError("prepare() must run before query_for()")
 
         select_fields = [
-            f'"{source_column}" AS "{output_column}"'
+            f"{sql_identifier(source_column)} AS {sql_identifier(output_column)}"
             for output_column, source_column in category.file.select.items()
         ]
         return SourceQuery(
             source_expr=read_expr(path, self._crs_by_path[path], self._layer_by_path[path]),
             select_fields=select_fields,
             where_conditions=list(category.file.where),
-            bbox_cols="geom",
+            bbox_mode="geom",
             dataset_source=f"{Path(urlparse(path).path).name} ({self._snapshot_label})",
             source_url=path if urlparse(path).scheme else "",
             source_description=(
@@ -222,16 +208,32 @@ class FileRunner(SourceRunner):
         )
 
     def peek_snapshot_label(self, cfg: RootConfig) -> str | None:
-        src = _file_config(cfg)
-        if not src.snapshot:
+        file_config = _file_config(cfg)
+        if not file_config.snapshot:
             return None
-        return datetime.fromisoformat(src.snapshot).astimezone(UTC).strftime("%Y-%m-%d")
+        return parse_utc(file_config.snapshot).strftime("%Y-%m-%d")
 
 
 def _file_config(cfg: RootConfig) -> FileSourceConfig:
-    src = cfg.source.get("file")
-    if src is None:
+    file_config = cfg.source.get("file")
+    if file_config is None:
         raise FileSourceError("source.file is not configured")
-    if isinstance(src, dict):
-        return FileSourceConfig(**src)
-    return src
+    if isinstance(file_config, dict):
+        return FileSourceConfig(**file_config)
+    return file_config
+
+
+def _first_category_setting(
+    cfg: RootConfig, file_config: FileSourceConfig, path: str, setting: str, *, default: str
+) -> str:
+    """The `crs` or `layer` the first enabled category reading `path` sets, else `default`."""
+    return next(
+        (
+            getattr(category.file, setting)
+            for category in cfg.categories
+            if category.file.enabled
+            and category_path(category, file_config) == path
+            and getattr(category.file, setting)
+        ),
+        default,
+    )

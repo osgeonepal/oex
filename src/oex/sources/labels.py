@@ -1,4 +1,4 @@
-"""How each source is named in output, so the four places that show it agree."""
+"""How each source is named in output, so every place that shows it agrees."""
 
 # (short, long) per source. Short names go where space is tight, such as resource and
 # layer names; long names go where the reader needs the full provenance.

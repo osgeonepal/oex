@@ -10,8 +10,8 @@ HDX publication.
 curl -LsSf https://raw.githubusercontent.com/osgeonepal/oex/main/scripts/install.sh | sh
 ```
 
-That installs the `oex-cli` command using whichever of `uv`, `pipx`, or
-`pip --user` is on your machine. Other paths:
+That installs the `oex-cli` command using the first of `uv`, `pipx`, `conda`,
+`pip --user` or `docker` it finds on your machine. Other paths:
 
 ```bash
 uv tool install oex
@@ -26,13 +26,8 @@ docker run --rm -v "$PWD/output:/app/output" \
   ghcr.io/osgeonepal/oex:latest oex-cli osm npl
 ```
 
-For docker as a system command:
-
-```bash
-curl -LsSf https://raw.githubusercontent.com/osgeonepal/oex/main/scripts/install.sh | sh -s -- --docker
-```
-
-That writes `/usr/local/bin/oex-cli` wrapping the docker image.
+When docker is the only installer found, the one-line installer writes
+`/usr/local/bin/oex-cli` wrapping the docker image.
 
 ## Usage
 

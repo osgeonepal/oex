@@ -1,4 +1,4 @@
-"""OSM source: planet PBF download + quackosm conversion + per-country query."""
+"""OSM source: country features from a PBF extract or a live OSM API."""
 
 from oex.osm.fetch_planet import download_pbf
 from oex.osm.runner import OsmRunner

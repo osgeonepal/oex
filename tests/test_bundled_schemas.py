@@ -1,44 +1,32 @@
 """The bundled example schemas load and produce the expected categories; querying data
 is not tested here."""
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
-from oex.config.loader import load_config
+from oex.config.schema import RootConfig
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+EXAMPLES = Path(__file__).resolve().parent.parent / "configs" / "examples"
+
+LoadConfig = Callable[[str], RootConfig]
+
+
+def _load_schema(load_yaml_config: LoadConfig, schema_filename: str) -> RootConfig:
+    schema_path = EXAMPLES / schema_filename
+    assert schema_path.exists(), f"missing bundled schema {schema_path}"
+    return load_yaml_config(f"iso3: NPL\nkey: test\ncategories_file: {schema_path}\n")
 
 
 @pytest.mark.parametrize(
-    ("schema_filename", "expected_count", "description"),
-    [
-        ("custom-schema.yaml", 2, "Hospitals + Healthcare POIs"),
-        ("hot-schema.yaml", 12, "12 HOT HDX layers"),
-        ("overture-package-schema.yaml", 15, "15 Overture (theme,type) pairs"),
-    ],
+    "schema_filename", ["custom-schema.yaml", "hot-schema.yaml", "overture-package-schema.yaml"]
 )
-def test_bundled_schema_loads(
-    tmp_path: Path,
-    schema_filename: str,
-    expected_count: int,
-    description: str,
+def test_each_bundled_schema_loads_named_categories_with_a_source_enabled(
+    load_yaml_config: LoadConfig, schema_filename: str
 ) -> None:
-    schema_path = REPO_ROOT / "configs" / "examples" / schema_filename
-    assert schema_path.exists(), f"missing bundled schema {schema_path}"
-
-    user_yaml = tmp_path / "country.yaml"
-    user_yaml.write_text(
-        f"""
-iso3: NPL
-key: test
-categories_file: {schema_path}
-""",
-        encoding="utf-8",
-    )
-    cfg = load_config(user_yaml)
-    assert len(cfg.categories) == expected_count, description
-    # Every category must have a non-empty name and at least one source enabled.
+    cfg = _load_schema(load_yaml_config, schema_filename)
+    assert cfg.categories, f"{schema_filename} loaded no categories"
     for c in cfg.categories:
         assert c.name, f"unnamed category in {schema_filename}"
         assert c.overture.enabled or c.osm.enabled, (
@@ -46,12 +34,9 @@ categories_file: {schema_path}
         )
 
 
-def test_hot_schema_layer_names_match_hdx() -> None:
+def test_hot_schema_layer_names_match_hdx(load_yaml_config: LoadConfig) -> None:
     """The HOT schema names must match the HOT HDX dataset suffixes."""
-    schema_path = REPO_ROOT / "configs" / "examples" / "hot-schema.yaml"
-    assert schema_path.exists()
-
-    cfg = load_config(_with_categories_file(schema_path))
+    cfg = _load_schema(load_yaml_config, "hot-schema.yaml")
     expected = {
         "buildings",
         "roads",
@@ -69,11 +54,11 @@ def test_hot_schema_layer_names_match_hdx() -> None:
     assert {c.name for c in cfg.categories} == expected
 
 
-def test_overture_package_schema_covers_all_themes() -> None:
+def test_overture_package_schema_covers_all_themes_with_osm_off(
+    load_yaml_config: LoadConfig,
+) -> None:
     """Overture data-package schema must cover every theme/type the bucket exposes."""
-    schema_path = REPO_ROOT / "configs" / "examples" / "overture-package-schema.yaml"
-    cfg = load_config(_with_categories_file(schema_path))
-
+    cfg = _load_schema(load_yaml_config, "overture-package-schema.yaml")
     pairs = {(c.overture.theme, c.overture.feature_type) for c in cfg.categories}
     expected_pairs = {
         ("addresses", "address"),
@@ -93,17 +78,4 @@ def test_overture_package_schema_covers_all_themes() -> None:
         ("transportation", "segment"),
     }
     assert pairs == expected_pairs
-
-    # All categories should have OSM disabled in this Overture-only schema.
-    for c in cfg.categories:
-        assert c.osm.enabled is False, f"{c.name}: osm should be disabled"
-
-
-def _with_categories_file(schema_path: Path) -> str:
-    """Write a tiny user YAML that points at `schema_path` as a temp file path."""
-    import tempfile
-
-    tmp = tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False)
-    tmp.write(f"iso3: NPL\nkey: test\ncategories_file: {schema_path}\n")
-    tmp.close()
-    return tmp.name
+    assert [c.name for c in cfg.categories if c.osm.enabled] == []

@@ -38,14 +38,13 @@ def test_raises_when_input_pbf_missing(tmp_path: Path) -> None:
             osmium_polygon_extract(tmp_path / "missing.pbf", _NEPAL_POLYGON, tmp_path / "out.pbf")
 
 
-def test_constructs_correct_command(tmp_path: Path) -> None:
+def test_osmium_gets_complete_ways_and_the_polygon_as_a_featurecollection(tmp_path: Path) -> None:
     pbf = _fake_pbf(tmp_path)
     out_pbf = tmp_path / "out.pbf"
     captured: dict = {}
 
     def fake_run(cmd, capture_output, text):  # noqa: ANN001 - subprocess signature
         captured["cmd"] = cmd
-        # Verify the geojson file passed to -p actually contains a FeatureCollection.
         p_index = cmd.index("-p") + 1
         with open(cmd[p_index]) as fh:
             captured["feature_collection"] = json.load(fh)
@@ -58,17 +57,15 @@ def test_constructs_correct_command(tmp_path: Path) -> None:
     ):
         osmium_polygon_extract(pbf, _NEPAL_POLYGON, out_pbf)
 
-    assert captured["cmd"][0] == "/usr/bin/osmium"
-    assert captured["cmd"][1] == "extract"
-    assert "--strategy" in captured["cmd"]
-    assert "complete_ways" in captured["cmd"]
+    cmd = captured["cmd"]
+    assert cmd[cmd.index("--strategy") + 1] == "complete_ways"
     assert str(pbf) in captured["cmd"]
     assert str(out_pbf) in captured["cmd"]
     assert captured["feature_collection"]["type"] == "FeatureCollection"
     assert captured["feature_collection"]["features"][0]["geometry"] == _NEPAL_POLYGON
 
 
-def test_strategy_passes_through(tmp_path: Path) -> None:
+def test_a_custom_strategy_reaches_the_osmium_command(tmp_path: Path) -> None:
     pbf = _fake_pbf(tmp_path)
     out_pbf = tmp_path / "out.pbf"
 

@@ -48,24 +48,30 @@ def test_ensure_local_pbf_downloads_a_remote_path(tmp_path: Path) -> None:
     assert out.read_bytes() == b"PBFDATA"
 
 
-def test_country_source_expr_injects_tags_when_missing(tmp_path: Path) -> None:
+def test_country_source_expr_gives_an_extract_without_tags_a_map_tags_column(
+    spatial_conn: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
+    """quackosm omits `tags` for an empty extract, and every category select reads it."""
     parquet = tmp_path / "empty.parquet"
-    con = duckdb.connect()
-    con.execute(f"COPY (SELECT 'way/1' AS feature_id WHERE FALSE) TO '{parquet}' (FORMAT PARQUET)")
-    con.close()
+    spatial_conn.execute(
+        f"COPY (SELECT 'way/1' AS feature_id WHERE FALSE) TO '{parquet}' (FORMAT PARQUET)"
+    )
     runner = OsmRunner()
     runner._country_parquet = parquet
-    assert "AS tags" in runner._country_source_expr()
+    columns = spatial_conn.execute(
+        f"DESCRIBE SELECT * FROM {runner._country_source_expr()}"
+    ).fetchall()
+    assert ("tags", "MAP(VARCHAR, VARCHAR)") in [(name, kind) for name, kind, *_ in columns]
 
 
-def test_country_source_expr_plain_read_when_tags_present(tmp_path: Path) -> None:
+def test_country_source_expr_reads_the_parquet_directly_when_tags_are_present(
+    spatial_conn: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
     parquet = tmp_path / "full.parquet"
-    con = duckdb.connect()
-    con.execute(
+    spatial_conn.execute(
         f"COPY (SELECT 'w' AS feature_id, MAP(['building'], ['yes']) AS tags WHERE FALSE) "
         f"TO '{parquet}' (FORMAT PARQUET)"
     )
-    con.close()
     runner = OsmRunner()
     runner._country_parquet = parquet
     assert runner._country_source_expr() == f"read_parquet('{parquet}')"
@@ -173,7 +179,6 @@ def test_planet_prepare_calls_osmium_and_quackosm(tmp_path: Path) -> None:
 
     assert osmium_called["pbf"] == planet_pbf
     assert quackosm_args["keep_all_tags"] is True
-    assert quackosm_args["sort_result"] is True
     assert quackosm_args["tags_filter"] == {"building": True, "highway": True}
     assert runner._engine == "planet"
     assert runner._country_parquet is not None
@@ -246,7 +251,23 @@ def test_planet_prepare_is_idempotent_when_parquet_exists(tmp_path: Path) -> Non
     assert runner._country_parquet.exists()
 
 
-def test_planet_query_for_applies_tag_predicate(tmp_path: Path) -> None:
+def test_a_snapshot_label_that_is_not_a_date_fails_the_prepare(tmp_path: Path) -> None:
+    """The label dates the HDX dataset, so a non-date must not publish as today."""
+    planet_pbf = tmp_path / "planet.osm.pbf"
+    planet_pbf.write_bytes(b"\x00")
+    cfg = _planet_cfg(tmp_path, planet_pbf=planet_pbf)
+    cfg.source["osm"].snapshot = "spring-release"
+    snapshot_dir = Path(cfg.source["osm"].cache_dir) / "planet" / "npl" / "spring-release"
+    fingerprint = _parquet_fingerprint(cfg, clip=cfg.source["osm"].planet_clip_to_boundary)
+    _seed_country_parquet(snapshot_dir / f"country-{fingerprint}.parquet")
+
+    with pytest.raises(ValueError, match="'spring-release' is not an ISO date"):
+        OsmRunner().prepare(cfg)
+
+
+def test_planet_query_for_applies_tag_predicate(
+    spatial_conn: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
     planet_pbf = tmp_path / "planet.osm.pbf"
     planet_pbf.write_bytes(b"\x00")
     cfg = _planet_cfg(tmp_path, planet_pbf=planet_pbf)
@@ -267,13 +288,11 @@ def test_planet_query_for_applies_tag_predicate(tmp_path: Path) -> None:
     assert f"country-{fingerprint}.parquet" in buildings_q.source_expr
     assert any("tags['building'] IS NOT NULL" in w for w in buildings_q.where_conditions)
 
-    conn = duckdb.connect()
-    conn.execute("INSTALL spatial; LOAD spatial;")
     sql = (
         f"SELECT COUNT(*) FROM {buildings_q.source_expr} "
         f"WHERE {' AND '.join(buildings_q.where_conditions)}"
     )
-    row = conn.execute(sql).fetchone()
+    row = spatial_conn.execute(sql).fetchone()
     assert row is not None
     assert row[0] == 1
 
@@ -286,54 +305,9 @@ def test_planet_engine_requires_pbf_path(tmp_path: Path) -> None:
         OsmRunner().prepare(cfg)
 
 
-def test_planet_engine_raises_when_pbf_missing(tmp_path: Path) -> None:
-    cfg = _planet_cfg(tmp_path, planet_pbf=tmp_path / "missing.pbf")
-
-    with pytest.raises(FileNotFoundError, match="Planet PBF"):
-        OsmRunner().prepare(cfg)
-
-
-def test_planet_engine_auto_downloads_when_flag_set(tmp_path: Path) -> None:
-    """When auto_download_planet is true, missing PBF triggers download_pbf."""
-    target_pbf = tmp_path / "missing.pbf"
-    cfg = _planet_cfg(tmp_path, planet_pbf=target_pbf)
-    cfg.source["osm"].auto_download_planet = True
-
-    download_called: dict = {}
-
-    def fake_download(url, dest_dir, *, md5_url=None, filename=None):  # noqa: ANN001
-        download_called["url"] = url
-        download_called["dest"] = dest_dir
-        download_called["filename"] = filename
-        out = Path(dest_dir) / (filename or "planet.osm.pbf")
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_bytes(b"\x00")
-        return type("R", (), {"path": out})()
-
-    def fake_quackosm(**kw):
-        _seed_country_parquet(kw["result_file_path"])
-
-    with (
-        patch("oex.osm.runner.download_pbf", side_effect=fake_download),
-        patch(
-            "oex.osm.runner.resolve_boundary",
-            return_value=type("B", (), {"geojson": json.dumps(NPL_GEOJSON)})(),
-        ),
-        patch(
-            "oex.osm.runner.osmium_polygon_extract",
-            side_effect=lambda pbf, geom, out, **_: out.write_bytes(b"\x00"),
-        ),
-        patch("quackosm.functions.convert_pbf_to_parquet", side_effect=fake_quackosm),
-    ):
-        runner = OsmRunner()
-        runner.prepare(cfg)
-
-    assert download_called["filename"] == "missing.pbf"
-    assert download_called["url"] == cfg.source["osm"].pbf_url
-    assert runner._engine == "planet"
-
-
-def test_geofabrik_engine_runs_strategy_b_pipeline(tmp_path: Path) -> None:
+def test_geofabrik_engine_downloads_the_extract_and_builds_the_country_parquet(
+    tmp_path: Path,
+) -> None:
     """Geofabrik engine should: download PBF, run quackosm once, write country.parquet."""
     cfg = _planet_cfg(tmp_path, planet_pbf=tmp_path / "unused.pbf")
     cfg.source["osm"].engine = "geofabrik"
@@ -695,6 +669,19 @@ def test_only_a_partial_download_of_an_older_planet_is_dropped(
     _prepare_with_head(cfg, _PUBLISHED)
 
     assert partial.exists() is kept
+
+
+def test_a_missing_planet_is_downloaded_to_the_configured_path_when_auto_download_is_set(
+    tmp_path: Path,
+) -> None:
+    target_pbf = tmp_path / "missing.pbf"
+    cfg = _planet_cfg(tmp_path, planet_pbf=target_pbf)
+    cfg.source["osm"].auto_download_planet = True
+
+    downloaded = _prepare_with_head(cfg, _PUBLISHED)
+
+    assert downloaded == [cfg.source["osm"].pbf_url]
+    assert target_pbf.is_file()
 
 
 def test_a_current_planet_is_kept(tmp_path: Path) -> None:

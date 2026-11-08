@@ -1,5 +1,7 @@
 """Unit tests for the planet-engine category filter helpers."""
 
+import duckdb
+
 from oex.config.schema import CategoryConfig, CategoryOsm
 from oex.osm.category_filter import category_where_predicate, union_tag_filter
 
@@ -10,7 +12,7 @@ def _cat(name: str, osm_filter: dict, *, enabled: bool = True) -> CategoryConfig
     return cat
 
 
-def test_union_disjoint_keys() -> None:
+def test_union_of_disjoint_keys_keeps_every_key() -> None:
     cats = [_cat("buildings", {"building": True}), _cat("roads", {"highway": True})]
     assert union_tag_filter(cats) == {"building": True, "highway": True}
 
@@ -52,7 +54,7 @@ def test_union_skips_disabled_categories() -> None:
     assert union_tag_filter(cats) == {"highway": True}
 
 
-def test_union_handles_empty_input() -> None:
+def test_union_of_no_categories_is_an_empty_filter() -> None:
     assert union_tag_filter([]) == {}
 
 
@@ -93,3 +95,29 @@ def test_predicate_returns_true_when_filter_empty() -> None:
 def test_predicate_escapes_single_quotes_in_values() -> None:
     cat = _cat("k", {"k": "o'reilly"})
     assert category_where_predicate(cat) == "(tags['k'] = 'o''reilly')"
+
+
+def _matching_ids(predicate: str) -> list[int]:
+    rows = duckdb.sql(
+        "SELECT id FROM (VALUES "
+        "(1, MAP {'highway': 'primary'}), "
+        "(2, MAP {'building': 'yes'}), "
+        "(3, MAP {'building': 'yes', 'highway': 'service'})"
+        ") AS features(id, tags) "
+        f"WHERE {predicate} ORDER BY id"
+    ).fetchall()
+    return [row[0] for row in rows]
+
+
+def test_predicate_for_a_false_only_filter_selects_features_without_the_tag() -> None:
+    assert _matching_ids(category_where_predicate(_cat("no_roads", {"highway": False}))) == [2]
+
+
+def test_predicate_for_a_false_value_excludes_features_with_that_tag() -> None:
+    cat = _cat("buildings_off_road", {"building": True, "highway": False})
+    assert _matching_ids(category_where_predicate(cat)) == [2]
+
+
+def test_union_skips_false_values_instead_of_raising() -> None:
+    cats = [_cat("a", {"highway": False}), _cat("b", {"highway": ["primary"]})]
+    assert union_tag_filter(cats) == {"highway": ["primary"]}

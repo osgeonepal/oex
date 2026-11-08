@@ -18,7 +18,6 @@ frequency: yearly
 
 boundary:
   geom: null
-  geoboundaries_release: CGAZ
   geoboundaries_level: ADM0
 
 output:

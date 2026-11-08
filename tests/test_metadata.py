@@ -3,14 +3,12 @@
 import duckdb
 import pytest
 
-from oex.metadata import compute_metadata
+from oex.metadata import ColumnReport, _summary, compute_metadata
 
 
 @pytest.fixture
-def populated_table() -> duckdb.DuckDBPyConnection:
-    conn = duckdb.connect(":memory:")
-    conn.execute("INSTALL spatial; LOAD spatial")
-    conn.execute(
+def populated_table(spatial_conn: duckdb.DuckDBPyConnection) -> duckdb.DuckDBPyConnection:
+    spatial_conn.execute(
         """
         CREATE TABLE features AS SELECT * FROM (VALUES
             (1, 'A',  'cafe',     ST_Point(83.5, 28.5)),
@@ -21,17 +19,16 @@ def populated_table() -> duckdb.DuckDBPyConnection:
         ) AS t(id, name, amenity, geom)
         """
     )
-    return conn
+    return spatial_conn
 
 
-def test_metadata_basic_counts(populated_table: duckdb.DuckDBPyConnection) -> None:
+def test_metadata_counts_features_geometry_types_and_bbox(
+    populated_table: duckdb.DuckDBPyConnection,
+) -> None:
     report = compute_metadata(populated_table, "features")
     assert report.feature_count == 5
     assert report.geometry_types == {"POINT": 3, "POLYGON": 1, "LINESTRING": 1}
-    assert report.bbox is not None
-    minx, miny, maxx, maxy = report.bbox
-    assert minx == 0.0 and maxx >= 83.7
-    assert miny == 0.0 and maxy >= 28.7
+    assert report.bbox == pytest.approx((0.0, 0.0, 83.7, 28.7))
 
 
 def test_metadata_per_column_null_share(populated_table: duckdb.DuckDBPyConnection) -> None:
@@ -50,7 +47,9 @@ def test_metadata_per_column_null_share(populated_table: duckdb.DuckDBPyConnecti
     assert cols["amenity"].distinct_count == 3
 
 
-def test_metadata_top_values(populated_table: duckdb.DuckDBPyConnection) -> None:
+def test_the_most_frequent_value_tops_the_column(
+    populated_table: duckdb.DuckDBPyConnection,
+) -> None:
     report = compute_metadata(populated_table, "features")
     cols = {c.name: c for c in report.columns}
     amenity_top = cols["amenity"].top_values
@@ -58,7 +57,7 @@ def test_metadata_top_values(populated_table: duckdb.DuckDBPyConnection) -> None
     assert amenity_top[0]["count"] == 2
 
 
-def test_metadata_summary_string(populated_table: duckdb.DuckDBPyConnection) -> None:
+def test_the_summary_states_counts_and_fill(populated_table: duckdb.DuckDBPyConnection) -> None:
     report = compute_metadata(populated_table, "features")
     assert report.summary == (
         "5 features: 3 points, 1 line, 1 polygon. "
@@ -66,9 +65,10 @@ def test_metadata_summary_string(populated_table: duckdb.DuckDBPyConnection) -> 
     )
 
 
-def test_metadata_empty_table() -> None:
-    conn = duckdb.connect(":memory:")
-    conn.execute("INSTALL spatial; LOAD spatial")
+def test_an_empty_table_reports_no_bbox_and_no_features(
+    spatial_conn: duckdb.DuckDBPyConnection,
+) -> None:
+    conn = spatial_conn
     conn.execute("CREATE TABLE empty (id INT, name VARCHAR, geom GEOMETRY)")
     report = compute_metadata(conn, "empty")
     assert report.feature_count == 0
@@ -76,9 +76,10 @@ def test_metadata_empty_table() -> None:
     assert report.summary == "No features."
 
 
-def test_metadata_temporal_bounds_when_column_exists() -> None:
-    conn = duckdb.connect(":memory:")
-    conn.execute("INSTALL spatial; LOAD spatial")
+def test_metadata_temporal_bounds_when_column_exists(
+    spatial_conn: duckdb.DuckDBPyConnection,
+) -> None:
+    conn = spatial_conn
     conn.execute(
         """
         CREATE TABLE features AS SELECT * FROM (VALUES
@@ -97,9 +98,10 @@ def test_metadata_temporal_bounds_when_column_exists() -> None:
     assert report.temporal.non_null_count == 3
 
 
-def test_metadata_temporal_skipped_when_column_missing() -> None:
-    conn = duckdb.connect(":memory:")
-    conn.execute("INSTALL spatial; LOAD spatial")
+def test_metadata_temporal_skipped_when_column_missing(
+    spatial_conn: duckdb.DuckDBPyConnection,
+) -> None:
+    conn = spatial_conn
     conn.execute(
         "CREATE TABLE features AS SELECT 1 AS id, ST_Point(1, 1) AS geom",
     )
@@ -107,9 +109,10 @@ def test_metadata_temporal_skipped_when_column_missing() -> None:
     assert report.temporal is None
 
 
-def test_metadata_temporal_skipped_when_column_not_requested() -> None:
-    conn = duckdb.connect(":memory:")
-    conn.execute("INSTALL spatial; LOAD spatial")
+def test_metadata_temporal_skipped_when_column_not_requested(
+    spatial_conn: duckdb.DuckDBPyConnection,
+) -> None:
+    conn = spatial_conn
     conn.execute(
         """
         CREATE TABLE features AS SELECT 1 AS id,
@@ -123,8 +126,6 @@ def test_metadata_temporal_skipped_when_column_not_requested() -> None:
 
 def test_the_summary_counts_only_the_sources_own_attributes() -> None:
     """oex fills `id` and the admin columns itself, so counting them misstates the source's fill."""
-    from oex.metadata import ColumnReport, _summary
-
     columns = [
         ColumnReport("id", "VARCHAR", 0, 0.0, 10, []),
         ColumnReport("adm1_pcode", "VARCHAR", 0, 0.0, 3, []),
@@ -137,8 +138,6 @@ def test_the_summary_counts_only_the_sources_own_attributes() -> None:
 
 
 def test_a_single_feature_and_attribute_read_in_the_singular() -> None:
-    from oex.metadata import ColumnReport, _summary
-
     summary = _summary(1, {"POINT": 1}, [ColumnReport("name", "VARCHAR", 0, 0.0, 1, [])])
     assert summary == (
         "1 feature: 1 point. 1 of 1 attribute is filled for at least half of the feature."

@@ -91,8 +91,7 @@ Default is `[gpkg, shp]`.
 | `boundary`     | block               | See `BoundaryConfig`.                         |
 | `output`       | block               | Output directory and format list.             |
 | `parallel`     | block               | DuckDB threads + memory + thread pool toggle. |
-| `duckdb`       | block               | http retry/timeout, temp dir, object cache.   |
-| `logging`      | block               | level, format string.                         |
+| `duckdb`       | block               | HTTP retries and timeout, temp directory.     |
 | `hdx`          | block               | HDX site, push toggle, credentials.           |
 | `source`       | `overture` + `osm`  | Per-source settings (release, cache dir).     |
 | `categories`   | list                | Per-theme `name`, `hdx`, `overture`, `osm`.   |
@@ -136,6 +135,9 @@ osm:
     highway: ["primary", "secondary"]       # only these values
     amenity: ["hospital", "clinic"]
 ```
+
+A value of `false` selects features that don't carry the tag. `disused: false` next to
+`amenity: hospital` keeps hospitals without a `disused` tag.
 
 ## Overture source schema
 
@@ -188,6 +190,27 @@ adaptive calculation uses the container limit rather than host RAM:
 ```bash
 docker run --memory=20g -e OEX_MEMORY_GB=20 ...
 ```
+
+## DuckDB
+
+```yaml
+duckdb:
+  http_retries: 8
+  http_retry_wait_ms: 500
+  http_retry_backoff: 2.0
+  http_timeout_s: 120
+  temp_dir: /tmp/duckdb_temp
+```
+
+The HTTP settings apply to the DuckDB connection that exports each category and reads
+remote data such as the Overture parquet on S3. A failed request is retried
+`http_retries` times, waiting `http_retry_wait_ms` before the first retry and multiplying
+the wait by `http_retry_backoff` each time. `http_timeout_s` is the timeout for one
+request, in seconds.
+
+`temp_dir` holds each category's working DuckDB database and the data DuckDB spills to
+disk when a query exceeds its memory limit. Point it at a disk with room for the largest
+layer.
 
 ## Pcode tagging
 
@@ -332,7 +355,8 @@ since reading only the first would silently drop the rest.
 
 The snapshot date becomes the HDX time period. It comes from the file's modification
 time for a local path and from `Last-Modified` for an URL. S3 objects and files whose
-server sends no `Last-Modified` need `source.file.snapshot` set explicitly.
+server sends no `Last-Modified` need `source.file.snapshot` set explicitly. A
+`snapshot` without a UTC offset, such as `2026-05-01T06:00`, is read as UTC.
 
 Everything after reading is the same as any other source: the boundary clip, pcode
 tagging, every configured output format, the zip and its README, S3 upload, and the
@@ -353,6 +377,8 @@ source:
     geofabrik_clip_to_boundary: true
     planet_clip_to_boundary: true  # planet only; false = whole planet, no clip
     pbf_path: null             # required for engine: planet or planet_fallback
+    pbf_url: https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf
+    md5_url: https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf.md5
     planet_fallback: false     # try geofabrik, fall back to planet when it has no extract or stays unreachable
     auto_download_planet: false  # when true, download the planet PBF if missing, or older than pbf_url's with snapshot: latest
     postpass_endpoint: https://postpass.geofabrik.de/api/interpreter
@@ -412,6 +438,13 @@ so a fallback does not quietly change how fresh the output is.
 Download the planet PBF once with `oex-cli osm-build-cache`; the result
 lives at `<cache_dir>/_pbf/planet-latest.osm.pbf` and you point
 `pbf_path` at it.
+
+A planet download from `pbf_url` is checked against the checksum at `md5_url`, and a
+Geofabrik download against the `.md5` file Geofabrik publishes beside each extract. When
+the checksum doesn't match, the download fails and the file is deleted. When the checksum
+can't be fetched or read, the download fails but the file is kept, and the next run checks
+it again without downloading it. An empty `md5_url` turns the check off for the planet
+download.
 
 `planet_clip_to_boundary: false`: whole-planet mode. The osmium clip is
 skipped and quackosm processes the entire planet PBF in one pass, so
@@ -486,7 +519,12 @@ hdx:
   owner_org: your-org
   maintainer: your-username
   user_agent: my-pipeline/1.0    # optional, defaults to oex
+  title_template: "{category} of {country}"
 ```
+
+`title_template` sets the title of each per-category dataset. It may use `{category}`,
+`{country}` and `{iso3}`. When it is empty, the title is `<category> of <country>`, where
+the country is `dataset_name` when set, else the country's name.
 
 Each category supplies its own HDX metadata block:
 
@@ -505,11 +543,9 @@ Each category supplies its own HDX metadata block:
 ```
 
 `dataset_source` is the value HDX displays under "Source" on the dataset
-page. When unset, the runner supplies a default like
-`OpenStreetMap (Geofabrik IND 2026-05-07)` for OSM exports or
-`Overture Maps Foundation 2026-04-15.0` for Overture. Override it to match
-your organisation's standard (HOT-OSM uses the verbatim string
-`OpenStreetMap contributors`).
+page. When unset, it is the source's name: `OpenStreetMap`, `Overture` or
+`Supplied data file`. Override it to match your organisation's standard
+(HOT-OSM uses the verbatim string `OpenStreetMap contributors`).
 
 When both `overture` and `osm` are enabled for a category, both sources
 contribute resources to the same HDX dataset (one zip per source per format).

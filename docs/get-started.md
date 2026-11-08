@@ -10,13 +10,10 @@ Pick one. All install the `oex-cli` command.
 curl -LsSf https://raw.githubusercontent.com/osgeonepal/oex/main/scripts/install.sh | sh
 ```
 
-Picks the best installer it finds on your machine: `uv`, then `pipx`, then
-`pip --user`. To install a docker wrapper at `/usr/local/bin/oex-cli`
-instead:
-
-```bash
-curl -LsSf https://raw.githubusercontent.com/osgeonepal/oex/main/scripts/install.sh | sh -s -- --docker
-```
+It uses the first installer it finds on your machine: `uv`, then `pipx`, then
+`conda`, then `pip --user`. When only docker is found, it writes a docker wrapper at
+`/usr/local/bin/oex-cli`. If the install succeeds but `oex-cli` is not on your `PATH`,
+the installer says so, prints how to add it, and exits with an error.
 
 ### uv
 
@@ -218,5 +215,5 @@ git clone https://github.com/osgeonepal/oex
 cd oex
 just setup
 just test
-just osm nepal
+just run osm nepal
 ```

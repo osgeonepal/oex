@@ -91,6 +91,8 @@ addopts = [
     "-ra",
     "--strict-config",
     "--strict-markers",
+    "-m",
+    "not network",
     "--cov=oex",
     "--cov-report=term-missing",
 ]
@@ -98,7 +100,7 @@ testpaths = ["tests"]
 xfail_strict = true
 markers = [
     "slow: tests that take more than a few seconds",
-    "network: tests that fetch a STAC extension schema over HTTPS",
+    "network: tests that fetch STAC schemas over HTTPS; deselected by default, run with `pytest -m network`",
 ]
 
 [tool.coverage.run]

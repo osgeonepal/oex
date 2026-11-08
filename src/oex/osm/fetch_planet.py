@@ -14,7 +14,16 @@ from oex.logging_setup import get_logger
 
 logger = get_logger(__name__)
 
-_CHUNK = 1024 * 1024
+_CHUNK_BYTES = 1024 * 1024
+
+
+class Md5UnavailableError(RuntimeError):
+    """The md5 sidecar could not be read, so the download is kept but not trusted; the next
+    run checks it again without downloading."""
+
+
+class Md5MismatchError(RuntimeError):
+    """The download differs from its md5, such as a resume joining two versions of a file."""
 
 
 @dataclass(frozen=True)
@@ -47,65 +56,67 @@ def download_pbf(
 
     if target.exists() and total and target.stat().st_size == total:
         logger.info("PBF already complete: %s (%d bytes)", target, total)
-        md5_ok = _verify_md5(target, md5_url) if md5_url else False
-        return DownloadResult(target, total, md5_ok, last_modified)
+        md5_verified = _verify_md5(target, md5_url) if md5_url else False
+        return DownloadResult(target, total, md5_verified, last_modified)
 
-    start_byte = 0
-    if partial.exists() and total and partial.stat().st_size < total:
-        start_byte = partial.stat().st_size
+    partial_size = partial.stat().st_size if partial.exists() else 0
+    if total and partial_size == total:
+        logger.info("PBF download already complete, checking it: %s", partial)
+    else:
+        _download_to(partial, url, total, start_byte=partial_size if partial_size < total else 0)
+
+    try:
+        md5_verified = _verify_md5(partial, md5_url) if md5_url else False
+    except Md5MismatchError:
+        partial.unlink()
+        raise
+    partial.replace(target)
+    return DownloadResult(target, target.stat().st_size, md5_verified, last_modified)
+
+
+def _download_to(partial: Path, url: str, total: int, *, start_byte: int) -> None:
+    if start_byte:
         logger.info("Resuming PBF download from byte %d / %d", start_byte, total)
-
     headers = {"Range": f"bytes={start_byte}-"} if start_byte else {}
     mode = "ab" if start_byte else "wb"
-    with requests.get(url, headers=headers, stream=True, timeout=300) as resp:
-        resp.raise_for_status()
+    with requests.get(url, headers=headers, stream=True, timeout=300) as response:
+        response.raise_for_status()
         with (
-            partial.open(mode) as fh,
+            partial.open(mode) as partial_file,
             tqdm(
                 total=total or None,
                 initial=start_byte,
                 unit="B",
                 unit_scale=True,
-                desc=name,
-            ) as bar,
+                desc=partial.name,
+            ) as progress,
         ):
-            for chunk in resp.iter_content(chunk_size=_CHUNK):
+            for chunk in response.iter_content(chunk_size=_CHUNK_BYTES):
                 if not chunk:
                     continue
-                fh.write(chunk)
-                bar.update(len(chunk))
-
-    try:
-        md5_ok = _verify_md5(partial, md5_url) if md5_url else False
-    except RuntimeError:
-        # A resume can join two versions of the extract; start over on the next run.
-        partial.unlink()
-        raise
-    partial.replace(target)
-    return DownloadResult(target, target.stat().st_size, md5_ok, last_modified)
+                partial_file.write(chunk)
+                progress.update(len(chunk))
 
 
 def _verify_md5(path: Path, md5_url: str) -> bool:
     logger.info("Fetching md5 sidecar: %s", md5_url)
     try:
-        resp = http.session.get(md5_url, timeout=60)
-        resp.raise_for_status()
-    except requests.RequestException as exc:
-        logger.warning("Could not fetch md5 sidecar (%s): %s", md5_url, exc)
-        return False
+        response = http.session.get(md5_url, timeout=60)
+        response.raise_for_status()
+    except requests.RequestException as error:
+        raise Md5UnavailableError(f"Could not fetch md5 sidecar {md5_url}: {error}") from error
 
-    match = re.match(r"\s*([0-9a-fA-F]{32})", resp.text)
+    match = re.match(r"\s*([0-9a-fA-F]{32})", response.text)
     if not match:
-        logger.warning("Malformed md5 sidecar: %r", resp.text[:80])
-        return False
+        raise Md5UnavailableError(f"Malformed md5 sidecar at {md5_url}: {response.text[:80]!r}")
     expected = match.group(1).lower()
 
-    h = hashlib.md5()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(_CHUNK), b""):
-            h.update(chunk)
-    actual = h.hexdigest().lower()
+    digest = hashlib.md5()
+    with path.open("rb") as pbf_file:
+        for chunk in iter(lambda: pbf_file.read(_CHUNK_BYTES), b""):
+            digest.update(chunk)
+    actual = digest.hexdigest().lower()
     if actual != expected:
-        raise RuntimeError(f"md5 mismatch for {path}: expected {expected}, got {actual}")
+        raise Md5MismatchError(f"md5 mismatch for {path}: expected {expected}, got {actual}")
     logger.info("md5 verified for %s", path)
     return True

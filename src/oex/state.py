@@ -5,6 +5,7 @@ A new snapshot always rebuilds.
 import json
 import os
 import tempfile
+import threading
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -35,13 +36,13 @@ class SourceState:
 
 
 class StateStore:
-    """Read/write the per-(iso3, source) resume state JSON, atomically."""
-
     def __init__(self, path: Path, iso3: str, source: str) -> None:
         self._path = path
         self._iso3 = iso3.upper()
         self._source = source
         self._state = self._load()
+        # Export workers share one store, so mutation and save must not interleave.
+        self._lock = threading.Lock()
 
     def _load(self) -> SourceState:
         if not self._path.is_file():
@@ -75,10 +76,6 @@ class StateStore:
     def get(self, slug: str) -> CategoryState | None:
         return self._state.categories.get(slug)
 
-    def reset(self, slug: str) -> None:
-        self._state.categories.pop(slug, None)
-        self._save()
-
     def mark_built(
         self,
         slug: str,
@@ -87,31 +84,27 @@ class StateStore:
         zip_paths: list[Path],
         metadata_json_path: Path | None,
     ) -> None:
-        entry = self._state.categories.get(slug) or CategoryState()
-        entry.snapshot_label = snapshot_label
-        entry.built_utc = _now_iso()
-        entry.zip_paths = [str(p.resolve()) for p in zip_paths]
-        entry.metadata_json_path = str(metadata_json_path.resolve()) if metadata_json_path else None
-        entry.uploaded_utc = None
-        entry.hdx_dataset = None
-        self._state.categories[slug] = entry
-        self._save()
+        with self._lock:
+            entry = self._state.categories.get(slug) or CategoryState()
+            entry.snapshot_label = snapshot_label
+            entry.built_utc = _now_iso()
+            entry.zip_paths = [str(path.resolve()) for path in zip_paths]
+            entry.metadata_json_path = (
+                str(metadata_json_path.resolve()) if metadata_json_path else None
+            )
+            entry.uploaded_utc = None
+            entry.hdx_dataset = None
+            self._state.categories[slug] = entry
+            self._save()
 
     def mark_uploaded(self, slug: str, *, hdx_dataset: str | None) -> None:
-        entry = self._state.categories.get(slug)
-        if entry is None:
-            return
-        entry.uploaded_utc = _now_iso()
-        entry.hdx_dataset = hdx_dataset
-        self._save()
-
-    def is_built(self, slug: str, *, snapshot_label: str) -> bool:
-        entry = self.get(slug)
-        if entry is None or entry.built_utc is None:
-            return False
-        if entry.snapshot_label != snapshot_label:
-            return False
-        return all(Path(p).exists() for p in entry.zip_paths)
+        with self._lock:
+            entry = self._state.categories.get(slug)
+            if entry is None:
+                return
+            entry.uploaded_utc = _now_iso()
+            entry.hdx_dataset = hdx_dataset
+            self._save()
 
     def is_uploaded(self, slug: str, *, snapshot_label: str) -> bool:
         entry = self.get(slug)
@@ -134,10 +127,10 @@ class StateStore:
             suffix=".tmp",
             delete=False,
             encoding="utf-8",
-        ) as fh:
-            json.dump(payload, fh, indent=2, sort_keys=True)
-            tmp_path = Path(fh.name)
-        os.replace(tmp_path, self._path)
+        ) as temporary_file:
+            json.dump(payload, temporary_file, indent=2, sort_keys=True)
+            temporary_path = Path(temporary_file.name)
+        os.replace(temporary_path, self._path)
 
 
 def _now_iso() -> str:

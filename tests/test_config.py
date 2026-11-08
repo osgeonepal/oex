@@ -64,7 +64,7 @@ categories:
     assert cfg.categories[0].name == "Buildings"
 
 
-def test_apply_overrides_dotted_keys() -> None:
+def test_dotted_override_keys_set_nested_fields() -> None:
     cfg = load_config()
     new_cfg = apply_overrides(cfg, {"iso3": "NPL", "hdx.push": True})
     assert new_cfg.iso3 == "NPL"
@@ -104,15 +104,6 @@ def _write_planet_yaml(tmp_path: Path, body: str) -> Path:
     return p
 
 
-def test_planet_engine_requires_pbf_path(tmp_path: Path) -> None:
-    yaml_path = _write_planet_yaml(
-        tmp_path,
-        "iso3: NPL\nsource:\n  osm:\n    engine: planet\n",
-    )
-    with pytest.raises(ConfigError, match="pbf_path"):
-        load_config(yaml_path)
-
-
 def test_planet_engine_with_pbf_path_loads(tmp_path: Path) -> None:
     pbf = tmp_path / "planet.osm.pbf"
     pbf.write_bytes(b"\x00")
@@ -134,16 +125,7 @@ def test_planet_fallback_requires_pbf_path(tmp_path: Path) -> None:
         load_config(yaml_path)
 
 
-def test_unknown_osm_engine_raises(tmp_path: Path) -> None:
-    yaml_path = _write_planet_yaml(
-        tmp_path,
-        "iso3: NPL\nsource:\n  osm:\n    engine: bogus\n",
-    )
-    with pytest.raises(ConfigError, match="bogus"):
-        load_config(yaml_path)
-
-
-def test_iter_configs_yields_yamls(tmp_path: Path) -> None:
+def test_iter_configs_yields_yaml_and_yml_sorted_and_skips_other_files(tmp_path: Path) -> None:
     (tmp_path / "a.yaml").write_text("iso3: ABC\n", encoding="utf-8")
     (tmp_path / "b.yml").write_text("iso3: BCD\n", encoding="utf-8")
     (tmp_path / "ignore.txt").write_text("nope", encoding="utf-8")
@@ -256,3 +238,13 @@ def test_a_popup_colour_too_faint_to_read_on_white_is_refused() -> None:
     assert load_config(config.format(popup="#cc2936")).output.report.theme.map_popup_color == (
         "#cc2936"
     )
+
+
+def test_apply_overrides_keeps_a_value_with_a_colon_as_a_string():
+    cfg = apply_overrides(load_config(), {"dataset_name": "Nepal: Koshi"})
+    assert cfg.dataset_name == "Nepal: Koshi"
+
+
+def test_overrides_given_as_a_dotlist_fail_with_a_clear_message():
+    with pytest.raises(TypeError, match="overrides must map dotted keys"):
+        load_config(None, ["iso3=SDN"])  # ty: ignore[invalid-argument-type]

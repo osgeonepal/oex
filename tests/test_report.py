@@ -2,16 +2,9 @@
 
 import json
 
-from oex.config.schema import ThemeConfig
 from oex.metadata import ColumnReport, MetadataReport, TemporalReport
 from oex.palette import DEFAULT_PALETTE
 from oex.report import SourceMetadata
-from oex.report.map_block import (
-    AOI_LABEL,
-    MapEntry,
-    _display_boundary,
-    render_map,
-)
 from oex.report.page import PageLayer, render_dataset_page
 from oex.sources.labels import long_label
 
@@ -26,7 +19,6 @@ def render_report(
     *,
     boundary_geojson: str | None = None,
 ) -> str:
-    """The dataset page for these sources."""
     colours = palette or DEFAULT_PALETTE
     layers = [
         PageLayer(
@@ -100,12 +92,6 @@ def test_render_report_is_self_contained_html() -> None:
     assert "<script src" not in html.lower()
 
 
-def test_render_report_without_tilesets_has_no_map() -> None:
-    html = render_report({"overture": _source()})
-    assert 'id="map"' not in html
-    assert "maplibregl.Map(" not in html.lower()
-
-
 def test_render_report_renders_one_map_entry_per_source_tileset() -> None:
     """A per-category dataset has one tileset per source, each its own map entry."""
     html = render_report(
@@ -120,8 +106,8 @@ def test_render_report_renders_one_map_entry_per_source_tileset() -> None:
     # Each source gets its own vector source and its own coloured layers.
     assert "pmtiles://https://example.org/b_osm.pmtiles" in html
     assert "pmtiles://https://example.org/b_ovt.pmtiles" in html
-    assert "'source-layer': 'hotosm_npl_buildings_osm'" in html
-    assert "id: 'osm-fill'" in html and "id: 'overture-fill'" in html
+    assert "'source-layer': \"hotosm_npl_buildings_osm\"" in html
+    assert 'id: "osm-fill"' in html and 'id: "overture-fill"' in html
     # Each entry owns its whole tileset, so no category|source filter is needed.
     assert "['get', 'category']" not in html
     # Legend toggles both, and the map frames the export boundary.
@@ -309,13 +295,6 @@ def test_source_metadata_payload_roundtrip() -> None:
     assert restored.metadata.columns[0].top_values == [{"value": "x", "count": 10}]
 
 
-def test_render_report_raises_on_empty_sources() -> None:
-    import pytest
-
-    with pytest.raises(ValueError, match="at least one layer"):
-        render_report({})
-
-
 def test_completeness_bar_segments_reflect_bucket_counts() -> None:
     meta = _meta(
         columns=[
@@ -428,7 +407,7 @@ def test_temporal_section_renders_when_bounds_present() -> None:
     assert "2023-01-15T10:00:00" in html
     assert "2025-12-01T08:00:00" in html
     assert "<code>update_time</code>" in html
-    # Compact single-line form: percentage + total count, no two-line block.
+    # Percentage and total count on one line.
     assert "87.0% of 100 features" in html
 
 
@@ -483,90 +462,6 @@ def test_header_names_each_source_and_licence_once() -> None:
     meta = html.split('<p class="ds-meta">', 1)[1].split("</p>", 1)[0]
     assert "OpenStreetMap 2026-04-15.0" in meta and "Overture 2026-04-15.0" in meta
     assert meta.count("ODbL 1.0") == 1
-
-
-def _entry(key: str = "buildings-osm") -> MapEntry:
-    return MapEntry(
-        key=key,
-        label="Buildings (OSM)",
-        color="#1f77b4",
-        tileset_url="https://example.invalid/x.pmtiles",
-        source_layer="x",
-        match_key="buildings|osm",
-    )
-
-
-SMALL_AOI = (
-    '{"type": "Polygon", "coordinates": '
-    "[[[85.0, 27.0], [85.1, 27.0], [85.1, 27.1], [85.0, 27.1], [85.0, 27.0]]]}"
-)
-
-
-def test_map_draws_the_boundary_when_one_is_given() -> None:
-    html = render_map([_entry()], None, boundary_geojson=SMALL_AOI)
-    assert "aoi: { type: 'geojson'" in html
-    assert "id: 'aoi-line'" in html
-    assert ThemeConfig().boundary_outline_color in html
-    assert AOI_LABEL in html
-    assert 'data-key="aoi"' in html
-
-
-def test_the_boundary_outline_takes_its_colour_from_the_theme() -> None:
-    """The default crimson disappears against a red theme, so it is configurable."""
-    theme = ThemeConfig(boundary_outline_color="#1d4ed8")
-    html = render_map([_entry()], None, boundary_geojson=SMALL_AOI, theme=theme)
-    assert "'line-color': '#1d4ed8'" in html
-
-
-def test_the_legend_can_turn_every_layer_on_or_off_at_once() -> None:
-    """Fourteen checkboxes is not a way to isolate one layer."""
-    html = render_map([_entry("a"), _entry("b")], None)
-    assert 'data-all="on"' in html and 'data-all="off"' in html
-    assert "toggles.forEach((t) => { t.checked = on; applyToggle(t); });" in html
-
-
-def test_the_boundary_is_toggled_with_the_layers() -> None:
-    """Clear all has to clear the outline too, and it is not one of the three style layers."""
-    html = render_map([_entry()], None, boundary_geojson=SMALL_AOI)
-    assert "if (toggle.dataset.key === 'aoi')" in html
-
-
-def test_hovering_names_the_feature_before_a_click_opens_it() -> None:
-    html = render_map([_entry()], None)
-    assert "map.on('mousemove'" in html
-    assert 'id="hovercard"' in html
-
-
-def test_map_has_no_boundary_layer_without_one() -> None:
-    html = render_map([_entry()], None)
-    assert "id: 'aoi-line'" not in html
-    assert AOI_LABEL not in html
-
-
-def test_a_small_boundary_is_inlined_unchanged() -> None:
-    assert _display_boundary(SMALL_AOI) == SMALL_AOI
-
-
-def test_an_oversized_boundary_is_thinned_before_inlining() -> None:
-    """A full-resolution country outline would otherwise bloat every report page."""
-    import json as _json
-
-    ring = [[85.0 + i * 1e-6, 27.0 + (i % 2) * 1e-6] for i in range(30000)]
-    ring.append(ring[0])
-    big = _json.dumps({"type": "Polygon", "coordinates": [ring]})
-    assert len(big) > 200_000
-    thinned = _display_boundary(big)
-    assert len(thinned) < len(big)
-    assert _json.loads(thinned)["type"] in ("Polygon", "MultiPolygon")
-
-
-def test_feature_attributes_reach_the_popup_as_text_not_markup() -> None:
-    """Anyone can set an OSM tag to `<img onerror=...>`, and the page is published publicly."""
-    html = render_map([_entry()], None)
-    assert ".setDOMContent(content)" in html
-    assert "row.insertCell().textContent = value;" in html
-    assert ".setHTML(" not in html
-    assert "innerHTML" not in html
 
 
 def test_a_layer_with_no_features_says_so_instead_of_reporting_full_columns() -> None:

@@ -1,11 +1,10 @@
-"""STAC serialisation of the layer metadata oex computes.
-
-Hrefs come from the S3 key helpers, so a Collection is built before anything is uploaded.
+"""STAC Items and Collections for the layers oex exports. Hrefs come from the S3 key helpers,
+so a Collection is built before anything is uploaded.
 """
 
 import json
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -19,11 +18,12 @@ from pystac.extensions.table import Column, TableExtension
 from oex.catalog import layout as catalog_layout
 from oex.config.schema import CategoryConfig, RootConfig, license_label
 from oex.logging_setup import get_logger
-from oex.metadata import GEOMETRY_COL, MetadataReport
+from oex.metadata import GEOMETRY_COLUMN, MetadataReport
 from oex.naming import ASSET_TITLES, category_label, slugify, split_artifact_filename
 from oex.report import SourceMetadata
-from oex.s3 import artifact_key, public_url
+from oex.s3 import category_artifact_key, public_url
 from oex.s3 import resolve as s3_resolve
+from oex.timestamps import parse_utc
 from oex.writers import GEOMETRY_LABELS
 
 CRS = "EPSG:4326"
@@ -118,17 +118,18 @@ def collection_filename(dataset_name: str, source_name: str) -> str:
 
 def partition_of(filename: str, category_slug: str) -> str:
     """The points/lines/polygons segment split_by_geometry adds, or empty."""
-    _, _, tail = filename.removesuffix(".zip").partition(f"_{category_slug}_")
+    stem = filename.split(".", 1)[0]
+    _, _, tail = stem.partition(f"_{category_slug}_")
     head = tail.split("_")[0] if tail else ""
     return head if head in GEOMETRY_LABELS else ""
 
 
 def asset_key(filename: str, category_slug: str) -> str:
     """`gpkg`, or `polygons_gpkg` when split_by_geometry gives a format several files."""
-    _, _, fmt = split_artifact_filename(filename)
-    fmt = "geoparquet" if fmt == "parquet" else fmt
+    _, _, format_name = split_artifact_filename(filename)
+    format_name = "geoparquet" if format_name == "parquet" else format_name
     geometry = partition_of(filename, category_slug)
-    return f"{geometry}_{fmt}" if geometry else fmt
+    return f"{geometry}_{format_name}" if geometry else format_name
 
 
 def asset_href(
@@ -140,14 +141,8 @@ def asset_href(
     bucket, prefix, region, endpoint_url, _ = s3_resolve(cfg.output.s3)
     if not bucket:
         return None
-    key = artifact_key(
-        prefix,
-        cfg.iso3,
-        category_slug,
-        filename,
-        folder=cfg.output.s3.folder,
-        nest_by_category=cfg.output.s3.nest_by_category,
-        geometry=geometry if cfg.output.s3.nest_by_geometry else "",
+    key = category_artifact_key(
+        cfg.output.s3, prefix, cfg.iso3, category_slug, filename, geometry=geometry
     )
     return public_url(bucket=bucket, key=key, region=region, endpoint_url=endpoint_url)
 
@@ -176,29 +171,31 @@ def build_item(
     hdx_url: str | None = None,
     page_url: str | None = None,
 ) -> pystac.Item:
-    meta = layer.source_metadata
-    report = meta.metadata
+    source_metadata = layer.source_metadata
+    metadata_report = source_metadata.metadata
     category = layer.category
     slug = slugify(category.name)
     geometry, bbox = _footprint(layer)
 
     item = pystac.Item(
-        id=item_id(layer.dataset_name, meta.source_name),
+        id=item_id(layer.dataset_name, source_metadata.source_name),
         geometry=geometry,
         bbox=bbox,
-        datetime=_moment(meta.snapshot_label, meta.generated_utc),
+        datetime=_moment(source_metadata.snapshot_label, source_metadata.generated_utc),
         properties=_present(
             {
                 "oex:category": slug,
-                "oex:source": meta.source_name,
-                "oex:dataset_source": meta.dataset_source,
-                "oex:snapshot": meta.snapshot_label,
-                "oex:boundary": meta.boundary,
-                "oex:version": meta.oex_version,
-                "oex:pcode_source_date": meta.pcode_source_date,
-                "oex:geometry_types": report.geometry_types,
+                "oex:source": source_metadata.source_name,
+                "oex:dataset_source": source_metadata.dataset_source,
+                "oex:snapshot": source_metadata.snapshot_label,
+                "oex:boundary": source_metadata.boundary,
+                "oex:version": source_metadata.oex_version,
+                "oex:pcode_source_date": source_metadata.pcode_source_date,
+                "oex:geometry_types": metadata_report.geometry_types,
                 # The column name and its coverage have no STAC field of their own.
-                "oex:temporal": asdict(report.temporal) if report.temporal else None,
+                "oex:temporal": asdict(metadata_report.temporal)
+                if metadata_report.temporal
+                else None,
                 "oex:export_seconds": (
                     round(layer.export_seconds, 1) if layer.export_seconds is not None else None
                 ),
@@ -209,12 +206,12 @@ def build_item(
     )
     common = item.common_metadata
     common.title = layer.title or category_label(category)
-    common.description = report.summary
+    common.description = metadata_report.summary
     common.license = spdx_license(category.hdx.license)
-    common.created = _moment(meta.generated_utc, meta.generated_utc)
+    common.created = _moment(source_metadata.generated_utc, source_metadata.generated_utc)
     common.keywords = list(category.hdx.tags)
-    common.providers = _providers(meta)
-    start, end = _temporal_range(report)
+    common.providers = _providers(source_metadata)
+    start, end = _temporal_range(metadata_report)
     if start and end:
         common.start_datetime = start
         common.end_datetime = end
@@ -226,8 +223,8 @@ def build_item(
             title=license_label(category.hdx.license),
         )
     )
-    where = catalog_layout(cfg)
-    _address(item, self_href, where.root.url if where else collection_href)
+    catalog = catalog_layout(cfg)
+    _address(item, self_href, catalog.root.url if catalog else collection_href)
     if collection_href:
         for rel in ("collection", "parent"):
             item.add_link(pystac.Link(rel=rel, target=collection_href, media_type=JSON_MEDIA_TYPE))
@@ -236,7 +233,7 @@ def build_item(
     _link_page(item, page_url)
 
     ProjectionExtension.ext(item, add_if_missing=True).code = CRS
-    _describe_table(item, report)
+    _describe_table(item, metadata_report)
     for key, href, path in _artifact_assets(layer, cfg, slug):
         _add_asset(item, key, href, path=path)
     if layer.geoparquet_url:
@@ -306,11 +303,11 @@ def build_collection(
         )
     if pmtiles_url:
         _add_asset(collection, "pmtiles", pmtiles_url, path=pmtiles_path, title_suffix="All Layers")
-    where = catalog_layout(cfg)
-    _address(collection, self_href, where.root.url if where else self_href)
-    if where:
+    catalog = catalog_layout(cfg)
+    _address(collection, self_href, catalog.root.url if catalog else self_href)
+    if catalog:
         collection.add_link(
-            pystac.Link(rel="parent", target=where.area.url, media_type=JSON_MEDIA_TYPE)
+            pystac.Link(rel="parent", target=catalog.area.url, media_type=JSON_MEDIA_TYPE)
         )
     if hdx_url:
         collection.add_link(pystac.Link(rel="via", target=hdx_url, title="HDX dataset"))
@@ -322,10 +319,10 @@ def build_collection(
     return collection
 
 
-def _link_page(obj: pystac.Item | pystac.Collection, page_url: str | None) -> None:
+def _link_page(stac_object: pystac.Item | pystac.Collection, page_url: str | None) -> None:
     """STAC's way to name an HTML view of the same thing, which clients offer as a link."""
     if page_url:
-        obj.add_link(
+        stac_object.add_link(
             pystac.Link(
                 rel="alternate", target=page_url, media_type="text/html", title="Dataset page"
             )
@@ -333,26 +330,28 @@ def _link_page(obj: pystac.Item | pystac.Collection, page_url: str | None) -> No
 
 
 def _address(
-    obj: pystac.Item | pystac.Collection, self_href: str | None, root_href: str | None
+    stac_object: pystac.Item | pystac.Collection, self_href: str | None, root_href: str | None
 ) -> None:
     """pystac resolves a relative `self` href against the working directory, so a
     relative catalog names its root only."""
     if self_href and "://" in self_href:
-        obj.set_self_href(self_href)
-    obj.remove_links("root")
+        stac_object.set_self_href(self_href)
+    stac_object.remove_links("root")
     if root_href:
-        obj.add_link(pystac.Link(rel="root", target=root_href, media_type=JSON_MEDIA_TYPE))
+        stac_object.add_link(pystac.Link(rel="root", target=root_href, media_type=JSON_MEDIA_TYPE))
 
 
-def to_payload(obj: pystac.Item | pystac.Collection) -> dict[str, Any]:
+def to_payload(stac_object: pystac.Item | pystac.Collection) -> dict[str, Any]:
     """The document as published. These hrefs are already the addresses the files will
     be served from, so resolving them would only have pystac fetch a missing root."""
-    return obj.to_dict(include_self_link=True, transform_hrefs=False)
+    return stac_object.to_dict(include_self_link=True, transform_hrefs=False)
 
 
-def write_json(obj: pystac.Item | pystac.Collection, path: Path) -> None:
+def write_json(stac_object: pystac.Item | pystac.Collection, path: Path) -> None:
     # Names in other scripts are written as themselves, not as \u escapes nobody can read.
-    path.write_text(json.dumps(to_payload(obj), indent=2, ensure_ascii=False), encoding="utf-8")
+    path.write_text(
+        json.dumps(to_payload(stac_object), indent=2, ensure_ascii=False), encoding="utf-8"
+    )
 
 
 def _present(properties: dict[str, Any]) -> dict[str, Any]:
@@ -360,10 +359,10 @@ def _present(properties: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in properties.items() if value is not None}
 
 
-def _providers(meta: SourceMetadata) -> list[pystac.Provider]:
+def _providers(source_metadata: SourceMetadata) -> list[pystac.Provider]:
     return [
         pystac.Provider(
-            name=meta.dataset_source,
+            name=source_metadata.dataset_source,
             roles=[pystac.ProviderRole.PRODUCER, pystac.ProviderRole.LICENSOR],
         )
     ]
@@ -372,7 +371,7 @@ def _providers(meta: SourceMetadata) -> list[pystac.Provider]:
 def _describe_table(item: pystac.Item, report: MetadataReport) -> None:
     table = TableExtension.ext(item, add_if_missing=True)
     table.row_count = report.feature_count
-    table.primary_geometry = GEOMETRY_COL
+    table.primary_geometry = GEOMETRY_COLUMN
     # The extension wants the native type; the statistics have no STAC field at all.
     table.columns = [
         Column(
@@ -410,14 +409,14 @@ def _add_asset(
     path: Path | None = None,
     title_suffix: str = "",
 ) -> None:
-    fmt = key.rpartition("_")[2]
+    format_name = key.rpartition("_")[2]
     suffix = href.rpartition(".")[2]
-    title = ASSET_TITLES.get(fmt, fmt.upper())
+    title = ASSET_TITLES.get(format_name, format_name.upper())
     asset = pystac.Asset(
         href=href,
-        media_type=_MEDIA_TYPES.get(suffix, _MEDIA_TYPES.get(fmt)),
+        media_type=_MEDIA_TYPES.get(suffix, _MEDIA_TYPES.get(format_name)),
         title=f"{title}, {title_suffix}" if title_suffix else title,
-        roles=list(_TILE_ROLES if fmt == "pmtiles" else _DATA_ROLES),
+        roles=list(_TILE_ROLES if format_name == "pmtiles" else _DATA_ROLES),
     )
     owner.add_asset(key, asset)
     if path is not None and path.exists():
@@ -476,10 +475,10 @@ def _moment(label: str, fallback: str) -> datetime:
     the Item from the run instead; `oex:snapshot` keeps the label either way."""
     for candidate in (label, label[:10]):
         try:
-            return _as_utc(datetime.fromisoformat(candidate.replace("Z", "+00:00")))
+            return parse_utc(candidate)
         except ValueError:
             continue
-    return _as_utc(datetime.fromisoformat(fallback.replace("Z", "+00:00")))
+    return parse_utc(fallback)
 
 
 def _temporal_range(report: MetadataReport) -> tuple[datetime | None, datetime | None]:
@@ -488,8 +487,8 @@ def _temporal_range(report: MetadataReport) -> tuple[datetime | None, datetime |
         return None, None
     try:
         return (
-            _as_utc(datetime.fromisoformat(report.temporal.min)),
-            _as_utc(datetime.fromisoformat(report.temporal.max)),
+            parse_utc(report.temporal.min),
+            parse_utc(report.temporal.max),
         )
     except ValueError:
         logger.warning(
@@ -499,8 +498,3 @@ def _temporal_range(report: MetadataReport) -> tuple[datetime | None, datetime |
             report.temporal.max,
         )
         return None, None
-
-
-def _as_utc(moment: datetime) -> datetime:
-    # A date carries no zone, and reading it as local time moves it a day west of UTC.
-    return moment.astimezone(UTC) if moment.tzinfo else moment.replace(tzinfo=UTC)

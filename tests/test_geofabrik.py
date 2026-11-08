@@ -1,6 +1,5 @@
 """Geofabrik index lookup with mocked HTTP."""
 
-import json
 from typing import Any
 from unittest.mock import patch
 
@@ -57,7 +56,7 @@ def reset_index_cache() -> None:
 
 
 @patch("oex.http.session.get")
-def test_lookup_country_nepal(mock_get) -> None:
+def test_lookup_maps_iso3_to_its_extract_and_md5_url(mock_get) -> None:
     mock_get.return_value.raise_for_status = lambda: None
     mock_get.return_value.json = lambda: _mock_index()
     extract = geofabrik.lookup_country("NPL")
@@ -69,7 +68,7 @@ def test_lookup_country_nepal(mock_get) -> None:
 
 
 @patch("oex.http.session.get")
-def test_lookup_country_prefers_country_over_state(mock_get) -> None:
+def test_lookup_prefers_the_country_extract_over_a_state_extract(mock_get) -> None:
     mock_get.return_value.raise_for_status = lambda: None
     mock_get.return_value.json = lambda: _mock_index()
     extract = geofabrik.lookup_country("USA")
@@ -77,13 +76,13 @@ def test_lookup_country_prefers_country_over_state(mock_get) -> None:
     assert "us/california" not in extract.pbf_url
 
 
-def test_lookup_country_unknown_iso3() -> None:
-    with pytest.raises(geofabrik.GeofabrikLookupError):
+def test_an_unknown_iso3_raises_lookup_error() -> None:
+    with pytest.raises(geofabrik.GeofabrikLookupError, match="Unknown ISO3"):
         geofabrik.lookup_country("XYZ")
 
 
 @patch("oex.http.session.get")
-def test_lookup_country_no_geofabrik_extract(mock_get) -> None:
+def test_a_country_missing_from_the_index_raises_lookup_error(mock_get) -> None:
     mock_get.return_value.raise_for_status = lambda: None
     mock_get.return_value.json = lambda: {"type": "FeatureCollection", "features": []}
     with pytest.raises(geofabrik.GeofabrikLookupError):
@@ -91,21 +90,18 @@ def test_lookup_country_no_geofabrik_extract(mock_get) -> None:
 
 
 @patch("oex.http.session.get")
-def test_index_cached_per_url(mock_get) -> None:
+def test_the_index_is_fetched_once_per_url(mock_get) -> None:
     payload = _mock_index()
     mock_get.return_value.raise_for_status = lambda: None
     mock_get.return_value.json = lambda: payload
     geofabrik.lookup_country("NPL")
     geofabrik.lookup_country("NPL")
-    # Cached after first call: only one HTTP request.
     assert mock_get.call_count == 1
 
 
 @patch("oex.http.session.get")
-def test_index_rejects_non_featurecollection(mock_get) -> None:
+def test_an_index_that_is_not_a_featurecollection_is_refused(mock_get) -> None:
     mock_get.return_value.raise_for_status = lambda: None
     mock_get.return_value.json = lambda: {"type": "Feature"}
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="Unexpected Geofabrik index format"):
         geofabrik.lookup_country("NPL")
-    # Sanity: payload not used elsewhere
-    json.dumps({"ok": True})

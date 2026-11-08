@@ -135,20 +135,17 @@ def test_the_catalogs_satisfy_the_stac_spec():
         pystac.validation.validate_dict(document)
 
 
-def _stubbed_store():
-    from botocore.stub import Stubber
+def test_s3_writes_only_when_the_catalog_is_unchanged(monkeypatch: pytest.MonkeyPatch):
+    """S3's conditional writes keep two runs from overwriting each other's link. Static
+    credentials stop botocore asking the EC2 metadata endpoint for them."""
+    from botocore.stub import ANY, Stubber
 
     from oex.catalog import S3CatalogStore
 
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
     store = S3CatalogStore(_cfg())
-    return store, Stubber(store._client)
-
-
-def test_s3_writes_only_when_the_catalog_is_unchanged():
-    """S3's conditional writes are what keep two runs from overwriting each other's link."""
-    from botocore.stub import ANY
-
-    store, stub = _stubbed_store()
+    stub = Stubber(store._client)
     common = {
         "Bucket": "bucket",
         "Key": "k",

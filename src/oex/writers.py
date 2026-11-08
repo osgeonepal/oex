@@ -16,11 +16,12 @@ from typing import Any
 import duckdb
 
 from oex.logging_setup import get_logger
-from oex.metadata import GEOMETRY_COL, bounding_box, geometry_breakdown
+from oex.metadata import GEOMETRY_COLUMN, bounding_box, geometry_breakdown
+from oex.sql import sql_string
 
 logger = get_logger(__name__)
 
-_GEOM_TYPE_TO_LABEL = {
+_GEOMETRY_TYPE_TO_LABEL = {
     "POINT": "points",
     "MULTIPOINT": "points",
     "LINESTRING": "lines",
@@ -62,44 +63,49 @@ def geometry_labels(conn: duckdb.DuckDBPyConnection, table_name: str) -> dict[st
     """Geometry labels present in a table, mapped to the source types they cover."""
     rows = conn.execute(f"SELECT DISTINCT ST_GeometryType(geom) FROM {table_name}").fetchall()
     labels: dict[str, list[str]] = {}
-    for (geom_type,) in rows:
-        label = _GEOM_TYPE_TO_LABEL.get(geom_type)
+    for (geometry_type,) in rows:
+        label = _GEOMETRY_TYPE_TO_LABEL.get(geometry_type)
         if label is None:
-            logger.warning("unmapped geometry type %s in %s", geom_type, table_name)
+            logger.warning("unmapped geometry type %s in %s", geometry_type, table_name)
             continue
-        labels.setdefault(label, []).append(geom_type)
+        labels.setdefault(label, []).append(geometry_type)
     return labels
+
+
+def geometry_type_filter(geometry_types: list[str]) -> str:
+    """A WHERE predicate keeping rows whose geometry is one of `geometry_types`."""
+    return f"ST_GeometryType(geom) IN ({', '.join(sql_string(geometry_type) for geometry_type in geometry_types)})"
 
 
 def write_format(
     conn: duckdb.DuckDBPyConnection,
     table_name: str,
     category_slug: str,
-    fmt: str,
+    format_name: str,
     out_dir: Path,
 ) -> list[Path]:
-    fmt = fmt.lower()
+    format_name = format_name.lower()
     out_dir.mkdir(parents=True, exist_ok=True)
-    if fmt == "shp":
+    if format_name == "shp":
         return _write_shapefiles(conn, table_name, category_slug, out_dir)
-    if fmt not in _FORMAT_DRIVERS:
-        raise ValueError(f"Unsupported format: {fmt}")
-    return _write_single(conn, table_name, category_slug, fmt, out_dir)
+    if format_name not in _FORMAT_DRIVERS:
+        raise ValueError(f"Unsupported format: {format_name}")
+    return _write_single(conn, table_name, category_slug, format_name, out_dir)
 
 
 def _write_single(
     conn: duckdb.DuckDBPyConnection,
     table_name: str,
     category_slug: str,
-    fmt: str,
+    format_name: str,
     out_dir: Path,
 ) -> list[Path]:
-    driver = _FORMAT_DRIVERS[fmt]
-    layer_options = _LAYER_CREATION_OPTIONS.get(fmt, _DEFAULT_LAYER_CREATION_OPTIONS)
-    target = out_dir / f"{category_slug}.{fmt}"
+    driver = _FORMAT_DRIVERS[format_name]
+    layer_options = _LAYER_CREATION_OPTIONS.get(format_name, _DEFAULT_LAYER_CREATION_OPTIONS)
+    target = out_dir / f"{category_slug}.{format_name}"
     start = time.time()
     conn.execute(
-        f"COPY {table_name} TO '{target}' "
+        f"COPY {table_name} TO {sql_string(str(target))} "
         f"WITH (FORMAT GDAL, SRS 'EPSG:4326', DRIVER '{driver}', "
         f"LAYER_CREATION_OPTIONS '{layer_options}')"
     )
@@ -116,39 +122,21 @@ def _write_shapefiles(
 ) -> list[Path]:
     # A shapefile holds one geometry type, so POLYGON and MULTIPOLYGON share one
     # polygons.shp rather than overwriting each other.
-    rows = conn.execute(f"SELECT DISTINCT ST_GeometryType(geom) FROM {table_name}").fetchall()
-    geom_types = [r[0] for r in rows]
-    if not geom_types:
+    label_to_types = geometry_labels(conn, table_name)
+    if not label_to_types:
         logger.warning("No geometries to export for %s", category_slug)
         return []
-
-    label_to_types: dict[str, list[str]] = {}
-    unmapped: list[str] = []
-    for geom_type in geom_types:
-        label = _GEOM_TYPE_TO_LABEL.get(geom_type)
-        if label is None:
-            unmapped.append(geom_type)
-            continue
-        label_to_types.setdefault(label, []).append(geom_type)
-
-    if unmapped:
-        logger.warning(
-            "shp writer: skipping unmapped geometry type(s) %s for %s",
-            unmapped,
-            category_slug,
-        )
 
     written: list[Path] = []
     for label, types in label_to_types.items():
         target = out_dir / f"{category_slug}_{label}.shp"
-        in_list = ", ".join(f"'{t}'" for t in types)
         start = time.time()
         conn.execute(
             f"""
             COPY (
                 SELECT * FROM {table_name}
-                WHERE ST_GeometryType(geom) IN ({in_list})
-            ) TO '{target}'
+                WHERE {geometry_type_filter(types)}
+            ) TO {sql_string(str(target))}
             WITH (FORMAT GDAL, SRS 'EPSG:4326', DRIVER 'ESRI Shapefile',
                   LAYER_CREATION_OPTIONS 'ENCODING=UTF-8,2GB_LIMIT=NO')
             """
@@ -229,13 +217,13 @@ def _collections_split(table_name: str) -> str:
     """Rows in order with each GeometryCollection split into one row per part, which
     tippecanoe's FlatGeobuf reader needs. Rows without a geometry have nothing to draw."""
     parts = (
-        f"CASE WHEN ST_GeometryType({GEOMETRY_COL}) = 'GEOMETRYCOLLECTION' "
-        f"THEN list_transform(ST_Dump({GEOMETRY_COL}), part -> part.geom) "
-        f"ELSE [{GEOMETRY_COL}] END"
+        f"CASE WHEN ST_GeometryType({GEOMETRY_COLUMN}) = 'GEOMETRYCOLLECTION' "
+        f"THEN list_transform(ST_Dump({GEOMETRY_COLUMN}), part -> part.geom) "
+        f"ELSE [{GEOMETRY_COLUMN}] END"
     )
     return (
-        f"SELECT * REPLACE (UNNEST({parts}) AS {GEOMETRY_COL}) FROM {table_name} "
-        f"WHERE {GEOMETRY_COL} IS NOT NULL"
+        f"SELECT * REPLACE (UNNEST({parts}) AS {GEOMETRY_COLUMN}) FROM {table_name} "
+        f"WHERE {GEOMETRY_COLUMN} IS NOT NULL"
     )
 
 
@@ -253,13 +241,12 @@ def write_pmtiles(
     still dropped, then drops the densest at the top zoom."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
     start = time.time()
-    with tempfile.TemporaryDirectory(dir=out_path.parent, prefix=".tiles_") as work:
-        staged = Path(work) / f"{out_path.stem}.fgb"
-        building = Path(work) / out_path.name
-        quoted = str(staged).replace("'", "''")
+    with tempfile.TemporaryDirectory(dir=out_path.parent, prefix=".tiles_") as work_dir:
+        staged = Path(work_dir) / f"{out_path.stem}.fgb"
+        building = Path(work_dir) / out_path.name
         # tippecanoe reads the file in order and never uses its index.
         conn.execute(
-            f"COPY ({_collections_split(table_name)}) TO '{quoted}' WITH (FORMAT GDAL, SRS 'EPSG:4326', "
+            f"COPY ({_collections_split(table_name)}) TO {sql_string(str(staged))} WITH (FORMAT GDAL, SRS 'EPSG:4326', "
             "DRIVER 'FlatGeobuf', LAYER_CREATION_OPTIONS ('SPATIAL_INDEX=NO'))"
         )
         built = subprocess.run(
@@ -280,9 +267,9 @@ def write_pmtiles(
                 "--quiet",
                 staged.name,
             ],
-            # Relative paths keep the build directory out of the generator_options metadata.
             executable=tile_builder(),
-            cwd=work,
+            # Relative paths keep the build directory out of the generator_options metadata.
+            cwd=work_dir,
             capture_output=True,
             text=True,
         )
@@ -294,7 +281,7 @@ def write_pmtiles(
     return out_path
 
 
-BBOX_COL = "bbox"
+BBOX_COLUMN = "bbox"
 # Keeps the footer a reader fetches before anything else in the tens of kilobytes.
 TARGET_ROW_GROUPS = 64
 MIN_ROW_GROUP_SIZE = 1_000
@@ -311,7 +298,8 @@ _GEOJSON_TYPES = {
 
 
 def row_group_size(row_count: int) -> int:
-    """A layer of three features and one of three million both need a sensible split."""
+    """Rows per group, scaled so a layer of three features and one of three million both
+    split sensibly."""
     return max(MIN_ROW_GROUP_SIZE, math.ceil(row_count / TARGET_ROW_GROUPS))
 
 
@@ -325,11 +313,17 @@ def geo_metadata(
         "geometry_types": sorted(
             {_GEOJSON_TYPES[name] for name in geometry_types if name in _GEOJSON_TYPES}
         ),
-        "covering": {"bbox": {edge: [BBOX_COL, edge] for edge in ("xmin", "ymin", "xmax", "ymax")}},
+        "covering": {
+            "bbox": {edge: [BBOX_COLUMN, edge] for edge in ("xmin", "ymin", "xmax", "ymax")}
+        },
     }
     if bbox is not None:
         column["bbox"] = list(bbox)
-    return {"version": "1.1.0", "primary_column": GEOMETRY_COL, "columns": {GEOMETRY_COL: column}}
+    return {
+        "version": "1.1.0",
+        "primary_column": GEOMETRY_COLUMN,
+        "columns": {GEOMETRY_COLUMN: column},
+    }
 
 
 def write_geoparquet(
@@ -339,13 +333,12 @@ def write_geoparquet(
 ) -> Path:
     """Write the table as GeoParquet 1.1, Hilbert ordered over the layer's own extent so
     each row group covers a small area and its bbox statistics exclude most queries."""
-
     out_path.parent.mkdir(parents=True, exist_ok=True)
     start = time.time()
     existing = {row[0] for row in conn.execute(f"DESCRIBE SELECT * FROM {table_name}").fetchall()}
-    if BBOX_COL in existing:
+    if BBOX_COLUMN in existing:
         raise ValueError(
-            f"{table_name} already has a {BBOX_COL!r} column, which the GeoParquet covering "
+            f"{table_name} already has a {BBOX_COLUMN!r} column, which the GeoParquet covering "
             f"names; rename it in the category's select so the covering is unambiguous"
         )
     counted = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
@@ -354,21 +347,20 @@ def write_geoparquet(
     geo = geo_metadata(
         geometry_breakdown(conn, table_name), None if empty else bounding_box(conn, table_name)
     )
-    extent = f"(SELECT ST_Extent(ST_Extent_Agg({GEOMETRY_COL})) FROM {table_name})"
-    order_by = "" if empty else f"ORDER BY ST_Hilbert({GEOMETRY_COL}, {extent})"
-    payload = json.dumps(geo).replace("'", "''")
+    extent = f"(SELECT ST_Extent(ST_Extent_Agg({GEOMETRY_COLUMN})) FROM {table_name})"
+    order_by = "" if empty else f"ORDER BY ST_Hilbert({GEOMETRY_COLUMN}, {extent})"
     conn.execute(f"""
         COPY (
-            SELECT * EXCLUDE ({GEOMETRY_COL}),
+            SELECT * EXCLUDE ({GEOMETRY_COLUMN}),
                    struct_pack(
-                       xmin := ST_XMin({GEOMETRY_COL}), ymin := ST_YMin({GEOMETRY_COL}),
-                       xmax := ST_XMax({GEOMETRY_COL}), ymax := ST_YMax({GEOMETRY_COL})
-                   ) AS {BBOX_COL},
-                   ST_AsWKB({GEOMETRY_COL}) AS {GEOMETRY_COL}
+                       xmin := ST_XMin({GEOMETRY_COLUMN}), ymin := ST_YMin({GEOMETRY_COLUMN}),
+                       xmax := ST_XMax({GEOMETRY_COLUMN}), ymax := ST_YMax({GEOMETRY_COLUMN})
+                   ) AS {BBOX_COLUMN},
+                   ST_AsWKB({GEOMETRY_COLUMN}) AS {GEOMETRY_COLUMN}
             FROM {table_name} {order_by}
-        ) TO '{out_path}'
+        ) TO {sql_string(str(out_path))}
         (FORMAT PARQUET, ROW_GROUP_SIZE {row_group_size(row_count)},
-         KV_METADATA {{geo: '{payload}'}})
+         KV_METADATA {{geo: {sql_string(json.dumps(geo))}}})
     """)
     size_mb = out_path.stat().st_size / (1024 * 1024)
     logger.info("Wrote %s (%.0f MB) in %.2fs", out_path, size_mb, time.time() - start)
@@ -377,7 +369,8 @@ def write_geoparquet(
 
 @dataclass(frozen=True)
 class TileLayer:
-    # `path` is a local path or an https/s3 URL DuckDB can read via httpfs.
+    """`path` is a local path or an https/s3 URL DuckDB can read through httpfs."""
+
     path: str
     category: str
     source: str
@@ -398,16 +391,17 @@ def build_combined_pmtiles(
         raise ValueError("build_combined_pmtiles needs at least one layer")
     selects = []
     for layer in layers:
-        cols = {
+        column_names = {
             row[0]
             for row in conn.execute(
-                f"DESCRIBE SELECT * FROM read_parquet('{layer.path}')"
+                f"DESCRIBE SELECT * FROM read_parquet({sql_string(layer.path)})"
             ).fetchall()
         }
-        name_expr = "name" if "name" in cols else "NULL"
+        name_expr = "name" if "name" in column_names else "NULL"
         selects.append(
-            f"SELECT '{layer.category}' AS category, '{layer.source}' AS source, "
-            f"{name_expr} AS name, geom FROM read_parquet('{layer.path}')"
+            f"SELECT {sql_string(layer.category)} AS category, "
+            f"{sql_string(layer.source)} AS source, "
+            f"{name_expr} AS name, geom FROM read_parquet({sql_string(layer.path)})"
         )
     conn.execute(f"CREATE TABLE __combined_tiles AS {' UNION ALL '.join(selects)}")
     try:
