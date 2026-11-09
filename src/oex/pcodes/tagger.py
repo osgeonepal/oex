@@ -295,8 +295,8 @@ def _build_h3_neighbor_fallback(
     level: int,
     fallback_table: str,
 ) -> None:
-    # Tie-break by hit count so a residual whose 1-ring touches multiple admins
-    # picks the majority-overlap admin, not an arbitrary one.
+    # The admin with the most cells in the 1-ring wins; a tie goes to the lower pcode,
+    # so every run tags a border feature the same way.
     conn.execute(f"""
         CREATE TABLE {fallback_table} AS
         WITH residuals AS (
@@ -316,7 +316,7 @@ def _build_h3_neighbor_fallback(
             pcode AS adm{level}_pcode,
             name  AS adm{level}_name
         FROM neighbor_hits
-        ORDER BY _rid, hits DESC
+        ORDER BY _rid, hits DESC, pcode
     """)
 
 
@@ -333,6 +333,7 @@ def _h3_join_one_level(
     """(matched, total) feature counts once the H3 join and the boundary fallback have run."""
     h3_matches_table = f"_pcodes_h3s{level}_{feature_cell_table}"
     conn.execute(f"DROP TABLE IF EXISTS {h3_matches_table}")
+    # Overlapping admin polygons can share a cell; the lower pcode takes it on every run.
     conn.execute(f"""
         CREATE TABLE {h3_matches_table} AS
         SELECT DISTINCT ON (b._rid)
@@ -341,6 +342,7 @@ def _h3_join_one_level(
             a.name  AS adm{level}_name
         FROM {feature_cell_table} AS b
         LEFT JOIN {admin_h3_table} AS a ON b.cell = a.cell
+        ORDER BY b._rid, a.pcode
     """)
 
     counts = conn.execute(

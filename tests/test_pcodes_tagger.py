@@ -8,7 +8,12 @@ import duckdb
 import pytest
 
 from oex.pcodes.cache import PcodeCacheEntry
-from oex.pcodes.tagger import _load_admin_table, tag_table, write_country_admin_parquets
+from oex.pcodes.tagger import (
+    _h3_join_one_level,
+    _load_admin_table,
+    tag_table,
+    write_country_admin_parquets,
+)
 
 
 def _write_admin_parquet(
@@ -463,3 +468,66 @@ def test_loading_admin_polygons_keeps_their_geometry(
     ).fetchone()
     assert row is not None
     assert row[0] == row[1]
+
+
+def _make_feature_cells(conn: duckdb.DuckDBPyConnection, *, count: int, spacing: float) -> None:
+    conn.execute(
+        f"""
+        CREATE TABLE feature_cells AS
+        SELECT range AS _rid,
+               ST_Point(85.0, 27.0 + range * {spacing}) AS centroid_pt,
+               h3_latlng_to_cell(27.0 + range * {spacing}, 85.0, 7) AS cell
+        FROM range({count})
+        """
+    )
+
+
+def _assigned_pcodes(conn: duckdb.DuckDBPyConnection, admin_h3_table: str) -> set[str]:
+    _h3_join_one_level(
+        conn,
+        feature_cell_table="feature_cells",
+        admin_h3_table=admin_h3_table,
+        admin_table="unused_admin_polygons",
+        level=2,
+        target_table="assigned",
+        boundary_resolution="h3_neighbor",
+    )
+    return {
+        pcode for (pcode,) in conn.execute("SELECT DISTINCT adm2_pcode FROM assigned").fetchall()
+    }
+
+
+def test_a_cell_inside_two_overlapping_areas_always_gets_the_lower_pcode(
+    conn: duckdb.DuckDBPyConnection,
+) -> None:
+    _make_feature_cells(conn, count=2000, spacing=0.01)
+    conn.execute(
+        """
+        CREATE TABLE admin_cells AS
+        SELECT 'NP0202' AS pcode, 'Later' AS name, cell FROM feature_cells
+        UNION ALL
+        SELECT 'NP0201', 'Earlier', cell FROM feature_cells
+        """
+    )
+
+    assert _assigned_pcodes(conn, "admin_cells") == {"NP0201"}
+
+
+def test_a_border_cell_with_equal_neighbours_in_two_areas_always_gets_the_lower_pcode(
+    conn: duckdb.DuckDBPyConnection,
+) -> None:
+    _make_feature_cells(conn, count=2000, spacing=0.1)
+    conn.execute(
+        """
+        CREATE TABLE admin_cells AS
+        WITH rings AS (
+            SELECT list_filter(h3_grid_disk(cell, 1), neighbour -> neighbour <> cell) AS ring
+            FROM feature_cells
+        )
+        SELECT 'NP0202' AS pcode, 'Later' AS name, UNNEST(ring[1:2]) AS cell FROM rings
+        UNION ALL
+        SELECT 'NP0201', 'Earlier', UNNEST(ring[3:4]) FROM rings
+        """
+    )
+
+    assert _assigned_pcodes(conn, "admin_cells") == {"NP0201"}
