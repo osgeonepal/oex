@@ -64,6 +64,17 @@ and is auto-managed by [commitizen](https://commitizen-tools.github.io/commitize
 
 - **config**: config fix
 
+## v0.4.22 (2026-11-09)
+
+### Fix
+
+- **pcodes**: fix pcode tagging after the h3 tag
+- **fix**: skip unchanged
+
+### Refactor
+
+- **redability**: refactors full repo with clear cut function definitions
+
 ## v0.4.21 (2026-11-04)
 
 ### Fix
