@@ -1,5 +1,6 @@
 """skip_unchanged: a layer whose features and settings match its published STAC Item."""
 
+import copy
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -141,6 +142,9 @@ BOUNDARY = Boundary(
 )
 
 
+PUBLISHED_ITEM = {"properties": {"oex:content_hash": "new", "created": "2026-11-04T06:45:47Z"}}
+
+
 def _process(
     cfg: RootConfig,
     tmp_path: Path,
@@ -148,7 +152,8 @@ def _process(
     published: str,
     state: StateStore | None = None,
 ):
-    """Returns the built category and the last Item uploaded to S3."""
+    """Returns the built category, the last Item uploaded to S3, and the catalog store that
+    holds the published Item."""
     exporter = Exporter(cfg, _runner())
     exporter._state = state
     staged_items: list[dict] = []
@@ -161,9 +166,11 @@ def _process(
         patch.object(Exporter, "_published_content_hash", return_value=published),
         patch.object(Exporter, "_content_hash", return_value="new"),
         patch("oex.exporter.s3_upload", side_effect=stage),
+        patch("oex.exporter.S3CatalogStore") as store,
     ):
+        store.return_value.read.return_value = (copy.deepcopy(PUBLISHED_ITEM), "etag-1")
         built = exporter._process_category(cfg.categories[0], BOUNDARY, tmp_path / "out", publisher)
-    return built, staged_items[-1] if staged_items else None
+    return built, staged_items[-1] if staged_items else None, store.return_value
 
 
 def test_an_unchanged_layer_only_moves_its_hdx_dates(tmp_path):
@@ -172,7 +179,7 @@ def test_an_unchanged_layer_only_moves_its_hdx_dates(tmp_path):
     publisher = MagicMock()
     publisher.refresh_metadata.return_value = "hotosm_npl_schools"
 
-    built, _ = _process(cfg, tmp_path, publisher, published="new")
+    built, _, _ = _process(cfg, tmp_path, publisher, published="new")
 
     assert built.result.status == "unchanged"
     assert built.result.feature_count == 2
@@ -184,11 +191,41 @@ def test_an_unchanged_layer_only_moves_its_hdx_dates(tmp_path):
     )
 
 
+def test_an_unchanged_layer_stamps_its_published_item_as_updated(tmp_path):
+    """A scheduler reading the catalog would otherwise see the layer as never refreshed."""
+    publisher = MagicMock()
+    publisher.refresh_metadata.return_value = "hotosm_npl_schools"
+
+    _, _, store = _process(_cfg(tmp_path), tmp_path, publisher, published="new")
+
+    key, item, version = store.write.call_args.args
+    assert key.endswith("NPL/schools/npl_schools_osm_item.json")
+    assert version == "etag-1"
+    assert item["properties"]["created"] == "2026-11-04T06:45:47Z"
+    assert datetime.fromisoformat(item["properties"]["updated"]).date() == datetime.now(UTC).date()
+
+
+@pytest.mark.parametrize(
+    ("published", "on_hdx", "refresh_error"),
+    [("old", "hotosm_npl_schools", None), ("new", None, None), ("new", None, HDXError("down"))],
+)
+def test_only_a_refreshed_unchanged_layer_stamps_its_item(
+    tmp_path, published, on_hdx, refresh_error
+):
+    publisher = MagicMock()
+    publisher.refresh_metadata.return_value = on_hdx
+    publisher.refresh_metadata.side_effect = refresh_error
+
+    _, _, store = _process(_cfg(tmp_path), tmp_path, publisher, published=published)
+
+    store.write.assert_not_called()
+
+
 def test_an_unchanged_layer_missing_from_hdx_is_published(tmp_path):
     publisher = MagicMock()
     publisher.refresh_metadata.return_value = None
 
-    built, item = _process(_cfg(tmp_path), tmp_path, publisher, published="new")
+    built, item, _ = _process(_cfg(tmp_path), tmp_path, publisher, published="new")
 
     assert built.result.status == "ok"
     publisher.publish.assert_called_once()
@@ -198,7 +235,7 @@ def test_an_unchanged_layer_missing_from_hdx_is_published(tmp_path):
 def test_a_changed_layer_is_published_with_its_new_fingerprint(tmp_path):
     publisher = MagicMock()
 
-    built, item = _process(_cfg(tmp_path), tmp_path, publisher, published="old")
+    built, item, _ = _process(_cfg(tmp_path), tmp_path, publisher, published="old")
 
     assert built.result.status == "ok"
     publisher.refresh_metadata.assert_not_called()
@@ -211,7 +248,7 @@ def test_a_failed_publish_leaves_no_fingerprint_to_skip_on(tmp_path):
     publisher = MagicMock()
     publisher.publish.side_effect = RuntimeError("HDX timeout")
 
-    built, item = _process(_cfg(tmp_path), tmp_path, publisher, published="old")
+    built, item, _ = _process(_cfg(tmp_path), tmp_path, publisher, published="old")
 
     assert built.result.status == "failed"
     assert item["properties"].get("oex:content_hash") is None
@@ -235,7 +272,7 @@ def test_an_hdx_error_while_refreshing_an_unchanged_layer_fails_it(tmp_path):
     publisher = MagicMock()
     publisher.refresh_metadata.side_effect = HDXError("HDX unavailable")
 
-    built, _ = _process(_cfg(tmp_path), tmp_path, publisher, published="new")
+    built, _, _ = _process(_cfg(tmp_path), tmp_path, publisher, published="new")
 
     assert built.result.status == "failed"
     assert built.result.error == "HDX unavailable"
