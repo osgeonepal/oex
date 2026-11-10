@@ -64,6 +64,12 @@ and is auto-managed by [commitizen](https://commitizen-tools.github.io/commitize
 
 - **config**: config fix
 
+## v0.4.24 (2026-11-10)
+
+### Fix
+
+- **hdx**: added updated timestamp to exporter
+
 ## v0.4.23 (2026-11-10)
 
 ### Fix
