@@ -169,7 +169,7 @@ def test_the_legend_can_turn_every_layer_on_or_off_at_once() -> None:
 
 def test_a_legend_of_one_layer_has_no_select_all_or_clear_all() -> None:
     html = render_map([_entry("a")], None)
-    assert "data-all" not in html
+    assert 'data-all="on"' not in html and 'data-all="off"' not in html
 
 
 def test_hovering_names_the_feature_before_a_click_opens_it() -> None:
@@ -219,7 +219,7 @@ def test_a_long_legend_starts_closed_on_phones_and_a_short_one_stays_open() -> N
     long_legend = render_map([_entry(name) for name in "abcd"], None)
     short_legend = render_map([_entry(name) for name in "abc"], None)
     assert "matchMedia('(max-width: 480px)')" in long_legend
-    assert "matchMedia" not in short_legend
+    assert "(max-width: 480px)" not in short_legend
 
 
 def test_smaller_point_layers_draw_above_larger_ones_so_they_stay_clickable() -> None:
@@ -231,3 +231,54 @@ def test_smaller_point_layers_draw_above_larger_ones_so_they_stay_clickable() ->
     script = _script(render_map(entries, None))
     points = re.findall(r'id: "([^"]+)-point"', script)
     assert points == ["poi", "health"]
+
+
+def test_one_zoom_button_frames_the_ticked_layers_or_the_area() -> None:
+    entry = MapEntry("a", "A", "#111111", "https://x/a.pmtiles", "a", bbox=(85.0, 27.0, 85.5, 27.5))
+    html = render_map([entry], (84.0, 26.0, 86.0, 28.0))
+    assert html.count("data-zoom title") == 1
+    assert "const areaBounds = [84.0, 26.0, 86.0, 28.0];" in html
+    assert 'const boundsOfKey = {"a": [85.0, 27.0, 85.5, 27.5]};' in html
+
+
+def test_without_a_boundary_or_layer_extents_there_is_nothing_to_zoom_to() -> None:
+    html = render_map([_entry("a")], None)
+    assert "data-zoom title" not in html
+
+
+def test_a_popup_takes_the_colour_of_its_layer() -> None:
+    """The page accent would paint every layer's popup the same colour."""
+    html = render_map([MapEntry("a", "A", "#ffd8b1", "https://x/a.pmtiles", "a")], None)
+    assert '"a-point": "#ffd8b1"' in html
+
+
+def test_lines_get_a_dark_edge_that_toggles_with_their_layer() -> None:
+    """Pale palette colours would otherwise vanish on the light basemap."""
+    script = _script(render_map([_entry("a")], None))
+    assert "id: \"a-casing\", type: 'line'" in script
+    assert "const suffixes = ['fill', 'casing', 'line', 'point'];" in script
+
+
+@pytest.mark.parametrize(("count", "shown"), [(999, "999"), (3856, "3.9k"), (52113, "52k")])
+def test_legend_counts_keep_a_decimal_below_ten_thousand(count, shown) -> None:
+    html = render_map(
+        [MapEntry("a", "A", "#111", "https://x/a.pmtiles", "a", feature_count=count)], None
+    )
+    assert f'<span class="legend-count">{shown}</span>' in html
+
+
+def test_buildings_draw_above_the_residential_areas_they_sit_in() -> None:
+    entries = [
+        MapEntry("buildings", "B", "#111111", "https://x/a.pmtiles", "a", feature_count=52113),
+        MapEntry("residential", "R", "#222222", "https://x/a.pmtiles", "a", feature_count=1473),
+    ]
+    fills = re.findall(r'id: "([^"]+)-fill"', _script(render_map(entries, None)))
+    assert fills == ["residential", "buildings"]
+
+
+def test_a_tileset_credits_the_sources_drawn_from_it() -> None:
+    """Overture asks to be credited wherever its data is shown."""
+    entry = MapEntry(
+        "a", "A", "#111111", "https://x/a.pmtiles", "a", attribution="Overture Maps Foundation"
+    )
+    assert 'attribution: "Overture Maps Foundation"' in render_map([entry], None)

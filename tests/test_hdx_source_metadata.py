@@ -431,3 +431,17 @@ def test_a_report_uploaded_for_the_first_time_is_moved_to_the_top(
             s3_config=None,
         )
     assert dataset.names() == [name for name, _ in ORDERED_RESOURCES[:3]]
+
+
+@pytest.mark.parametrize(
+    "collection",
+    [
+        {"id": "hot_flood_npl_osm", "oex:dataset": "hot_flood_npl"},
+        {"id": "hot_flood_npl"},
+    ],
+    ids=["per-source-id", "published-before-oex-dataset"],
+)
+def test_an_entry_name_starts_with_the_dataset_whatever_the_collection_id(collection):
+    """Each source's Collection has its own id; the HDX layer names stay on the dataset."""
+    item = {"properties": {"oex:category": "buildings", "oex:source": "osm"}}
+    assert _entry_name(collection, item) == "hot_flood_npl_buildings_osm_metadata.json"

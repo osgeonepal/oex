@@ -63,3 +63,17 @@ def test_sql_identifier_round_trips_a_column_name_with_double_quotes_through_duc
     conn = duckdb.connect()
     conn.execute(f"CREATE TABLE t ({sql_identifier(name)} VARCHAR)")
     assert [column[0] for column in conn.execute("SELECT * FROM t").description] == [name]
+
+
+def test_a_materialised_layer_has_no_blank_text(spatial_conn) -> None:
+    from oex.sql import materialise
+
+    spatial_conn.execute(
+        "CREATE TABLE src AS SELECT * FROM (VALUES ('', 'Bidur ', 3), (chr(9), 'x', 4)) "
+        "AS t(address, city, levels)"
+    )
+    materialise(spatial_conn, "layer", "src", "address, city, levels", "levels > 0")
+    assert spatial_conn.execute("SELECT * FROM layer ORDER BY levels").fetchall() == [
+        (None, "Bidur", 3),
+        (None, "x", 4),
+    ]

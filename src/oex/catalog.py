@@ -178,7 +178,10 @@ class S3CatalogStore:
         import boto3
 
         self._bucket, _prefix, region, endpoint_url, self._acl = s3_resolve(cfg.output.s3)
-        self._client = boto3.client("s3", region_name=region or None, endpoint_url=endpoint_url)
+        # A session of its own, since boto3's shared default session is unsafe across threads.
+        self._client = boto3.session.Session().client(
+            "s3", region_name=region or None, endpoint_url=endpoint_url
+        )
 
     def read(self, key: str) -> tuple[dict[str, Any] | None, str | None]:
         try:

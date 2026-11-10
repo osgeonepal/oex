@@ -11,8 +11,9 @@ import pytest
 from hdx.data.hdxobject import HDXError
 
 from oex.boundary import Boundary
+from oex.catalog import CatalogConflictError
 from oex.config.schema import CategoryConfig, RootConfig
-from oex.exporter import Exporter
+from oex.exporter import COMBINED_STATE_KEY, BuiltCategory, CategoryResult, Exporter
 from oex.sources.base import SourceQuery
 from oex.state import StateStore
 
@@ -31,6 +32,7 @@ def _cfg(tmp_path: Path) -> RootConfig:
     cfg.output.skip_unchanged = True
     cfg.output.s3.enabled = True
     cfg.output.s3.bucket = "exports"
+    cfg.hdx.push = True
     cfg.duckdb.temp_dir = str(tmp_path / "duckdb")
     return cfg
 
@@ -142,7 +144,10 @@ BOUNDARY = Boundary(
 )
 
 
-PUBLISHED_ITEM = {"properties": {"oex:content_hash": "new", "created": "2026-11-04T06:45:47Z"}}
+PUBLISHED_ITEM = {
+    "properties": {"oex:content_hash": "new", "created": "2026-11-04T06:45:47Z"},
+    "assets": {"geojson": {"href": "s3://exports/NPL/schools/npl_schools_osm_geojson.zip"}},
+}
 
 FAR_AWAY = Boundary(
     iso3="NPL",
@@ -157,7 +162,7 @@ FAR_AWAY = Boundary(
 def _process(
     cfg: RootConfig,
     tmp_path: Path,
-    publisher: MagicMock,
+    publisher: MagicMock | None,
     published: str,
     state: StateStore | None = None,
 ):
@@ -214,19 +219,37 @@ def test_an_unchanged_layer_stamps_its_published_item_as_updated(tmp_path):
     assert datetime.fromisoformat(item["properties"]["updated"]).date() == datetime.now(UTC).date()
 
 
-@pytest.mark.parametrize(
-    ("published", "on_hdx", "refresh_error"),
-    [("old", "hotosm_npl_schools", None), ("new", None, None), ("new", None, HDXError("down"))],
-)
-def test_only_a_refreshed_unchanged_layer_stamps_its_item(
-    tmp_path, published, on_hdx, refresh_error
-):
+def test_a_failed_refresh_leaves_the_item_unstamped(tmp_path):
+    publisher = MagicMock()
+    publisher.refresh_metadata.side_effect = HDXError("down")
+
+    _, _, store = _process(_cfg(tmp_path), tmp_path, publisher, published="new")
+
+    store.write.assert_not_called()
+
+
+@pytest.mark.parametrize(("published", "on_hdx"), [("old", "hotosm_npl_schools"), ("new", None)])
+def test_a_rebuilt_layer_is_stamped_once_hdx_accepts_it(tmp_path, published, on_hdx):
+    """The Item is staged before the publish, which reads it, so `updated` marks success."""
     publisher = MagicMock()
     publisher.refresh_metadata.return_value = on_hdx
-    publisher.refresh_metadata.side_effect = refresh_error
+    publisher.publish.return_value = "hotosm_npl_schools"
 
-    _, _, store = _process(_cfg(tmp_path), tmp_path, publisher, published=published)
+    built, _, store = _process(_cfg(tmp_path), tmp_path, publisher, published=published)
 
+    assert built.result.status == "ok"
+    assert "updated" in store.write.call_args.args[1]["properties"]
+
+
+def test_a_failed_publish_leaves_the_item_unstamped(tmp_path):
+    """Otherwise the layer reads as published and the scheduler never retries it."""
+    publisher = MagicMock()
+    publisher.refresh_metadata.return_value = None
+    publisher.publish.side_effect = HDXError("upload rejected")
+
+    built, _, store = _process(_cfg(tmp_path), tmp_path, publisher, published="old")
+
+    assert built.result.status == "failed"
     store.write.assert_not_called()
 
 
@@ -294,21 +317,6 @@ def test_an_hdx_error_while_refreshing_an_empty_layer_keeps_it_empty(tmp_path):
     publisher.refresh_metadata.side_effect = HDXError("HDX unavailable")
     exporter = Exporter(_cfg(tmp_path), _runner())
 
-    built = exporter._process_category(
-        exporter._cfg.categories[0], FAR_AWAY, tmp_path / "out", publisher
-    )
-
-    assert built.result.status == "empty"
-    publisher.refresh_metadata.assert_called_once()
-
-
-@pytest.mark.parametrize(("on_hdx", "stamped"), [("hotosm_npl_schools", True), (None, False)])
-def test_a_layer_that_turned_empty_stamps_its_item_once_hdx_is_refreshed(tmp_path, on_hdx, stamped):
-    """Its old Item would otherwise read as overdue on every scheduled run."""
-    publisher = MagicMock()
-    publisher.refresh_metadata.return_value = on_hdx
-    exporter = Exporter(_cfg(tmp_path), _runner())
-
     with patch("oex.exporter.S3CatalogStore") as store:
         store.return_value.read.return_value = (copy.deepcopy(PUBLISHED_ITEM), "etag-1")
         built = exporter._process_category(
@@ -316,4 +324,333 @@ def test_a_layer_that_turned_empty_stamps_its_item_once_hdx_is_refreshed(tmp_pat
         )
 
     assert built.result.status == "empty"
-    assert store.return_value.write.called is stamped
+    publisher.refresh_metadata.assert_called_once()
+    store.return_value.write.assert_not_called()
+
+
+def test_a_layer_that_turned_empty_stamps_its_item_once_hdx_is_refreshed(tmp_path):
+    """Its old Item would otherwise read as overdue on every scheduled run."""
+    publisher = MagicMock()
+    publisher.refresh_metadata.return_value = "hotosm_npl_schools"
+
+    built, staged, store = _process_empty(tmp_path, copy.deepcopy(PUBLISHED_ITEM), publisher)
+
+    assert built.result.status == "empty"
+    assert staged == []
+    assert store.write.call_args.args[1]["assets"] == PUBLISHED_ITEM["assets"]
+
+
+def test_an_empty_layer_whose_hdx_dataset_was_deleted_loses_its_files_in_stac(tmp_path):
+    """HDX no longer carries the files, so the Item must not list them."""
+    publisher = MagicMock()
+    publisher.refresh_metadata.return_value = None
+
+    built, staged, store = _process_empty(tmp_path, copy.deepcopy(PUBLISHED_ITEM), publisher)
+
+    assert built.result.status == "empty"
+    [(_, item)] = staged
+    assert item["assets"] == {}
+    store.write.assert_not_called()
+
+
+def _process_empty(
+    tmp_path: Path,
+    published_item: dict | None,
+    publisher: MagicMock | None,
+    cfg: RootConfig | None = None,
+):
+    """Returns the built category, the Items staged to S3 for a layer with no features, and
+    the catalog store that holds the published Item."""
+    exporter = Exporter(cfg or _cfg(tmp_path), _runner())
+    staged: list[tuple[str, dict]] = []
+
+    def stage(path: Path, *, key: str, **_):
+        staged.append((key, json.loads(path.read_text())))
+
+    with (
+        patch("oex.exporter.s3_upload", side_effect=stage),
+        patch("oex.exporter.S3CatalogStore") as store,
+    ):
+        store.return_value.read.return_value = (
+            published_item,
+            "etag-1" if published_item else None,
+        )
+        built = exporter._process_category(
+            exporter._cfg.categories[0], FAR_AWAY, tmp_path / "out", publisher
+        )
+    return built, staged, store.return_value
+
+
+@pytest.mark.parametrize(
+    "published_item",
+    [None, {"properties": {"created": "2026-11-04T06:45:47Z"}, "assets": {}}],
+    ids=["never-published", "empty-before"],
+)
+def test_an_empty_layer_stages_an_item_without_files(tmp_path, published_item):
+    """Without it the catalog cannot tell a layer found empty from a category never run, and
+    an HDX dataset an empty layer never had cannot date it either."""
+    publisher = MagicMock()
+    publisher.refresh_metadata.return_value = None
+
+    built, staged, _ = _process_empty(tmp_path, published_item, publisher)
+
+    assert built.result.status == "empty"
+    [(key, item)] = staged
+    assert key.endswith("NPL/schools/npl_schools_osm_item.json")
+    assert item["assets"] == {}
+    assert item["properties"]["table:row_count"] == 0
+    assert item["properties"]["created"] > "2026-11-04T06:45:47Z"
+    assert not [link for link in item["links"] if link["rel"] in ("collection", "via")]
+    assert "oex:geometry_types" not in item["properties"]
+    publisher.refresh_metadata.assert_called_once()
+
+
+def test_an_empty_layer_keeps_the_item_that_links_its_published_files(tmp_path):
+    """Its files are still on S3 and HDX, so only its date moves."""
+    publisher = MagicMock()
+    publisher.refresh_metadata.return_value = "hotosm_npl_schools"
+
+    built, staged, _ = _process_empty(tmp_path, copy.deepcopy(PUBLISHED_ITEM), publisher)
+
+    assert built.result.status == "empty"
+    assert staged == []
+
+
+def test_a_run_without_hdx_leaves_items_undated(tmp_path):
+    """An Item's `updated` says HDX holds the layer, which a run that skips HDX cannot vouch for."""
+    cfg = _cfg(tmp_path)
+    cfg.hdx.push = False
+
+    built, staged, store = _process_empty(tmp_path, copy.deepcopy(PUBLISHED_ITEM), None, cfg)
+
+    assert built.result.status == "empty"
+    assert staged == []
+    store.write.assert_not_called()
+
+
+def test_a_resume_after_an_upload_that_skipped_hdx_rebuilds_the_layer(tmp_path):
+    """Otherwise a run that pushes would date the Item while HDX never got the layer."""
+    state = StateStore(path=tmp_path / ".state.json", iso3="NPL", source="osm")
+    state.mark_built("schools", snapshot_label="2026-12-01", zip_paths=[], metadata_json_path=None)
+    state.mark_uploaded("schools", hdx_dataset=None)
+    exporter = Exporter(_cfg(tmp_path), _runner())
+    exporter._state = state
+    query = exporter._runner.query_for(exporter._cfg, exporter._cfg.categories[0])
+
+    with patch("oex.exporter.S3CatalogStore") as store:
+        assert exporter._resumed_result(exporter._cfg.categories[0], query, 0.0, "") is None
+    store.return_value.write.assert_not_called()
+
+
+def _combined_cfg(tmp_path: Path) -> RootConfig:
+    cfg = _cfg(tmp_path)
+    cfg.hdx.push = cfg.hdx.combine = True
+    return cfg
+
+
+def _empty_in_combined(tmp_path: Path):
+    """An empty layer of a combined dataset, which defers its Item to the combined publish."""
+    built, staged, store = _process_empty(
+        tmp_path, copy.deepcopy(PUBLISHED_ITEM), MagicMock(), _combined_cfg(tmp_path)
+    )
+    assert (built.result.status, staged) == ("empty", [])
+    store.write.assert_not_called()
+    return built
+
+
+def _record(tmp_path: Path, built_list: list, published: bool):
+    exporter = Exporter(_combined_cfg(tmp_path), _runner())
+    staged: list[dict] = []
+    with (
+        patch(
+            "oex.exporter.s3_upload",
+            side_effect=lambda path, **_: staged.append(json.loads(path.read_text())),
+        ),
+        patch("oex.exporter.S3CatalogStore") as store,
+    ):
+        store.return_value.read.return_value = (copy.deepcopy(PUBLISHED_ITEM), "etag-1")
+        exporter._record_combined_layers(built_list, tmp_path / "out", None, published=published)
+    return staged, store.return_value
+
+
+def test_a_layer_dropped_from_a_combined_dataset_loses_its_files_in_stac(tmp_path):
+    """The combined dataset no longer carries the layer, so its Item must not list the files."""
+    staged, store = _record(tmp_path, [_empty_in_combined(tmp_path)], published=True)
+
+    [item] = staged
+    assert item["assets"] == {}
+    assert item["properties"]["table:row_count"] == 0
+    assert "updated" in item["properties"]
+    store.write.assert_not_called()
+
+
+def test_an_all_empty_combined_run_keeps_the_files_hdx_still_carries(tmp_path):
+    """Nothing was published, so the dataset still holds the layer's files from before."""
+    staged, store = _record(tmp_path, [_empty_in_combined(tmp_path)], published=False)
+
+    assert staged == []
+    assert store.write.call_args.args[1]["assets"] == PUBLISHED_ITEM["assets"]
+
+
+@pytest.mark.parametrize(("zips", "stamped"), [(["schools.zip"], True), ([], False)])
+def test_a_layer_of_a_combined_dataset_is_stamped_only_when_published(tmp_path, zips, stamped):
+    """A layer without files stays out of the combined publish, so nothing vouches for it."""
+    built = BuiltCategory(
+        result=CategoryResult(name="schools", status="ok", duration_s=0.0),
+        category=CategoryConfig(name="schools"),
+        zip_paths=[tmp_path / name for name in zips],
+    )
+    _, store = _record(tmp_path, [built], published=True)
+
+    assert store.write.called is stamped
+
+
+def test_a_missing_combined_item_raises_after_the_others_are_dated(tmp_path):
+    """Every layer that has its Item is dated first, so only the missing one reruns."""
+    exporter = Exporter(_combined_cfg(tmp_path), _runner())
+    built = [
+        BuiltCategory(
+            result=CategoryResult(name=name, status="ok", duration_s=0.0),
+            category=CategoryConfig(name=name),
+            zip_paths=[tmp_path / f"{name}.zip"],
+        )
+        for name in ("roads", "schools")
+    ]
+    with patch("oex.exporter.S3CatalogStore") as store:
+        store.return_value.read.side_effect = [(None, None), (copy.deepcopy(PUBLISHED_ITEM), "e")]
+        with pytest.raises(CatalogConflictError, match="roads"):
+            exporter._record_combined_layers(built, tmp_path / "out", None, published=True)
+    assert store.return_value.write.call_count == 1
+
+
+def test_a_resumed_layer_whose_item_is_missing_is_rebuilt(tmp_path):
+    """Its Item moved or was deleted, so the layer is exported again rather than failing."""
+    state = StateStore(path=tmp_path / ".state.json", iso3="NPL", source="osm")
+    state.mark_built("schools", snapshot_label="2026-12-01", zip_paths=[], metadata_json_path=None)
+    state.mark_uploaded("schools", hdx_dataset="hotosm_npl_schools")
+    exporter = Exporter(_cfg(tmp_path), _runner())
+    exporter._state = state
+    query = exporter._runner.query_for(exporter._cfg, exporter._cfg.categories[0])
+
+    with patch("oex.exporter.S3CatalogStore") as store:
+        store.return_value.read.return_value = (None, None)
+        assert exporter._resumed_result(exporter._cfg.categories[0], query, 0.0, "") is None
+
+
+def test_a_failed_combined_publish_records_nothing(tmp_path):
+    """No layer is dated, so the scheduler retries the dataset."""
+    exporter = Exporter(_combined_cfg(tmp_path), _runner())
+    built = BuiltCategory(
+        result=CategoryResult(name="schools", status="ok", duration_s=0.0),
+        category=CategoryConfig(name="schools"),
+        zip_paths=[tmp_path / "schools.zip"],
+    )
+    with (
+        patch.object(Exporter, "_build_combined_tiles", return_value=None),
+        patch.object(Exporter, "_publish_combined", side_effect=HDXError("upload rejected")),
+        patch.object(Exporter, "_record_combined_layers") as record,
+        pytest.raises(HDXError),
+    ):
+        exporter._finish_combined(
+            [built], tmp_path / "out", MagicMock(), peeked_label=None, boundary_bbox=(0, 0, 1, 1)
+        )
+    record.assert_not_called()
+
+
+@pytest.mark.parametrize("published_item", [None, PUBLISHED_ITEM], ids=["none", "with-files"])
+def test_a_run_without_metadata_leaves_items_alone(tmp_path, published_item):
+    """Items are built from the layer metadata, so dating one would vouch for stale content."""
+    cfg = _cfg(tmp_path)
+    cfg.output.metadata = False
+    cfg.output.report.enabled = False
+
+    _, staged, store = _process_empty(tmp_path, copy.deepcopy(published_item), None, cfg)
+
+    assert staged == []
+    store.write.assert_not_called()
+
+
+@pytest.mark.parametrize(("status", "published"), [("ok", True), ("empty", False)])
+def test_the_combined_run_records_its_layers_after_the_publish(tmp_path, status, published):
+    """With no layer built nothing is published, and the dataset keeps what it carried."""
+    exporter = Exporter(_combined_cfg(tmp_path), _runner())
+    built = BuiltCategory(
+        result=CategoryResult(name="schools", status=status, duration_s=0.0),
+        category=CategoryConfig(name="schools"),
+        zip_paths=[tmp_path / "schools.zip"] if status == "ok" else [],
+    )
+    with (
+        patch.object(Exporter, "_build_combined_tiles", return_value=None),
+        patch.object(Exporter, "_publish_combined") as publish,
+        patch.object(Exporter, "_record_combined_layers") as record,
+    ):
+        exporter._finish_combined(
+            [built], tmp_path / "out", MagicMock(), peeked_label=None, boundary_bbox=(0, 0, 1, 1)
+        )
+    assert publish.called is published
+    assert record.call_args.kwargs["published"] is published
+
+
+def test_a_resumed_layer_dates_its_item(tmp_path):
+    """Its upload this snapshot succeeded, so a run stopped before dating the Item ends here."""
+    state = StateStore(path=tmp_path / ".state.json", iso3="NPL", source="osm")
+    state.mark_built("schools", snapshot_label="2026-12-01", zip_paths=[], metadata_json_path=None)
+    state.mark_uploaded("schools", hdx_dataset="hotosm_npl_schools")
+
+    built, _, store = _process(_cfg(tmp_path), tmp_path, MagicMock(), "new", state=state)
+
+    assert built.result.status == "ok"
+    assert "updated" in store.write.call_args.args[1]["properties"]
+
+
+@pytest.mark.parametrize(
+    ("combine", "updated", "skips"),
+    [
+        (True, "2099-01-01T00:00:00Z", True),
+        (True, "2000-01-01T00:00:00Z", False),
+        (True, None, False),
+        (False, "2099-01-01T00:00:00Z", False),
+    ],
+)
+def test_a_whole_run_is_skipped_only_when_every_item_is_dated(tmp_path, combine, updated, skips):
+    """A layer's own resume dates its Item; a combined dataset has none, so it reruns instead."""
+    cfg = _combined_cfg(tmp_path) if combine else _cfg(tmp_path)
+    exporter = Exporter(cfg, _runner())
+    exporter._state = StateStore(path=tmp_path / ".state.json", iso3="NPL", source="osm")
+    for key in (COMBINED_STATE_KEY, "schools"):
+        exporter._state.mark_built(
+            key, snapshot_label="2026-12-01", zip_paths=[], metadata_json_path=None
+        )
+        exporter._state.mark_uploaded(key, hdx_dataset="hotosm_npl")
+    item = copy.deepcopy(PUBLISHED_ITEM)
+    if updated:
+        item["properties"]["updated"] = updated
+    with patch("oex.exporter.S3CatalogStore") as store:
+        store.return_value.read.return_value = (item, "etag-1")
+        assert exporter._resume_skips_run("2026-12-01") is skips
+
+
+def test_a_run_without_hdx_stages_an_item_a_later_push_cannot_skip(tmp_path):
+    """No `updated` and no fingerprint, so the next push exports the layer in full."""
+    cfg = _cfg(tmp_path)
+    cfg.hdx.push = False
+
+    built, item, store = _process(cfg, tmp_path, None, published="old")
+
+    assert built.result.status == "ok"
+    assert "updated" not in item["properties"]
+    assert "oex:content_hash" not in item["properties"]
+    store.write.assert_not_called()
+
+
+def test_an_empty_item_links_up_to_its_area_catalog(tmp_path):
+    """It has no Collection, so without this a STAC browser cannot reach it."""
+    cfg = _cfg(tmp_path)
+    cfg.output.stac.catalog = True
+
+    _, staged, _ = _process_empty(tmp_path, None, MagicMock(), cfg)
+
+    [(_, item)] = staged
+    parents = [link["href"] for link in item["links"] if link["rel"] == "parent"]
+    assert parents == ["https://exports.s3.amazonaws.com/NPL/catalog.json"]
+    assert "oex:geometry_types" not in item["properties"]

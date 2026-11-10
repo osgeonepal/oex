@@ -115,7 +115,7 @@ def test_render_report_renders_one_map_entry_per_source_tileset() -> None:
     # Legend toggles both, and the map frames the export boundary.
     legend = html[html.index('<details class="legend"') : html.index("</details>")]
     assert legend.count('type="checkbox" checked') == 2
-    assert "map.fitBounds([[85.3,27.68],[85.36,27.73]]" in html
+    assert "const areaBounds = [85.3, 27.68, 85.36, 27.73];" in html
 
 
 def test_map_legend_names_the_layer_and_the_source() -> None:
@@ -376,7 +376,7 @@ def test_languages_kpi_excludes_translit_column() -> None:
 def test_languages_kpi_says_none_when_no_name_columns() -> None:
     meta = _meta(columns=[ColumnReport("id", "VARCHAR", 0, 0.0, 5, [])])
     html = render_report({"overture": _source(metadata=meta)})
-    assert "no name columns" in html
+    assert "no names filled" in html
 
 
 def test_about_section_notes_transliteration_when_latin_column_present() -> None:
@@ -587,3 +587,27 @@ def test_one_feature_outside_the_admin_areas_is_counted_in_the_singular() -> Non
     meta = _meta(columns=[ColumnReport("adm0_pcode", "VARCHAR", 1, 1.0, 1, [])])
     html = render_report({"overture": _source(metadata=meta)})
     assert "1 feature is outside every admin area" in html
+
+
+def test_on_a_phone_the_bar_column_gives_its_width_to_the_values() -> None:
+    """Header and cells share the class, so hiding it leaves the table columns aligned."""
+    many = [{"value": "OSM", "count": 60}, {"value": "Microsoft", "count": 40}]
+    meta = _meta(columns=[ColumnReport("source", "VARCHAR", 0, 0.0, 2, many)])
+    html = render_report({"overture": _source(metadata=meta)})
+    assert '<th class="bar-cell"></th>' in html
+    phone_rules = html[html.index("@media (max-width: 480px)") :]
+    assert ".bar-cell { display: none; }" in phone_rules
+
+
+def test_languages_kpi_skips_a_name_column_with_no_values() -> None:
+    meta = _meta(
+        columns=[
+            ColumnReport("name", "VARCHAR", 0, 0.0, 5, []),
+            ColumnReport("name_en", "VARCHAR", 100, 100.0, 0, []),
+        ]
+    )
+    html = render_report({"overture": _source(metadata=meta)})
+    kpi = html.split('<div class="kpi-label">Languages</div>', 1)[1]
+    value = kpi.split('<div class="kpi-value">', 1)[1].split("</div>", 1)[0]
+    sub = kpi.split('<div class="kpi-sub">', 1)[1].split("</div>", 1)[0]
+    assert (value, sub) == ("1", "local")

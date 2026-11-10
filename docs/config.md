@@ -234,11 +234,9 @@ When enabled, every feature gets six extra columns:
 | `adm2_pcode`  | `NP-BA-KA`        | Second subdivision pcode            |
 | `adm2_name`   | `Kathmandu`       | Second subdivision name             |
 
-`adm3` and `adm4` columns are added at the same levels; many countries have
-null values at those levels. A feature outside every admin area at the configured
-levels, such as one the boundary buffer brings in from a neighbouring country, has
-every `adm` column empty, `adm0` included. A country with no admin boundaries in the
-pcode data tags every feature with its own `adm0` only.
+`adm3` and `adm4` follow the same pattern. A level the country has no coded boundaries for
+is left out. A feature outside every admin area, such as one the boundary buffer brings in
+from a neighbouring country, has every `adm` column empty.
 
 Pcode data comes from [fieldmaps.io](https://fieldmaps.io/) edge-matched
 humanitarian boundaries, downloaded once and cached locally.
@@ -397,6 +395,13 @@ what you want during an active response where edits made this morning have
 to reach today's export. All four write the same
 `feature_id` / `tags` / `geometry` parquet, so switching engines does not
 change the output schema.
+
+A closed way is an area when quackosm's
+[area rules](https://github.com/kraina-ai/quackosm/blob/main/quackosm/osm_way_polygon_features.json)
+say so. oex extends them to `damaged:` and the
+[lifecycle prefixes](https://wiki.openstreetmap.org/wiki/Lifecycle_prefix), so a destroyed
+building keeps its outline, adds `emergency:helipad`, and drops `junction`, since a
+[roundabout](https://wiki.openstreetmap.org/wiki/Tag:junction=roundabout) is a closed road.
 
 `geofabrik` (default): no pre-build. First run per country downloads the
 country PBF from Geofabrik and runs quackosm once with the union of all category

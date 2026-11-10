@@ -17,7 +17,7 @@ import duckdb
 
 from oex.logging_setup import get_logger
 from oex.metadata import GEOMETRY_COLUMN, bounding_box, geometry_breakdown
-from oex.sql import sql_string
+from oex.sql import sql_identifier, sql_string
 
 logger = get_logger(__name__)
 
@@ -369,6 +369,10 @@ def write_geoparquet(
     return out_path
 
 
+# A layer's own column under an injected name, such as the OSM `source` tag, is kept aside.
+_INJECTED_RENAMES = {"category": "category_value", "source": "source_value"}
+
+
 @dataclass(frozen=True)
 class TileLayer:
     """`path` is a local path or an https/s3 URL DuckDB can read through httpfs."""
@@ -388,24 +392,35 @@ def build_combined_pmtiles(
     max_extra_zooms: int,
 ) -> Path:
     """One tileset over every layer, in the given order, with `category` and `source` injected
-    so each stays styleable; `name` is carried when present."""
+    so each stays styleable, and every attribute of each layer for its map popup."""
     if not layers:
         raise ValueError("build_combined_pmtiles needs at least one layer")
     selects = []
     for layer in layers:
-        column_names = {
+        columns = [
             row[0]
             for row in conn.execute(
                 f"DESCRIBE SELECT * FROM read_parquet({sql_string(layer.path)})"
             ).fetchall()
-        }
-        name_expr = "name" if "name" in column_names else "NULL::VARCHAR"
+            if row[0] not in (GEOMETRY_COLUMN, BBOX_COLUMN)
+        ]
+        clashes = set(_INJECTED_RENAMES.values()) & set(columns)
+        if clashes:
+            raise ValueError(
+                f"{layer.path}: columns {sorted(clashes)} clash with the tileset's own"
+            )
+        # Layers disagree on column types, so attributes merge as text, which a popup shows.
+        attributes = "".join(
+            f", CAST({sql_identifier(column)} AS VARCHAR) AS "
+            f"{sql_identifier(_INJECTED_RENAMES.get(column, column))}"
+            for column in columns
+        )
         selects.append(
             f"SELECT {sql_string(layer.category)} AS category, "
-            f"{sql_string(layer.source)} AS source, "
-            f"{name_expr} AS name, geom FROM read_parquet({sql_string(layer.path)})"
+            f"{sql_string(layer.source)} AS source{attributes}, {GEOMETRY_COLUMN} "
+            f"FROM read_parquet({sql_string(layer.path)})"
         )
-    conn.execute(f"CREATE TABLE __combined_tiles AS {' UNION ALL '.join(selects)}")
+    conn.execute(f"CREATE TABLE __combined_tiles AS {' UNION ALL BY NAME '.join(selects)}")
     try:
         return write_pmtiles(
             conn,

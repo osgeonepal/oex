@@ -19,7 +19,8 @@ _UDF_NAME = "oex_translit"
 def _to_latin(text: str | None) -> str | None:
     if text is None:
         return None
-    return unidecode(text)
+    # unidecode leaves a trailing space after CJK text, and an emoji-only name comes back empty.
+    return unidecode(text).strip() or None
 
 
 def _ensure_udf(conn: duckdb.DuckDBPyConnection) -> None:
@@ -60,14 +61,12 @@ def transliterate_table(
                 f"transliterate source column {rule.source!r} not in table {table}; "
                 f"available: {sorted(existing)}"
             )
-        if rule.prefer is not None and rule.prefer not in existing:
-            raise ValueError(
-                f"transliterate prefer column {rule.prefer!r} not in table {table}; "
-                f"available: {sorted(existing)}"
-            )
+        # Config load checks `prefer` names a column some source selects; a source that
+        # carries no such column, such as Overture without `name_en`, transliterates alone.
+        prefer = rule.prefer if rule.prefer in existing else None
         _require_varchar(table, rule.source, schema, "source")
-        if rule.prefer is not None:
-            _require_varchar(table, rule.prefer, schema, "prefer")
+        if prefer is not None:
+            _require_varchar(table, prefer, schema, "prefer")
 
         quoted_target = sql_identifier(rule.target)
         quoted_source = sql_identifier(rule.source)
@@ -75,8 +74,8 @@ def transliterate_table(
             conn.execute(f"ALTER TABLE {table} DROP COLUMN {quoted_target}")
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {quoted_target} VARCHAR")
 
-        if rule.prefer is not None:
-            quoted_prefer = sql_identifier(rule.prefer)
+        if prefer is not None:
+            quoted_prefer = sql_identifier(prefer)
             update_sql = f"UPDATE {table} SET {quoted_target} = COALESCE({quoted_prefer}, {_UDF_NAME}({quoted_source}))"
         else:
             update_sql = f"UPDATE {table} SET {quoted_target} = {_UDF_NAME}({quoted_source})"
@@ -87,5 +86,5 @@ def transliterate_table(
             table,
             rule.target,
             rule.source,
-            f" (prefer {rule.prefer})" if rule.prefer else "",
+            f" (prefer {prefer})" if prefer else "",
         )

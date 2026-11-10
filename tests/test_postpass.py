@@ -206,3 +206,34 @@ def test_a_boundary_over_the_ceiling_is_refused(load_yaml_config, tmp_path: Path
 def test_a_zero_ceiling_is_rejected_at_config_load(load_yaml_config, tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="postpass_max_area_sq_km"):
         load_yaml_config(_config_text(tmp_path, max_area=0))
+
+
+def test_a_closed_line_with_an_area_key_is_written_as_a_polygon(tmp_path) -> None:
+    """A live database files a closed way tagged only destroyed:building as a line."""
+    import duckdb
+
+    from oex.osm.country_parquet import write_country_parquet
+
+    ring = "LINESTRING (85.3 27.7, 85.301 27.7, 85.301 27.701, 85.3 27.701, 85.3 27.7)"
+    out = tmp_path / "country.parquet"
+    write_country_parquet(
+        [
+            ("way/1", '{"destroyed:building": "yes"}', ring),
+            ("way/2", '{"highway": "track"}', ring),
+            ("way/3", '{"destroyed:landuse": "residential"}', ring),
+            ("way/4", '{"destroyed:highway": "residential"}', ring),
+        ],
+        out,
+        "postpass",
+    )
+    connection = duckdb.connect()
+    connection.execute("INSTALL spatial; LOAD spatial")
+    kinds = dict(
+        connection.execute(f"SELECT feature_id, ST_GeometryType(geometry) FROM '{out}'").fetchall()
+    )
+    assert kinds == {
+        "way/1": "POLYGON",
+        "way/2": "LINESTRING",
+        "way/3": "POLYGON",
+        "way/4": "LINESTRING",
+    }

@@ -258,14 +258,16 @@ def _admin_coverage_kpi(metadata: MetadataReport) -> str:
 def _languages_kpi(metadata: MetadataReport) -> str:
     languages = _language_columns(metadata)
     if not languages:
-        return _kpi("Languages", "none", "no name columns")
+        return _kpi("Languages", "none", "no names filled")
     return _kpi("Languages", str(len(languages)), escape(", ".join(languages)))
 
 
 def _language_columns(metadata: MetadataReport) -> list[str]:
-    """Language labels carried by the dataset, ordered as they appear."""
+    """Language labels with at least one name filled, ordered as they appear."""
     labels: list[str] = []
     for column in metadata.columns:
+        if column.null_count >= metadata.feature_count:
+            continue
         if column.name == "name":
             labels.append("local")
             continue
@@ -505,6 +507,8 @@ def _table(heading: str, headers: list[str], rows: list[str], intro: str = "") -
     head_cells = "".join(
         f'<th class="num">{escape(header)}</th>'
         if header in {"Features", "Share", "Tagged", "Filled"}
+        else '<th class="bar-cell"></th>'
+        if not header
         else f"<th>{escape(header)}</th>"
         for header in headers
     )

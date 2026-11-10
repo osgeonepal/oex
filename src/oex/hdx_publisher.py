@@ -1597,9 +1597,9 @@ def _item_hrefs(collection: dict, collection_url: str) -> list[str]:
 def _entry_name(collection: dict, item: dict) -> str:
     """`<dataset>_<category>_<source>_metadata.json`, which the slug matcher resolves."""
     properties = item["properties"]
-    return (
-        f"{collection['id']}_{properties['oex:category']}_{properties['oex:source']}_metadata.json"
-    )
+    # A Collection without `oex:dataset` has the dataset name as its id.
+    dataset = collection.get("oex:dataset", collection["id"])
+    return f"{dataset}_{properties['oex:category']}_{properties['oex:source']}_metadata.json"
 
 
 def _slug_from_metadata_name(

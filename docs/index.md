@@ -61,9 +61,9 @@ geometry types and bbox.
 - Four OSM engines: a per-country PBF on demand (Geofabrik), a planet PBF
   cache for batch runs across many countries, and two that query a live OSM
   database (Postpass, HOT Raw Data API) for event response.
-- Administrative pcode tagging: each feature gets `adm0`-`adm4` pcode
-  and name columns from fieldmaps.io humanitarian boundaries (opt-in,
-  enabled by default in the HOT schema).
+- Administrative pcode tagging: each feature gets pcode and name columns for the
+  admin levels its country has, up to `adm4`, from fieldmaps.io humanitarian
+  boundaries (opt-in, enabled by default in the HOT schema).
 
 ## Stack
 

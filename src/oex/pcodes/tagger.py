@@ -138,13 +138,15 @@ def _prepare_admin_tables(
     iso3: str,
     cache_entries: dict[int, PcodeCacheEntry],
     levels: list[int],
-) -> tuple[dict[int, str], list[int], list[int]]:
+) -> tuple[dict[int, str], list[int], list[int], list[int]]:
     admin_tables: dict[int, str] = {}
     levels_with_data: list[int] = []
     levels_empty: list[int] = []
+    levels_absent: list[int] = []
     for level in levels:
         entry = cache_entries.get(level)
         if entry is None:
+            # A cache gap is a fault to fix, so its columns stay, empty, rather than vanish.
             logger.warning("[pcodes] level %d missing from cache; emitting NULLs", level)
             levels_empty.append(level)
             continue
@@ -158,16 +160,24 @@ def _prepare_admin_tables(
             target_table=target,
         )
         if count == 0:
-            logger.warning(
-                "[pcodes] adm%d has no polygons for ISO3=%s; emitting NULLs",
-                level,
-                iso3,
+            logger.info(
+                "[pcodes] ISO3=%s has no adm%d boundaries; leaving its columns out", iso3, level
             )
             levels_empty.append(level)
+            levels_absent.append(level)
         else:
             logger.info("[pcodes] adm%d: %d polygons loaded for %s", level, count, iso3)
             levels_with_data.append(level)
-    return admin_tables, levels_with_data, levels_empty
+    return admin_tables, levels_with_data, levels_empty, levels_absent
+
+
+def _drop_level_columns(conn: duckdb.DuckDBPyConnection, *, table: str, levels: list[int]) -> None:
+    """A level the country has no boundaries for would be a pair of columns empty in every row."""
+    for level in levels:
+        if level == 0:
+            continue
+        conn.execute(f"ALTER TABLE {table} DROP COLUMN IF EXISTS adm{level}_pcode")
+        conn.execute(f"ALTER TABLE {table} DROP COLUMN IF EXISTS adm{level}_name")
 
 
 def _drop_tables(conn: duckdb.DuckDBPyConnection, names: list[str]) -> None:
@@ -624,7 +634,7 @@ def tag_table(
     if not requested:
         raise ValueError("levels must be non-empty")
 
-    admin_tables, levels_with_data, levels_empty = _prepare_admin_tables(
+    admin_tables, levels_with_data, levels_empty, levels_absent = _prepare_admin_tables(
         conn,
         table=table,
         iso3=iso3_upper,
@@ -632,7 +642,7 @@ def tag_table(
         levels=requested,
     )
     if not levels_with_data:
-        return _add_null_columns_without_admin_data(
+        report = _add_null_columns_without_admin_data(
             conn,
             table=table,
             iso3=iso3_upper,
@@ -640,18 +650,23 @@ def tag_table(
             levels_empty=levels_empty,
             admin_tables=admin_tables,
         )
+        _drop_level_columns(conn, table=table, levels=levels_absent)
+        return report
 
     adm0_pcode, adm0_name = _read_adm0(conn, admin_tables[levels_with_data[0]])
     if adm0_pcode is None:
         adm0_pcode = iso3_upper
 
+    coded_levels = _levels_with_pcodes(
+        conn, admin_tables=admin_tables, levels_with_data=levels_with_data, iso3=iso3_upper
+    )
+    # fieldmaps fills a level the country lacks with uncoded copies of the level above.
+    levels_absent += [level for level in levels_with_data if level not in coded_levels]
     h3_tables = _build_h3_lookups(
         conn,
         table=table,
         admin_tables=admin_tables,
-        levels=_levels_with_pcodes(
-            conn, admin_tables=admin_tables, levels_with_data=levels_with_data, iso3=iso3_upper
-        ),
+        levels=coded_levels,
         iso3=iso3_upper,
     )
     cell_table = _feature_cell_table_name(table)
@@ -686,6 +701,7 @@ def tag_table(
         conn, table=table, slim_table=slim_table, geom_column=geom_column, requested=requested
     )
     _drop_tables(conn, list(admin_tables.values()))
+    _drop_level_columns(conn, table=table, levels=levels_absent)
 
     all_levels_empty = [level for level in requested if level not in levels_tagged]
     logger.info(

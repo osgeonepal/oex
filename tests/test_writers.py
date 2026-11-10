@@ -191,6 +191,27 @@ def test_the_combined_tileset_tags_each_feature_with_its_category_and_source(
     assert tagged == [("buildings", "overture", None), ("roads", "osm", "ra")]
 
 
+def test_the_combined_tileset_carries_every_attribute_for_the_popup(
+    spatial_conn: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
+    """A layer's own `source` tag is kept aside, since `source` styles the layer."""
+    from oex.writers import TileLayer, build_combined_pmtiles, write_geoparquet
+
+    spatial_conn.execute(
+        "CREATE TABLE helipads AS SELECT 'helipad' AS aeroway, 'Bing' AS source, "
+        "3 AS levels, ST_Point(83.6, 28.6) AS geom"
+    )
+    path = write_geoparquet(spatial_conn, "helipads", tmp_path / "helipads.parquet")
+    out = tmp_path / "combined.pmtiles"
+    layers = [TileLayer(path=str(path), category="helipads", source="osm")]
+    build_combined_pmtiles(spatial_conn, layers, out, min_zoom=0, max_zoom=8, max_extra_zooms=4)
+    [properties] = [feature["properties"] for feature in _decoded_features(out, 8)]
+    assert properties["source"] == "osm"
+    assert properties["source_value"] == "Bing"
+    assert (properties["aeroway"], properties["levels"]) == ("helipad", "3")
+    assert "bbox" not in properties
+
+
 def test_a_combined_tileset_of_layers_without_names_still_tiles(
     spatial_conn: duckdb.DuckDBPyConnection, tmp_path: Path
 ) -> None:

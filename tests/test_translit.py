@@ -99,16 +99,38 @@ def test_transliterate_raises_on_unknown_source(
         )
 
 
-def test_transliterate_raises_on_unknown_prefer(
+def test_a_layer_without_the_preferred_column_transliterates_its_source(
     conn: duckdb.DuckDBPyConnection,
 ) -> None:
+    """Overture carries no `name_en`, so its layers transliterate `name` alone."""
     _seed(conn)
-    with pytest.raises(ValueError, match="prefer column"):
-        transliterate_table(
-            conn,
-            table="features",
-            rules=[TransliterateRule(target="x", source="name", prefer="absent")],
-        )
+    conn.execute("ALTER TABLE features DROP COLUMN name_en")
+    transliterate_table(
+        conn,
+        table="features",
+        rules=[TransliterateRule(target="name_latin", source="name", prefer="name_en")],
+    )
+    latin = dict(conn.execute("SELECT id, name_latin FROM features").fetchall())
+    assert (latin[3], latin[6]) == ("Moskva", None)
+
+
+def test_a_prefer_no_source_selects_is_refused_at_load(tmp_path) -> None:
+    from oex.config.loader import ConfigError, load_config
+
+    config = tmp_path / "x.yaml"
+    config.write_text(
+        "categories:\n"
+        "  - name: schools\n"
+        "    osm:\n"
+        "      select: [\"tags['name'] AS name\", \"tags['name:en'] AS name_en\"]\n"
+        "    overture:\n"
+        "      select: [names.primary AS name]\n"
+        "    transliterate:\n"
+        "      - {target: name_latin, source: name, prefer: name_english}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="name_english"):
+        load_config(config)
 
 
 def test_transliterate_rejects_json_typed_source_with_actionable_hint(
@@ -167,3 +189,29 @@ def test_transliterating_twice_on_one_connection_adds_both_columns(
         "kaatthmaaddauN",
         "kaatthmaaddauN",
     )
+
+
+def test_a_prefer_one_source_selects_loads(tmp_path) -> None:
+    from oex.config.loader import load_config
+
+    config = tmp_path / "x.yaml"
+    config.write_text(
+        "categories:\n"
+        "  - name: schools\n"
+        "    osm:\n"
+        "      select: [\"tags['name'] AS name\", \"tags['name:en'] AS name_en\"]\n"
+        "    overture:\n"
+        "      select: [names.primary AS name]\n"
+        "    transliterate:\n"
+        "      - {target: name_latin, source: name, prefer: name_en}\n",
+        encoding="utf-8",
+    )
+    assert load_config(config).categories[0].transliterate[0].prefer == "name_en"
+
+
+@pytest.mark.parametrize(("text", "latin"), [("北京", "Bei Jing"), ("🙂", None)])
+def test_a_transliteration_is_trimmed_and_an_empty_one_is_missing(text, latin) -> None:
+    """unidecode pads CJK text and drops emoji to nothing."""
+    from oex.translit.engine import _to_latin
+
+    assert _to_latin(text) == latin

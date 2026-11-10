@@ -1,6 +1,7 @@
 """Per-category export loop, shared by Overture and OSM sources."""
 
 import concurrent.futures
+import functools
 import hashlib
 import itertools
 import json
@@ -74,6 +75,7 @@ from oex.sources.base import CategorySkippedError, SourceQuery, SourceRunner
 from oex.sources.labels import long_label
 from oex.sql import build_select_clause, build_where_clause, materialise
 from oex.stac import (
+    JSON_MEDIA_TYPE,
     LayerAssets,
     asset_href,
     asset_key,
@@ -83,11 +85,15 @@ from oex.stac import (
     href_or_filename,
     item_filename,
     item_href,
+    last_published,
     license_href,
     partition_of,
     published_item_key,
+    stac_collection_id,
+    stages_stac,
     to_payload,
     write_json,
+    writes_items,
 )
 from oex.state import StateStore
 from oex.system import adaptive_parallel_resources, cpu_count
@@ -292,7 +298,7 @@ class Exporter:
         peeked: str | None = None
         if self._cfg.output.resume:
             peeked = self._runner.peek_snapshot_label(self._cfg)
-            if peeked and self._already_uploaded(peeked):
+            if peeked and self._resume_skips_run(peeked):
                 logger.info(
                     "[%s/%s] resume: already uploaded for snapshot %s; "
                     "skipping boundary fetch, pcode cache, and per-category work",
@@ -351,7 +357,7 @@ class Exporter:
             link_collections(
                 catalog,
                 self._cfg.output.stac,
-                S3CatalogStore(self._cfg),
+                self._catalog,
                 self._staged_collections,
                 area_title=self._area_title(),
             )
@@ -434,6 +440,21 @@ class Exporter:
             self._cfg.parallel.memory_gb,
             self._adaptive_memory_gb,
         )
+
+    def _resume_skips_run(self, snapshot_label: str) -> bool:
+        """A layer's own resume dates its Item, which a combined dataset lacks, so a combined
+        run is skipped only when every Item is dated since the combined upload."""
+        if not self._already_uploaded(snapshot_label):
+            return False
+        if not writes_items(self._cfg):
+            return True
+        if not self._cfg.hdx.combine:
+            return False
+        assert self._state is not None
+        entry = self._state.get(COMBINED_STATE_KEY)
+        assert entry is not None and entry.uploaded_utc is not None
+        last = last_published(self._cfg, self._runner.name, self._catalog)
+        return last is not None and last >= parse_utc(entry.uploaded_utc)
 
     def _already_uploaded(self, snapshot_label: str) -> bool:
         assert self._state is not None
@@ -566,9 +587,16 @@ class Exporter:
         snapshot_label = query.snapshot_label or "unknown"
         if not entry or not self._state.is_uploaded(slug, snapshot_label=snapshot_label):
             return None
+        if self._cfg.hdx.push and entry.hdx_dataset is None:
+            logger.info("%s resume: earlier upload skipped HDX; rebuilding", log_prefix)
+            return None
         logger.info(
             "%s resume: already built and uploaded (%s); skipping", log_prefix, entry.uploaded_utc
         )
+        # This snapshot's upload succeeded; a run that stopped before dating its Item ends here.
+        if writes_items(self._cfg) and not self._stamp_published_item(category):
+            logger.info("%s resume: published Item missing; rebuilding", log_prefix)
+            return None
         return _early_result(
             category,
             "ok",
@@ -581,7 +609,7 @@ class Exporter:
     def _export_category(self, job: _CategoryJob, formats: list[str]) -> BuiltCategory:
         feature_count = self._query_into_table(job)
         if feature_count == 0:
-            return BuiltCategory(result=self._empty_layer_result(job), category=job.category)
+            return self._empty_layer(job)
 
         content_hash = None
         if job.publisher is not None and self._skips_unchanged(self._cfg.hdx.combine):
@@ -692,18 +720,46 @@ class Exporter:
         )
         return count
 
-    def _empty_layer_result(self, job: _CategoryJob) -> CategoryResult:
+    def _empty_layer(self, job: _CategoryJob) -> BuiltCategory:
         logger.info("%s empty: no features within boundary", job.log_prefix)
-        if job.publisher is not None and not self._cfg.hdx.combine:
+        built = BuiltCategory(result=job.result("empty", feature_count=0), category=job.category)
+        if self._cfg.hdx.combine:
+            # The combined publish decides what this layer's Item records.
+            built.source_metadata = self._source_metadata(job) if writes_items(self._cfg) else None
+            return built
+        dataset_kept = True
+        if job.publisher is not None:
             try:
-                refreshed = self._refresh_dataset_dates(job.category, job.query, job.publisher)
-                if refreshed is not None and self._stages_stac():
-                    self._stamp_published_item(job.category)
+                dataset_kept = (
+                    self._refresh_dataset_dates(job.category, job.query, job.publisher) is not None
+                )
             except HDXError:
-                # An empty layer has nothing to re-export, so a failed refresh only leaves
-                # the older date in place.
+                # A failed refresh leaves the older dates, and the undated Item keeps it due.
                 logger.exception("%s metadata refresh failed", job.log_prefix)
-        return job.result("empty", feature_count=0)
+                return built
+        if writes_items(self._cfg):
+            self._record_empty_item(
+                job.category,
+                dataset_kept,
+                self._compute_source_metadata(job),
+                job.out_root,
+                job.boundary.geojson,
+            )
+        return built
+
+    def _record_empty_item(
+        self,
+        category: CategoryConfig,
+        dataset_kept: bool,
+        source_metadata: SourceMetadata,
+        out_root: Path,
+        boundary_geojson: str | None,
+    ) -> None:
+        """An HDX dataset that still holds the layer's files keeps the Item that lists them."""
+        if dataset_kept and self._published_item_has_files(category):
+            self._stamp_published_item(category)
+        else:
+            self._write_empty_item(category, source_metadata, out_root, boundary_geojson)
 
     def _skip_if_unchanged(
         self, job: _CategoryJob, publisher: HdxPublisher, content_hash: str, feature_count: int
@@ -722,8 +778,7 @@ class Exporter:
         if refreshed is None:
             logger.info("%s has no HDX dataset to refresh; exporting", job.log_prefix)
             return None
-        if not self._stamp_published_item(job.category):
-            raise CatalogConflictError(f"{job.category.name}: Item removed during the refresh")
+        self._confirm_published_item(job.category)
         if self._state is not None:
             self._state.mark_built(
                 job.slug,
@@ -774,6 +829,9 @@ class Exporter:
         """The layer's metadata, when the run writes metadata or a report."""
         if not self._want_metadata():
             return None
+        return self._compute_source_metadata(job)
+
+    def _compute_source_metadata(self, job: _CategoryJob) -> SourceMetadata:
         logger.info("%s computing metadata...", job.log_prefix)
         metadata_report = compute_metadata(
             job.conn,
@@ -924,11 +982,17 @@ class Exporter:
         Returns the HDX dataset name when HDX received it."""
         if self._cfg.hdx.combine:
             return None
+        dataset_name = None
         if job.publisher is not None:
-            return self._publish_to_hdx(job, job.publisher, outputs, source_metadata, content_hash)
-        if self._cfg.output.s3.enabled:
+            dataset_name = self._publish_to_hdx(
+                job, job.publisher, outputs, source_metadata, content_hash
+            )
+        elif self._cfg.output.s3.enabled:
             self._upload_category_to_s3(outputs.zip_paths, job.slug, job.log_prefix)
-        return None
+        if outputs.item_path is not None and writes_items(self._cfg):
+            # The Item is staged before the publish, which reads it; `updated` marks success.
+            self._confirm_published_item(job.category)
+        return dataset_name
 
     def _publish_to_hdx(
         self,
@@ -1071,6 +1135,10 @@ class Exporter:
         ]
         if not built_ok:
             logger.warning("[%s/%s] combine: no successful categories", iso3, self._runner.name)
+            if publisher is not None:
+                self._record_combined_layers(
+                    built_list, out_root, boundary_geojson, published=False
+                )
             return
 
         order = {category.name: index for index, category in enumerate(self._cfg.categories)}
@@ -1104,6 +1172,37 @@ class Exporter:
             boundary_bbox=boundary_bbox,
             boundary_geojson=boundary_geojson,
         )
+        self._record_combined_layers(built_list, out_root, boundary_geojson, published=True)
+
+    def _record_combined_layers(
+        self,
+        built_list: list[BuiltCategory],
+        out_root: Path,
+        boundary_geojson: str | None,
+        *,
+        published: bool,
+    ) -> None:
+        """Records each layer's Item after the combined publish, or when nothing was built; a
+        failed publish raises before this, so no layer is dated."""
+        if not writes_items(self._cfg):
+            return
+        missing = []
+        for built in built_list:
+            if built.result.status == "ok" and built.zip_paths:
+                if not self._stamp_published_item(built.category):
+                    missing.append(built.category.name)
+            elif built.result.status == "empty" and built.source_metadata is not None:
+                # With nothing published, the dataset still holds what it held before.
+                self._record_empty_item(
+                    built.category,
+                    not published,
+                    built.source_metadata,
+                    out_root,
+                    boundary_geojson,
+                )
+        if missing:
+            # Raised once every other layer is dated, so only these rerun.
+            raise CatalogConflictError(f"Items missing after the combined publish: {missing}")
 
     def _write_local_page(
         self,
@@ -1283,11 +1382,6 @@ class Exporter:
     def _artifact_url(self, path: Path | None, category_slug: str) -> str | None:
         return asset_href(self._cfg, category_slug, path.name) if path else None
 
-    def _stages_stac(self) -> bool:
-        """STAC goes to the bucket only when the files it links to go there too; a combined
-        run uploads its files only when it publishes to HDX."""
-        return self._cfg.output.s3.enabled and (self._cfg.hdx.push or not self._cfg.hdx.combine)
-
     def _want_metadata(self) -> bool:
         """The report is rendered from the layer metadata, so asking for it asks for both."""
         return self._cfg.output.metadata or self._cfg.output.report.enabled
@@ -1298,9 +1392,10 @@ class Exporter:
         """The layer's Item file, and its Collection when the layer is its own dataset."""
         item_path = self._write_item(layer, out_root)
         if collection_path is not None:
-            collection_id, collection_slug, collection_href = self._layer_collection(layer)
+            _, collection_slug, collection_href = self._layer_collection(layer)
             write_json(
-                self._collection_for([layer], collection_id, collection_slug), collection_path
+                self._collection_for([layer], layer.dataset_name, collection_slug),
+                collection_path,
             )
             if self._stage_metadata(collection_path, collection_slug):
                 self._staged_collections.append((self._collection_title([layer]), collection_href))
@@ -1308,11 +1403,12 @@ class Exporter:
 
     def _layer_collection(self, layer: LayerAssets) -> tuple[str, str, str]:
         combined = self._cfg.hdx.combine
-        collection_id = combined_dataset_name(self._cfg) if combined else layer.dataset_name
+        dataset_name = combined_dataset_name(self._cfg) if combined else layer.dataset_name
         collection_slug = COMBINED_SLUG if combined else slugify(layer.category.name)
         collection_href = href_or_filename(
-            self._cfg, collection_slug, collection_filename(collection_id, self._runner.name)
+            self._cfg, collection_slug, collection_filename(dataset_name, self._runner.name)
         )
+        collection_id = stac_collection_id(self._cfg, dataset_name, self._runner.name)
         return collection_id, collection_slug, collection_href
 
     def _write_item(self, layer: LayerAssets, out_root: Path) -> Path:
@@ -1408,7 +1504,11 @@ class Exporter:
         if not self._cfg.hdx.combine:
             return dataset_title(self._cfg, layers[0].category)
         place = country_name(self._cfg.iso3, dataset_name=self._cfg.dataset_name)
-        return combined_title(self._cfg, place, long_label(self._runner.name))
+        title = combined_title(self._cfg, place, long_label(self._runner.name))
+        # A configured title leaves the source out, so the suffix tells the per-source Collections apart.
+        if self._cfg.hdx.combined.title:
+            return f"{title} ({long_label(self._runner.name)})"
+        return title
 
     def _collection_description(self, layers: list[LayerAssets]) -> str:
         if not self._cfg.hdx.combine:
@@ -1418,7 +1518,7 @@ class Exporter:
     def _stage_metadata(self, path: Path, category_slug: str) -> bool:
         """Items are linked from the Collection rather than listed on HDX, so they go
         straight to the bucket the Collection points at."""
-        if not self._stages_stac():
+        if not stages_stac(self._cfg):
             return False
         s3_config = self._cfg.output.s3
         bucket, prefix, region, endpoint_url, acl = resolve_with_bucket(s3_config)
@@ -1624,17 +1724,61 @@ class Exporter:
             ),
         }
 
+    @functools.cached_property
+    def _catalog(self) -> S3CatalogStore:
+        """One store per run, since each builds its own boto3 session."""
+        return S3CatalogStore(self._cfg)
+
+    def _published_item(self, category: CategoryConfig) -> dict | None:
+        item, _ = self._catalog.read(published_item_key(self._cfg, category, self._runner.name))
+        return item
+
     def _published_content_hash(self, category: CategoryConfig) -> str | None:
         """None before a layer's first publish, so the layer is exported and uploaded."""
-        key = published_item_key(self._cfg, category, self._runner.name)
-        item, _ = S3CatalogStore(self._cfg).read(key)
+        item = self._published_item(category)
         return None if item is None else item.get("properties", {}).get("oex:content_hash")
 
+    def _published_item_has_files(self, category: CategoryConfig) -> bool:
+        item = self._published_item(category)
+        return item is not None and bool(item.get("assets"))
+
+    def _write_empty_item(
+        self,
+        category: CategoryConfig,
+        source_metadata: SourceMetadata,
+        out_root: Path,
+        boundary_geojson: str | None,
+    ) -> None:
+        """Rewritten every run, so a catalog reader can tell a layer checked and found empty
+        from one never exported. It has no Collection or HDX dataset to link to."""
+        layer = LayerAssets(
+            category=category,
+            title=dataset_title(self._cfg, category),
+            source_metadata=source_metadata,
+            dataset_name=layer_dataset_name(self._cfg, category),
+            footprint=self._item_footprint(boundary_geojson),
+        )
+        item = build_item(layer, self._cfg, self_href=item_href(self._cfg, layer))
+        item.common_metadata.updated = datetime.now(UTC)
+        # Its parent is the area catalog, since it has no Collection of its own.
+        if catalog := catalog_layout(self._cfg):
+            item.add_link(
+                pystac.Link(rel="parent", target=catalog.area.url, media_type=JSON_MEDIA_TYPE)
+            )
+        out_root.mkdir(parents=True, exist_ok=True)
+        item_path = out_root / item_filename(layer.dataset_name, self._runner.name)
+        write_json(item, item_path)
+        self._stage_metadata(item_path, slugify(category.name))
+
+    def _confirm_published_item(self, category: CategoryConfig) -> None:
+        if not self._stamp_published_item(category):
+            raise CatalogConflictError(f"{category.name}: Item missing after its publish")
+
     def _stamp_published_item(self, category: CategoryConfig) -> bool:
-        """A layer this run confirmed without rebuilding keeps its Item, so `updated` is what
-        tells a reader of the catalog when it was last checked."""
+        """Sets the published Item's `updated`, the marker that this layer's publish succeeded;
+        False when the Item is missing."""
         return stamp_updated(
-            S3CatalogStore(self._cfg),
+            self._catalog,
             published_item_key(self._cfg, category, self._runner.name),
             pystac.utils.datetime_to_str(datetime.now(UTC)),
         )

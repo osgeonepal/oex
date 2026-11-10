@@ -59,14 +59,24 @@ def materialise(
     select_clause: str,
     where_clause: str,
 ) -> int:
-    sql = f"""
-    CREATE OR REPLACE TABLE {table_name} AS (
-        SELECT {select_clause}
-        FROM {source_expr}
-        WHERE {where_clause}
-    )
-    """
+    query = f"SELECT {select_clause}\n        FROM {source_expr}\n        WHERE {where_clause}"
+    sql = f"CREATE OR REPLACE TABLE {table_name} AS ({_trimmed_text(conn, query)})"
     logger.debug("Materialising %s with SQL:\n%s", table_name, sql)
     conn.execute(sql)
     count_row = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
     return int(count_row[0]) if count_row else 0
+
+
+def _trimmed_text(conn: duckdb.DuckDBPyConnection, query: str) -> str:
+    """`query` with its text trimmed and blanks, such as an Overture address of "", made
+    missing, since a blank would count as filled and as a common value."""
+    text_columns = [
+        sql_identifier(name)
+        for name, kind, *_ in conn.execute(f"DESCRIBE {query}").fetchall()
+        if kind == "VARCHAR"
+    ]
+    if not text_columns:
+        return query
+    # DuckDB's trim strips spaces only, so tabs and line breaks are named.
+    cleaned = ", ".join(f"nullif(trim({name}, ' \t\n\r'), '') AS {name}" for name in text_columns)
+    return f"SELECT * REPLACE ({cleaned}) FROM ({query})"

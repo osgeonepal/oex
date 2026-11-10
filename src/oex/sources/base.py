@@ -11,6 +11,16 @@ class CategorySkippedError(RuntimeError):
     """Raised by a source when a category is not applicable to it."""
 
 
+def exports_category(cfg: RootConfig, category: CategoryConfig, source_name: str) -> bool:
+    """Whether a run of `source_name` exports the category at all, so it gets a STAC Item."""
+    block = getattr(category, source_name)
+    if not block.enabled or not (category.formats or cfg.output.formats):
+        return False
+    if source_name == "overture":
+        return bool(block.theme and block.feature_type)
+    return True
+
+
 @dataclass(frozen=True)
 class SourceQuery:
     source_expr: str

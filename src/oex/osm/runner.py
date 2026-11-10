@@ -31,7 +31,7 @@ from oex.locale import local_osm_languages
 from oex.logging_setup import get_logger
 from oex.osm.category_filter import category_where_predicate, union_tag_filter
 from oex.osm.country_parquet import LiveSnapshot
-from oex.osm.engines import ENGINE_NAMES
+from oex.osm.engines import ENGINE_NAMES, area_rules
 from oex.osm.errors import OsmEngineUnavailableError
 from oex.osm.extract import osmium_polygon_extract
 from oex.osm.fetch_planet import download_pbf
@@ -97,6 +97,7 @@ def _parquet_fingerprint(cfg: RootConfig, *, clip: bool) -> str:
             "clip": clip_key,
             "filter": union_tag_filter(cfg.categories),
             "ignore_metadata_tags": _IGNORE_METADATA_TAGS,
+            "area_rules": area_rules(),
         },
         sort_keys=True,
         default=str,
@@ -170,7 +171,7 @@ def _refuse_stale_planet(planet_pbf: Path, frequency: str) -> None:
         )
 
 
-def _refreshes_planet(osm_config: OsmSourceConfig) -> bool:
+def refreshes_planet(osm_config: OsmSourceConfig) -> bool:
     """A remote pbf_path is copied from its own source, so only a local planet is refreshed."""
     is_local = bool(osm_config.pbf_path) and UPath(osm_config.pbf_path).protocol in (
         "",
@@ -215,7 +216,7 @@ class OsmRunner(SourceRunner):
             if not pbf.exists():
                 return None
             if (
-                _refreshes_planet(osm_config)
+                refreshes_planet(osm_config)
                 and _planet_published_at(osm_config.pbf_url) > pbf.stat().st_mtime
             ):
                 return None
@@ -476,6 +477,7 @@ class OsmRunner(SourceRunner):
             result_file_path=country_parquet,
             keep_all_tags=True,
             ignore_metadata_tags=_IGNORE_METADATA_TAGS,
+            osm_way_polygon_features_config=area_rules(),
             sort_result=True,
             compression="zstd",
             compression_level=3,
@@ -678,7 +680,7 @@ def refresh_planet_pbf(osm_config: OsmSourceConfig, planet_pbf: Path) -> Path:
     concurrent runs share one download."""
     with _download_lock(planet_pbf):
         published_at = (
-            _planet_published_at(osm_config.pbf_url) if _refreshes_planet(osm_config) else None
+            _planet_published_at(osm_config.pbf_url) if refreshes_planet(osm_config) else None
         )
         outdated = (
             published_at is not None

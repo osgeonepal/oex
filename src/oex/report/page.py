@@ -68,6 +68,10 @@ a.dl-btn:focus-visible, select.fmt:focus-visible { outline: 2px solid var(--acce
 }
 @media (max-width: 480px) {
   .kpis { grid-template-columns: 1fr; }
+  /* The percentage already says what the bar draws, and the values need the width. */
+  .bar-cell { display: none; }
+  .top-values { min-width: 0; }
+  .top-values code { overflow-wrap: anywhere; }
   .ds-head h1 { font-size: 18px; }
   .legend { left: 8px; right: auto; top: 8px; bottom: auto; max-width: calc(100% - 60px);
             max-height: 45%; }
@@ -366,6 +370,8 @@ def _map(
             source_layer=layer.tileset[1],
             match_key=layer.match_key,
             feature_count=layer.source.metadata.feature_count,
+            bbox=_bbox(layer.source.metadata.bbox),
+            attribution=_DATA_CREDITS.get(layer.source.source_name),
         )
         for layer in layers
         if layer.tileset is not None
@@ -377,3 +383,14 @@ def _map(
         boundary_geojson=boundary_geojson,
         theme=theme,
     )
+
+
+def _bbox(
+    bbox: tuple[float, float, float, float] | None,
+) -> tuple[float, float, float, float] | None:
+    """Only an ordinary west-to-east box; one across 180 degrees would frame the whole globe."""
+    return bbox if bbox and bbox[0] <= bbox[2] else None
+
+
+# The basemap credits OpenStreetMap already; Overture asks to be credited where its data shows.
+_DATA_CREDITS = {"overture": '<a href="https://overturemaps.org">Overture Maps Foundation</a>'}

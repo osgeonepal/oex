@@ -137,7 +137,7 @@ def test_combined_metadata_is_one_file_per_source_covering_its_layers(
     assert path is not None and path.name == "hotosm_npl_overture_metadata.json"
     doc = json.loads(path.read_text(encoding="utf-8"))
     assert doc["type"] == "Collection"
-    assert doc["id"] == "hotosm_npl"
+    assert (doc["id"], doc["oex:dataset"]) == ("hotosm_npl_overture", "hotosm_npl")
     # Titled with the place, since an Item turns up in searches away from its Collection.
     assert [link["title"] for link in doc["links"] if link["rel"] == "item"] == [
         "Buildings of Nepal",

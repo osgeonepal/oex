@@ -83,6 +83,7 @@ def load_config(
         raise ConfigError("Merged config did not resolve to RootConfig")
     _validate_osm_engine(container)
     _validate_formats(container)
+    _validate_transliterate_prefer(container)
     _validate_pcodes(container)
     _validate_theme(container)
     _validate_pmtiles(container)
@@ -177,6 +178,29 @@ def _validate_formats(cfg: RootConfig) -> None:
                 f"{setting}={format_name!r} has no effect: {format_name} is always published unzipped so it "
                 "can be read in place over HTTP. Remove it from zip_formats."
             )
+
+
+_SELECT_ALIAS = re.compile(r'(?i)(?:\bAS\s+)?"?([A-Za-z_][A-Za-z0-9_]*)"?\s*$')
+
+
+def _validate_transliterate_prefer(cfg: RootConfig) -> None:
+    """A source may leave the preferred column out, so a misspelt `prefer` would otherwise
+    be skipped on every layer without a word."""
+    for category in cfg.categories:
+        selects = [
+            *(category.osm.select if category.osm.enabled else []),
+            *(category.overture.select if category.overture.enabled else []),
+            *(category.file.select.keys() if category.file.enabled else []),
+        ]
+        if not selects:
+            continue
+        columns = {match.group(1) for item in selects if (match := _SELECT_ALIAS.search(item))}
+        for rule in category.transliterate:
+            if rule.prefer is not None and rule.prefer not in columns:
+                raise ConfigError(
+                    f"categories[{category.name}].transliterate prefer={rule.prefer!r} is not "
+                    "a column any of the category's sources selects"
+                )
 
 
 def _validate_pcodes(cfg: RootConfig) -> None:

@@ -6,7 +6,7 @@ import json
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import antimeridian
 import pystac
@@ -92,7 +92,56 @@ def spdx_license(hdx_license: str) -> str:
 
 def _layer_licenses(layers: list[LayerAssets]) -> list[str]:
     """Distinct SPDX ids across a dataset's layers; Overture themes carry different ones."""
-    return sorted({spdx_license(layer.category.hdx.license) for layer in layers})
+    return sorted(
+        {layer_license(layer.category, layer.source_metadata.source_name).spdx for layer in layers}
+    )
+
+
+_OVERTURE_ATTRIBUTION = "https://docs.overturemaps.org/attribution/"
+
+
+class LayerLicense(NamedTuple):
+    spdx: str
+    title: str
+    url: str
+
+
+# docs.overturemaps.org/attribution gives one licence per theme, except Places and Addresses,
+# which carry their data providers' own licences.
+_OVERTURE_THEME_LICENSES: dict[str, str | LayerLicense] = {
+    "base": "hdx-odc-odbl",
+    "buildings": "hdx-odc-odbl",
+    "divisions": "hdx-odc-odbl",
+    "transportation": "hdx-odc-odbl",
+    "places": LayerLicense(
+        "CDLA-Permissive-2.0 AND Apache-2.0 AND CC0-1.0",
+        "CDLA Permissive 2.0, Apache 2.0 or CC0 1.0, by place provider",
+        _OVERTURE_ATTRIBUTION,
+    ),
+    "addresses": LayerLicense(
+        _NO_SPDX, "Open licences that vary by address provider", _OVERTURE_ATTRIBUTION
+    ),
+}
+
+
+def layer_license(category: CategoryConfig, source_name: str) -> LayerLicense:
+    """What a layer's data is published under: an Overture layer carries its theme's
+    licence, any other the category's HDX licence."""
+    if source_name != "overture" or not category.overture.theme:
+        return _hdx_license(category.hdx.license, category.hdx.license_url)
+    theme = category.overture.theme
+    if theme not in _OVERTURE_THEME_LICENSES:
+        raise ValueError(f"{category.name}: no licence known for Overture theme {theme!r}")
+    known = _OVERTURE_THEME_LICENSES[theme]
+    return _hdx_license(known) if isinstance(known, str) else known
+
+
+def _hdx_license(hdx_license: str, license_url: str | None = None) -> LayerLicense:
+    return LayerLicense(
+        spdx_license(hdx_license),
+        license_label(hdx_license),
+        license_href(hdx_license, license_url),
+    )
 
 
 def license_href(hdx_license: str, license_url: str | None) -> str:
@@ -120,6 +169,40 @@ def item_filename(dataset_name: str, source_name: str) -> str:
 
 def collection_filename(dataset_name: str, source_name: str) -> str:
     return f"{dataset_name}_{source_name}_metadata.json"
+
+
+def stages_stac(cfg: RootConfig) -> bool:
+    """STAC goes to the bucket only when the files it links to go there too; a combined run
+    uploads its files only when it publishes to HDX."""
+    return cfg.output.s3.enabled and (cfg.hdx.push or not cfg.hdx.combine)
+
+
+def last_published(cfg: RootConfig, source_name: str, store: Any) -> datetime | None:
+    """Oldest `updated` across the layers `source_name` exports; None while one has no Item or
+    no `updated`, since that layer has yet to reach HDX."""
+    from oex.sources.base import exports_category
+
+    moments = []
+    for category in cfg.categories:
+        if not exports_category(cfg, category, source_name):
+            continue
+        item, _ = store.read(published_item_key(cfg, category, source_name))
+        updated = (item or {}).get("properties", {}).get("updated")
+        if updated is None:
+            return None
+        moments.append(parse_utc(updated))
+    return min(moments, default=None)
+
+
+def stac_collection_id(cfg: RootConfig, dataset_name: str, source_name: str) -> str:
+    """Each source of a combined dataset writes its own Collection, so the id names the source."""
+    return f"{dataset_name}_{source_name}" if cfg.hdx.combine else dataset_name
+
+
+def writes_items(cfg: RootConfig) -> bool:
+    """Whether a run dates the layer Items: they are built from the layer metadata, and their
+    `updated` time says HDX holds the layer, so a run that skips HDX leaves them undated."""
+    return stages_stac(cfg) and cfg.hdx.push and (cfg.output.metadata or cfg.output.report.enabled)
 
 
 def published_item_key(cfg: RootConfig, category: CategoryConfig, source_name: str) -> str:
@@ -204,7 +287,7 @@ def build_item(
                 "oex:boundary": source_metadata.boundary,
                 "oex:version": source_metadata.oex_version,
                 "oex:pcode_source_date": source_metadata.pcode_source_date,
-                "oex:geometry_types": metadata_report.geometry_types,
+                "oex:geometry_types": metadata_report.geometry_types or None,
                 # The column name and its coverage have no STAC field of their own.
                 "oex:temporal": asdict(metadata_report.temporal)
                 if metadata_report.temporal
@@ -220,7 +303,8 @@ def build_item(
     common = item.common_metadata
     common.title = layer.title or category_label(category)
     common.description = metadata_report.summary
-    common.license = spdx_license(category.hdx.license)
+    license_id, license_title, license_url = layer_license(category, source_metadata.source_name)
+    common.license = license_id
     common.created = _moment(source_metadata.generated_utc, source_metadata.generated_utc)
     common.keywords = list(category.hdx.tags)
     common.providers = _providers(source_metadata)
@@ -229,13 +313,7 @@ def build_item(
         common.start_datetime = start
         common.end_datetime = end
 
-    item.add_link(
-        pystac.Link(
-            rel="license",
-            target=license_href(category.hdx.license, category.hdx.license_url),
-            title=license_label(category.hdx.license),
-        )
-    )
+    item.add_link(pystac.Link(rel="license", target=license_url, title=license_title))
     catalog = catalog_layout(cfg)
     _address(item, self_href, catalog.root.url if catalog else collection_href)
     if collection_href:
@@ -275,13 +353,14 @@ def build_collection(
     names the area's other dataset Collections as (title, href)."""
     if not layers:
         raise ValueError("build_collection needs at least one layer")
+    collection_id = stac_collection_id(cfg, dataset_name, layers[0].source_metadata.source_name)
     items = [
-        build_item(layer, cfg, collection_id=dataset_name, collection_href=self_href)
+        build_item(layer, cfg, collection_id=collection_id, collection_href=self_href)
         for layer in layers
     ]
     licenses = _layer_licenses(layers)
     collection = pystac.Collection(
-        id=dataset_name,
+        id=collection_id,
         title=title,
         description=description,
         extent=_extent(items),
@@ -289,6 +368,7 @@ def build_collection(
         keywords=keywords or sorted({tag for layer in layers for tag in layer.category.hdx.tags}),
         providers=_providers(layers[0].source_metadata),
     )
+    collection.extra_fields["oex:dataset"] = dataset_name
     collection.summaries = pystac.Summaries(
         {
             "oex:category": sorted({slugify(layer.category.name) for layer in layers}),
@@ -296,15 +376,11 @@ def build_collection(
         }
     )
     collection.item_assets.update(_item_assets(items))
-    distinct = {(layer.category.hdx.license, layer.category.hdx.license_url) for layer in layers}
-    for hdx_license, license_url in sorted(distinct, key=lambda pair: (pair[0], pair[1] or "")):
-        collection.add_link(
-            pystac.Link(
-                rel="license",
-                target=license_href(hdx_license, license_url),
-                title=license_label(hdx_license),
-            )
-        )
+    distinct = {
+        layer_license(layer.category, layer.source_metadata.source_name)[1:] for layer in layers
+    }
+    for title, url in sorted(distinct):
+        collection.add_link(pystac.Link(rel="license", target=url, title=title))
     for layer, item in zip(layers, items, strict=True):
         collection.add_link(
             pystac.Link(

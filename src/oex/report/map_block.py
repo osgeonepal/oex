@@ -33,7 +33,7 @@ span.sw { display: inline-block; width: 11px; height: 11px; border-radius: 2px;
 .legend summary::-webkit-details-marker { display: none; }
 .legend summary::after { content: "\\25be"; margin-left: auto; color: var(--muted); }
 .legend[open] summary::after { content: "\\25b4"; }
-.legend-actions { display: flex; gap: 6px; padding: 0 11px 8px; }
+.legend-actions { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 11px 8px; }
 .legend-actions button { font: inherit; font-size: 11px; padding: 4px 9px; cursor: pointer;
           border: 1px solid var(--line); border-radius: 3px; background: var(--bg);
           color: var(--fg); }
@@ -47,9 +47,13 @@ span.sw { display: inline-block; width: 11px; height: 11px; border-radius: 2px;
                 font-size: 11px; }
 .maplibregl-popup { z-index: 3; }
 .maplibregl-popup-content { border-top: 3px solid var(--popup); padding: 10px 12px; }
-.maplibregl-popup-content b { color: var(--popup); }
+.maplibregl-popup-content b { color: var(--fg); }
+.popup-features { overflow-y: auto; }
+.popup-features section + section { border-top: 1px solid var(--line); margin-top: 8px;
+                                    padding-top: 8px; }
 table.popup { border-collapse: collapse; margin-top: 6px; font-size: 12px; }
-table.popup th { text-align: left; color: var(--muted); font-weight: 400;
+table.popup th { text-align: left; color: var(--muted); font-weight: 400; font-size: 12px;
+                 text-transform: none; letter-spacing: 0; font-family: var(--mono);
                  padding: 2px 10px 2px 0; white-space: nowrap; }
 table.popup td { font-family: var(--mono); padding: 2px 0; word-break: break-word; }
 .legend .sw.outline { background: transparent; border: 2px solid var(--boundary); }
@@ -73,14 +77,18 @@ class MapEntry:
     # Restricts this entry to part of a shared tileset, as `category|source`.
     match_key: str | None = None
     feature_count: int | None = None
+    # West, south, east, north of the layer's features, for the Zoom button.
+    bbox: tuple[float, float, float, float] | None = None
+    # Who to credit for the layer's data in the map's attribution.
+    attribution: str | None = None
 
 
 _MAP_CONTROLS_SCRIPT = """map.addControl(new maplibregl.NavigationControl());
 map.addControl(new maplibregl.FullscreenControl());
 
-// Each entry owns three style layers (polygon, line, point), so a checkbox is a
-// visibility flip on those three.
-const suffixes = ['fill', 'line', 'point'];
+// Each entry owns its polygon, outline, line and point style layers, so a checkbox is a
+// visibility flip on those.
+const suffixes = ['fill', 'casing', 'line', 'point'];
 const toggles = document.querySelectorAll('.legend input');
 
 function applyToggle(toggle) {
@@ -95,10 +103,35 @@ function applyToggle(toggle) {
   }
 }
 toggles.forEach((t) => t.addEventListener('change', () => applyToggle(t)));
-document.querySelectorAll('.legend-actions button').forEach((button) => {
+document.querySelectorAll('.legend-actions button[data-all]').forEach((button) => {
   button.addEventListener('click', () => {
     const on = button.dataset.all === 'on';
     toggles.forEach((t) => { t.checked = on; applyToggle(t); });
+  });
+});
+
+// Framing leaves room for the open legend, or closes it when it would cover a third of the
+// map, and for the zoom buttons on the right.
+function framePadding() {
+  const legend = document.querySelector('.legend');
+  const legendWidth = legend && legend.open ? legend.offsetWidth + 34 : 0;
+  if (legendWidth > map.getContainer().clientWidth / 3) legend.open = false;
+  return { top: 24, right: 60, bottom: 24, left: legendWidth && legend.open ? legendWidth : 24 };
+}
+function fitTo(bounds, duration) {
+  if (!bounds) return;
+  map.fitBounds([[bounds[0], bounds[1]], [bounds[2], bounds[3]]],
+                { padding: framePadding(), duration: duration, maxZoom: 16 });
+}
+// Zooms to the ticked layers, or back to the whole area when none is ticked.
+document.querySelectorAll('.legend-actions button[data-zoom]').forEach((button) => {
+  button.addEventListener('click', () => {
+    const picked = Array.from(toggles)
+      .filter((t) => t.checked && boundsOfKey[t.dataset.key])
+      .map((t) => boundsOfKey[t.dataset.key]);
+    if (!picked.length) { fitTo(areaBounds, 600); return; }
+    fitTo([Math.min(...picked.map((b) => b[0])), Math.min(...picked.map((b) => b[1])),
+           Math.max(...picked.map((b) => b[2])), Math.max(...picked.map((b) => b[3]))], 600);
   });
 });
 
@@ -108,9 +141,11 @@ _FEATURE_INSPECTION_SCRIPT = """const layerIds = Object.keys(labelOfLayer);
 const hovercard = document.getElementById('hovercard');
 
 // Hovering names the feature; clicking opens everything it carries.
+// The hover card would cover an open popup's title, so it waits until the popup closes.
+let openPopup = null;
 map.on('mousemove', layerIds, (event) => {
   const hit = event.features && event.features[0];
-  if (!hit) return;
+  if (!hit || openPopup) return;
   map.getCanvas().style.cursor = 'pointer';
   const name = hit.properties.name || '(no name)';
   hovercard.textContent = '';
@@ -121,7 +156,9 @@ map.on('mousemove', layerIds, (event) => {
   label.textContent = name;
   hovercard.append(layerName, label);
   hovercard.style.display = 'block';
-  hovercard.style.left = (event.point.x + 14) + 'px';
+  // Near the right edge the card flips to the cursor's left, so the map does not cut it off.
+  const flip = event.point.x + 14 + hovercard.offsetWidth > map.getContainer().clientWidth;
+  hovercard.style.left = (flip ? event.point.x - 14 - hovercard.offsetWidth : event.point.x + 14) + 'px';
   hovercard.style.top = (event.point.y + 14) + 'px';
 });
 map.on('mouseleave', layerIds, () => {
@@ -130,12 +167,43 @@ map.on('mouseleave', layerIds, () => {
 });
 
 map.on('click', (event) => {
-  const hit = map.queryRenderedFeatures(event.point, { layers: layerIds })[0];
-  if (!hit) return;
-  // Tag values are editable by anyone, so they are written as text, never as markup.
+  // Every feature under the cursor, with slack so thin lines and small points are hit.
+  const { x, y } = event.point;
+  const hits = map.queryRenderedFeatures([[x - 4, y - 4], [x + 4, y + 4]], { layers: layerIds });
+  // A line comes back from both its casing and line layers, and a feature once per tile.
+  const seen = new Set();
+  const features = hits.filter((hit) => {
+    const key = labelOfLayer[hit.layer.id] + JSON.stringify(hit.properties);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  if (!features.length) return;
   const content = document.createElement('div');
+  content.className = 'popup-features';
+  // Sized from the map, so the popup's last rows stay inside it on a short phone screen.
+  content.style.maxHeight = Math.round(map.getContainer().clientHeight * 0.45) + 'px';
+  features.forEach((hit) => content.append(featureBlock(hit)));
+  hovercard.style.display = 'none';
+  const popup = new maplibregl.Popup({ maxWidth: 'min(340px, calc(100vw - 48px))' })
+    .setLngLat(event.lngLat)
+    .setDOMContent(content)
+    .addTo(map);
+  // The previous popup closes after this one opens, so only this popup may clear the flag.
+  openPopup = popup;
+  popup.on('close', () => { if (openPopup === popup) openPopup = null; });
+  popup.getElement().querySelector('.maplibregl-popup-content')
+    .style.borderTopColor = colorOfLayer[features[0].layer.id];
+});
+
+function featureBlock(hit) {
+  // Tag values are editable by anyone, so they are written as text, never as markup.
+  const block = document.createElement('section');
   const title = document.createElement('b');
-  title.textContent = labelOfLayer[hit.layer.id];
+  const swatch = document.createElement('span');
+  swatch.className = 'sw';
+  swatch.style.background = colorOfLayer[hit.layer.id];
+  title.append(swatch, labelOfLayer[hit.layer.id]);
   const table = document.createElement('table');
   table.className = 'popup';
   // On a shared tileset, category and source name the layer the title already gives.
@@ -150,12 +218,9 @@ map.on('click', (event) => {
       row.insertCell().textContent = value;
     });
   if (!table.rows.length) table.insertRow().insertCell().textContent = '(no attributes)';
-  content.append(title, table);
-  new maplibregl.Popup({ maxWidth: '320px' })
-    .setLngLat(event.lngLat)
-    .setDOMContent(content)
-    .addTo(map);
-});
+  block.append(title, table);
+  return block;
+}
 
 """
 
@@ -188,7 +253,7 @@ def render_map(
         '<div class="map-wrap">'
         '<div id="map"></div>'
         '<div class="hovercard" id="hovercard"></div>'
-        f"{_render_legend(entries, show_aoi=outline is not None)}"
+        f"{_render_legend(entries, show_aoi=outline is not None, show_area=boundary_bbox is not None)}"
         "</div>\n"
         f"<script>{script}</script>\n"
     )
@@ -221,6 +286,10 @@ def _map_script(
     labels = _js_literal(
         {layer_id: entry.label for entry in entries for layer_id in _layer_ids(entry)}
     )
+    colors = _js_literal(
+        {layer_id: entry.color for entry in entries for layer_id in _layer_ids(entry)}
+    )
+    bounds = _js_literal({entry.key: entry.bbox for entry in entries if entry.bbox})
     shared = _js_literal(
         [
             layer_id
@@ -250,20 +319,24 @@ const map = new maplibregl.Map({{
   }}
 }});
 """
+        + f"""const areaBounds = {_js_literal(list(boundary_bbox) if boundary_bbox else None)};
+const boundsOfKey = {bounds};
+"""
         + _MAP_CONTROLS_SCRIPT
         + f"""// Inspecting a feature is how you check the attribute coverage the table reports.
 const labelOfLayer = {labels};
+const colorOfLayer = {colors};
 const sharedLayers = new Set({shared});
 """
         + _FEATURE_INSPECTION_SCRIPT
-        + f"""// The map is built in a hidden tab, so it is framed the first time it has a size.
+        + """// The map is built in a hidden tab, so it is framed the first time it has a size.
 let framed = false;
-function frameMap() {{
+function frameMap() {
   if (framed || !map.getContainer().clientWidth) return;
   framed = true;
-  {_fit_bounds_call(boundary_bbox)}
-}}
-map.on('load', () => {{ frameMap(); toggles.forEach(applyToggle); }});
+  fitTo(areaBounds, 0);
+}
+map.on('load', () => { frameMap(); toggles.forEach(applyToggle); });
 """
         + (_COLLAPSE_LEGEND_ON_PHONES if len(entries) > _PHONE_LEGEND_OPEN_MAX else "")
     )
@@ -285,17 +358,25 @@ def _style_definitions(
     sources = {f"src{index}": url for index, url in enumerate(sorted(tilesets))}
     source_of = {url: name for name, url in sources.items()}
 
+    credits = {
+        url: sorted({entry.attribution for entry in entries if entry.tileset_url == url} - {None})
+        for url in tilesets
+    }
     source_definitions = ",\n      ".join(
-        f"{name}: {{ type: 'vector', url: {_js_literal(f'pmtiles://{url}')} }}"
+        f"{name}: {{ type: 'vector', url: {_js_literal(f'pmtiles://{url}')},"
+        f" attribution: {_js_literal(', '.join(credits[url]))} }}"
         for name, url in sources.items()
     )
     definitions = {
         entry.key: _layer_definitions(entry, source_of[entry.tileset_url]) for entry in entries
     }
     largest_first = sorted(entries, key=lambda entry: entry.feature_count or 0, reverse=True)
-    # Fills, then lines, then points largest first, so small layers stay on top to click.
+    # Denser fills draw last (buildings over residential areas) and smaller point layers on
+    # top, so the small features stay visible and first to click.
+    fewest_first = largest_first[::-1]
     layer_definitions = ",\n      ".join(
-        [definitions[entry.key].fill for entry in entries]
+        [definitions[entry.key].fill for entry in fewest_first]
+        + [definitions[entry.key].casing for entry in entries]
         + [definitions[entry.key].line for entry in entries]
         + [definitions[entry.key].point for entry in largest_first]
     )
@@ -310,24 +391,19 @@ def _style_definitions(
     return source_definitions, layer_definitions
 
 
-def _fit_bounds_call(boundary_bbox: tuple[float, float, float, float] | None) -> str:
-    """Frame on the export boundary: features are selected whole, so a long road or river
-    crossing the boundary would otherwise stretch the view past the export."""
-    if not boundary_bbox:
-        return ""
-    return (
-        f"map.fitBounds([[{boundary_bbox[0]},{boundary_bbox[1]}],"
-        f"[{boundary_bbox[2]},{boundary_bbox[3]}]], {{padding: 24, duration: 0}});"
-    )
-
-
 # Thin at country zoom, readable at street zoom, where an event page is read.
 _LINE_WIDTH = "['interpolate', ['linear'], ['zoom'], 6, 0.8, 10, 1.4, 14, 2.5]"
-_POINT_RADIUS = "['interpolate', ['linear'], ['zoom'], 6, 3, 12, 4, 16, 6]"
+# Small at country zoom, so a few stray points do not hide a layer that is mostly areas.
+_POINT_RADIUS = "['interpolate', ['linear'], ['zoom'], 6, 2, 10, 3, 12, 4, 16, 6]"
+_POINT_STROKE = "['interpolate', ['linear'], ['zoom'], 6, 0.4, 12, 1]"
+_CASING_WIDTH = "['interpolate', ['linear'], ['zoom'], 6, 1.6, 10, 2.4, 14, 3.8]"
+# A dark edge keeps the palette's pale colours readable over the light basemap.
+_EDGE_COLOR = "'rgba(26, 26, 26, 0.55)'"
 
 
 class LayerDefinitions(NamedTuple):
     fill: str
+    casing: str
     line: str
     point: str
 
@@ -342,19 +418,24 @@ def _layer_ids(entry: MapEntry) -> list[str]:
 def _layer_definitions(entry: MapEntry, source: str) -> LayerDefinitions:
     common = f"source: '{source}', 'source-layer': {_js_literal(entry.source_layer)}"
     color = _js_literal(entry.color)
-    fill_id, line_id, point_id = (_js_literal(layer_id) for layer_id in _layer_ids(entry))
+    fill_id, casing_id, line_id, point_id = (
+        _js_literal(layer_id) for layer_id in _layer_ids(entry)
+    )
     return LayerDefinitions(
         fill=f"{{ id: {fill_id}, type: 'fill', {common},"
         f" filter: {_filter(entry, 'Polygon')},"
         f" paint: {{ 'fill-color': {color}, 'fill-opacity': 0.5,"
-        f" 'fill-outline-color': {color} }} }}",
+        f" 'fill-outline-color': {_EDGE_COLOR} }} }}",
+        casing=f"{{ id: {casing_id}, type: 'line', {common},"
+        f" filter: {_filter(entry, 'LineString')},"
+        f" paint: {{ 'line-color': {_EDGE_COLOR}, 'line-width': {_CASING_WIDTH} }} }}",
         line=f"{{ id: {line_id}, type: 'line', {common},"
         f" filter: {_filter(entry, 'LineString')},"
         f" paint: {{ 'line-color': {color}, 'line-width': {_LINE_WIDTH} }} }}",
         point=f"{{ id: {point_id}, type: 'circle', {common},"
         f" filter: {_filter(entry, 'Point')},"
         f" paint: {{ 'circle-color': {color}, 'circle-radius': {_POINT_RADIUS},"
-        f" 'circle-stroke-width': 1, 'circle-stroke-color': '#1a1a1a' }} }}",
+        f" 'circle-stroke-width': {_POINT_STROKE}, 'circle-stroke-color': '#1a1a1a' }} }}",
     )
 
 
@@ -366,7 +447,9 @@ def _filter(entry: MapEntry, geometry: str) -> str:
     return f"['all', {geometry_test}, ['==', {key_expression}, {_js_literal(entry.match_key)}]]"
 
 
-def _render_legend(entries: list[MapEntry], *, show_aoi: bool = False) -> str:
+def _render_legend(
+    entries: list[MapEntry], *, show_aoi: bool = False, show_area: bool = False
+) -> str:
     """Collapsible, because on a phone it would otherwise cover the map it explains."""
     aoi_item = (
         "<li><label>"
@@ -384,14 +467,15 @@ def _render_legend(entries: list[MapEntry], *, show_aoi: bool = False) -> str:
         "</label></li>"
         for entry in entries
     )
-    actions = (
-        '<div class="legend-actions">'
+    buttons = (
         '<button type="button" data-all="on">Select all</button>'
         '<button type="button" data-all="off">Clear all</button>'
-        "</div>"
         if len(entries) > 1
         else ""
     )
+    if show_area or any(entry.bbox for entry in entries):
+        buttons += '<button type="button" data-zoom title="Zoom to the ticked layers">Zoom</button>'
+    actions = f'<div class="legend-actions">{buttons}</div>' if buttons else ""
     return (
         '<details class="legend" open>'
         f"<summary>Layers ({len(entries)})</summary>"
@@ -404,8 +488,10 @@ def _render_legend(entries: list[MapEntry], *, show_aoi: bool = False) -> str:
 def _count_label(feature_count: int | None) -> str:
     if feature_count is None:
         return ""
-    if feature_count >= 1000:
+    if feature_count >= 9_950:
         shown = f"{feature_count / 1000:.0f}k"
+    elif feature_count >= 1000:
+        shown = f"{feature_count / 1000:.1f}k"
     else:
         shown = str(feature_count)
     return f'<span class="legend-count">{shown}</span>'

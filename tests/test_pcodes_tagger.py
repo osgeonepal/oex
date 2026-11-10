@@ -263,16 +263,17 @@ def test_tag_table_skips_levels_with_null_pcodes(
     assert report.levels_tagged == [1]
     assert report.levels_empty == [2]
 
-    row = conn.execute("SELECT adm1_pcode, adm2_pcode FROM features WHERE id = 1").fetchone()
-    assert row == ("NP01", None)
+    row = conn.execute("SELECT adm1_pcode FROM features WHERE id = 1").fetchone()
+    assert row == ("NP01",)
+    columns = {name for name, *_ in conn.execute("DESCRIBE features").fetchall()}
+    assert not {"adm2_pcode", "adm2_name"} & columns
 
 
-def test_tag_table_handles_country_with_no_admin_data(
+def test_a_country_without_admin_boundaries_keeps_only_its_country_columns(
     conn: duckdb.DuckDBPyConnection,
     admin_cache: dict[int, PcodeCacheEntry],
 ) -> None:
-    """A country with no admin data still gets null pcode columns, so every country in a sweep
-    writes the same schema."""
+    """Columns for levels the country lacks would be empty in every row."""
     _make_features_table(conn, "features")
 
     report = tag_table(
@@ -285,25 +286,22 @@ def test_tag_table_handles_country_with_no_admin_data(
 
     assert report.levels_tagged == []
     assert sorted(report.levels_empty) == [1, 2]
-    assert report.adm0_pcode is None
+    columns = {row[0] for row in conn.execute("DESCRIBE features").fetchall()}
+    assert {"adm0_pcode", "adm0_name"} <= columns
+    assert not {"adm1_pcode", "adm1_name", "adm2_pcode", "adm2_name"} & columns
+    assert {row[0] for row in conn.execute("SELECT adm0_pcode FROM features").fetchall()} == {"ATA"}
 
-    cols_after = {r[0] for r in conn.execute("DESCRIBE features").fetchall()}
-    assert {
-        "adm0_pcode",
-        "adm0_name",
-        "adm1_pcode",
-        "adm1_name",
-        "adm2_pcode",
-        "adm2_name",
-    } <= cols_after
-    rows = conn.execute(
-        "SELECT adm0_pcode, adm0_name, adm1_pcode, adm2_pcode FROM features"
-    ).fetchall()
-    for r in rows:
-        assert r[0] == "ATA"
-        assert r[1] is None
-        assert r[2] is None
-        assert r[3] is None
+
+def test_a_level_the_country_lacks_is_left_out_while_its_other_levels_stay(
+    conn: duckdb.DuckDBPyConnection,
+    admin_cache: dict[int, PcodeCacheEntry],
+) -> None:
+    """The fixture has India at adm1 and nowhere at adm2."""
+    _make_features_table(conn, "features")
+    tag_table(conn, table="features", iso3="IND", cache_entries=admin_cache, levels=[1, 2])
+    columns = {row[0] for row in conn.execute("DESCRIBE features").fetchall()}
+    assert {"adm1_pcode", "adm1_name"} <= columns
+    assert not {"adm2_pcode", "adm2_name"} & columns
 
 
 def test_tag_table_drops_temp_admin_tables(

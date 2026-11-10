@@ -705,3 +705,56 @@ def test_the_item_bbox_grows_to_hold_features_that_cross_the_boundary():
     )
     assert item.geometry == triangle
     assert item.bbox == [88.6, 26.44, 92.28, 28.4]
+
+
+@pytest.mark.parametrize(
+    ("theme", "license_id", "href"),
+    [
+        (
+            "places",
+            "CDLA-Permissive-2.0 AND Apache-2.0 AND CC0-1.0",
+            "https://docs.overturemaps.org/attribution/",
+        ),
+        ("buildings", "ODbL-1.0", "https://spdx.org/licenses/ODbL-1.0.html"),
+    ],
+)
+def test_an_overture_layer_carries_its_themes_licence(theme, license_id, href):
+    """Overture Places is not ODbL, whatever the category's HDX licence says."""
+    from oex.config.schema import CategoryConfig
+    from oex.stac import layer_license
+
+    category = CategoryConfig(name="schools")
+    category.overture.theme = theme
+    assert layer_license(category, "overture")[0::2] == (license_id, href)
+    assert layer_license(category, "osm")[0] == "ODbL-1.0"
+
+
+def test_an_overture_theme_with_no_known_licence_is_refused():
+    from oex.config.schema import CategoryConfig
+    from oex.stac import layer_license
+
+    category = CategoryConfig(name="schools")
+    category.overture.theme = "satellite"
+    with pytest.raises(ValueError, match="satellite"):
+        layer_license(category, "overture")
+
+
+def test_a_collection_of_osm_and_overture_places_lists_both_licences():
+    places = _layer("education_facilities", source="overture")
+    places.category.overture.theme = "places"
+    collection = _collection(_layer("education_facilities"), places)
+
+    assert collection.license == "other"
+    links = sorted(link.href for link in collection.links if link.rel == "license")
+    assert links == sorted([ODBL_URL, "https://docs.overturemaps.org/attribution/"])
+
+
+def test_each_source_of_a_combined_dataset_has_its_own_collection_id():
+    """STAC requires a Collection id unique in its catalog; HDX names still use the dataset."""
+    cfg = _cfg()
+    cfg.hdx.combine = True
+    collection = _collection(_layer(source="overture"), cfg=cfg)
+    assert (collection.id, collection.extra_fields["oex:dataset"]) == (
+        "hot_flood_npl_overture",
+        "hot_flood_npl",
+    )
