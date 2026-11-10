@@ -13,6 +13,7 @@ from omegaconf import DictConfig, ListConfig, OmegaConf
 from oex.config.schema import RootConfig
 from oex.osm.engines import ENGINE_NAMES
 from oex.palette import MIN_CONTRAST_RATIO, contrast_ratio
+from oex.sources.labels import RUN_SOURCES
 from oex.writers import NEVER_ZIPPED, SUPPORTED_FORMATS
 
 
@@ -86,6 +87,7 @@ def load_config(
     _validate_theme(container)
     _validate_pmtiles(container)
     _validate_time_period_start(container)
+    _validate_source_in_filenames(container)
     return container
 
 
@@ -118,6 +120,16 @@ def _validate_pmtiles(cfg: RootConfig) -> None:
     if max_extra_zooms < 0:
         raise ConfigError(
             f"output.pmtiles.max_extra_zooms must be 0 or more, got {max_extra_zooms}"
+        )
+
+
+def _validate_source_in_filenames(cfg: RootConfig) -> None:
+    enabled = [name for name in RUN_SOURCES if cfg.source[name].enabled]
+    if not cfg.output.s3.name_include_source and len(enabled) > 1:
+        raise ConfigError(
+            "output.s3.name_include_source is false while "
+            f"{' and '.join(enabled)} are both enabled: their runs would write the same "
+            "filenames and replace each other's download files"
         )
 
 

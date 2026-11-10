@@ -46,7 +46,8 @@ def clear_boundary_cache() -> Iterator[None]:
 @pytest.fixture
 def spatial_conn() -> Iterator[duckdb.DuckDBPyConnection]:
     conn = duckdb.connect(":memory:")
-    conn.execute("INSTALL spatial; LOAD spatial")
+    # The axis order oex.duckdb_session sets; spatial refuses a GDAL COPY with an SRS without it.
+    conn.execute("INSTALL spatial; LOAD spatial; SET geometry_always_xy = true")
     yield conn
     conn.close()
 

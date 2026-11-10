@@ -235,7 +235,10 @@ When enabled, every feature gets six extra columns:
 | `adm2_name`   | `Kathmandu`       | Second subdivision name             |
 
 `adm3` and `adm4` columns are added at the same levels; many countries have
-null values at those levels.
+null values at those levels. A feature outside every admin area at the configured
+levels, such as one the boundary buffer brings in from a neighbouring country, has
+every `adm` column empty, `adm0` included. A country with no admin boundaries in the
+pcode data tags every feature with its own `adm0` only.
 
 Pcode data comes from [fieldmaps.io](https://fieldmaps.io/) edge-matched
 humanitarian boundaries, downloaded once and cached locally.
@@ -514,7 +517,7 @@ HDX push is **off by default**. Enable per run:
 ```yaml
 hdx:
   push: true
-  site: prod                     # or 'demo'
+  site: prod                     # or a test site: stage, dev, demo
   api_key: ${oc.env:HDX_API_KEY}
   owner_org: your-org
   maintainer: your-username

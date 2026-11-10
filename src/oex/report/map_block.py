@@ -5,6 +5,7 @@ tileset and one tileset per source render through the same path.
 import json
 from dataclasses import dataclass
 from html import escape
+from typing import NamedTuple
 
 from shapely.geometry import mapping, shape
 
@@ -25,9 +26,10 @@ span.sw { display: inline-block; width: 11px; height: 11px; border-radius: 2px;
 .legend { position: absolute; left: 10px; bottom: 10px; margin: 0; padding: 0;
           background: rgba(255, 255, 255, 0.95); border: 1px solid var(--line);
           border-radius: 3px; font-size: 12px; max-height: calc(100% - 20px);
-          display: flex; flex-direction: column; }
+          display: flex; flex-direction: column; overflow-y: auto; }
 .legend summary { list-style: none; cursor: pointer; padding: 8px 11px; font-weight: 600;
-                  display: flex; align-items: center; gap: 8px; }
+                  display: flex; align-items: center; gap: 8px;
+                  position: sticky; top: 0; z-index: 1; background: #fff; }
 .legend summary::-webkit-details-marker { display: none; }
 .legend summary::after { content: "\\25be"; margin-left: auto; color: var(--muted); }
 .legend[open] summary::after { content: "\\25b4"; }
@@ -37,13 +39,13 @@ span.sw { display: inline-block; width: 11px; height: 11px; border-radius: 2px;
           color: var(--fg); }
 .legend-actions button:hover { border-color: var(--accent); color: var(--accent); }
 .legend-actions button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.legend ul { list-style: none; margin: 0; padding: 0 11px 9px; overflow-y: auto;
-             line-height: 1.75; }
+.legend ul { list-style: none; margin: 0; padding: 0 11px 9px; line-height: 1.75; }
 .legend li { white-space: nowrap; }
 .legend label { display: flex; align-items: center; cursor: pointer; }
 .legend input { margin: 0 7px 0 0; cursor: pointer; accent-color: var(--accent); }
 .legend-count { margin-left: 7px; color: var(--muted); font-variant-numeric: tabular-nums;
                 font-size: 11px; }
+.maplibregl-popup { z-index: 3; }
 .maplibregl-popup-content { border-top: 3px solid var(--popup); padding: 10px 12px; }
 .maplibregl-popup-content b { color: var(--popup); }
 table.popup { border-collapse: collapse; margin-top: 6px; font-size: 12px; }
@@ -136,8 +138,10 @@ map.on('click', (event) => {
   title.textContent = labelOfLayer[hit.layer.id];
   const table = document.createElement('table');
   table.className = 'popup';
+  // On a shared tileset, category and source name the layer the title already gives.
+  const repeatsTitle = (key) => sharedLayers.has(hit.layer.id) && (key === 'category' || key === 'source');
   Object.entries(hit.properties)
-    .filter(([, value]) => value !== null && value !== '')
+    .filter(([key, value]) => value !== null && value !== '' && !repeatsTitle(key))
     .forEach(([key, value]) => {
       const row = table.insertRow();
       const header = document.createElement('th');
@@ -145,6 +149,7 @@ map.on('click', (event) => {
       row.append(header);
       row.insertCell().textContent = value;
     });
+  if (!table.rows.length) table.insertRow().insertCell().textContent = '(no attributes)';
   content.append(title, table);
   new maplibregl.Popup({ maxWidth: '320px' })
     .setLngLat(event.lngLat)
@@ -214,11 +219,15 @@ def _map_script(
 ) -> str:
     source_definitions, layer_definitions = _style_definitions(entries, theme, boundary_geojson)
     labels = _js_literal(
-        {
-            f"{entry.key}-{suffix}": entry.label
+        {layer_id: entry.label for entry in entries for layer_id in _layer_ids(entry)}
+    )
+    shared = _js_literal(
+        [
+            layer_id
             for entry in entries
-            for suffix in ("fill", "line", "point")
-        }
+            if entry.match_key is not None
+            for layer_id in _layer_ids(entry)
+        ]
     )
     return (
         f"""
@@ -235,7 +244,7 @@ const map = new maplibregl.Map({{
     }},
     layers: [
       {{ id: 'basemap', type: 'raster', source: 'basemap',
-         paint: {{ 'raster-opacity': 0.55 }} }},
+         paint: {{ 'raster-opacity': 0.6, 'raster-saturation': -1 }} }},
       {layer_definitions}
     ]
   }}
@@ -244,11 +253,28 @@ const map = new maplibregl.Map({{
         + _MAP_CONTROLS_SCRIPT
         + f"""// Inspecting a feature is how you check the attribute coverage the table reports.
 const labelOfLayer = {labels};
+const sharedLayers = new Set({shared});
 """
         + _FEATURE_INSPECTION_SCRIPT
-        + f"""map.on('load', () => {{ {_fit_bounds_call(boundary_bbox)} toggles.forEach(applyToggle); }});
+        + f"""// The map is built in a hidden tab, so it is framed the first time it has a size.
+let framed = false;
+function frameMap() {{
+  if (framed || !map.getContainer().clientWidth) return;
+  framed = true;
+  {_fit_bounds_call(boundary_bbox)}
+}}
+map.on('load', () => {{ frameMap(); toggles.forEach(applyToggle); }});
 """
+        + (_COLLAPSE_LEGEND_ON_PHONES if len(entries) > _PHONE_LEGEND_OPEN_MAX else "")
     )
+
+
+# A longer legend opens over most of a phone's map, so there it starts closed.
+_PHONE_LEGEND_OPEN_MAX = 3
+_COLLAPSE_LEGEND_ON_PHONES = """if (window.matchMedia('(max-width: 480px)').matches) {
+  document.querySelector('.legend').open = false;
+}
+"""
 
 
 def _style_definitions(
@@ -263,8 +289,15 @@ def _style_definitions(
         f"{name}: {{ type: 'vector', url: {_js_literal(f'pmtiles://{url}')} }}"
         for name, url in sources.items()
     )
+    definitions = {
+        entry.key: _layer_definitions(entry, source_of[entry.tileset_url]) for entry in entries
+    }
+    largest_first = sorted(entries, key=lambda entry: entry.feature_count or 0, reverse=True)
+    # Fills, then lines, then points largest first, so small layers stay on top to click.
     layer_definitions = ",\n      ".join(
-        _layer_definitions(entry, source_of[entry.tileset_url]) for entry in entries
+        [definitions[entry.key].fill for entry in entries]
+        + [definitions[entry.key].line for entry in entries]
+        + [definitions[entry.key].point for entry in largest_first]
     )
     if boundary_geojson:
         source_definitions += f",\n      aoi: {{ type: 'geojson', data: {boundary_geojson} }}"
@@ -288,24 +321,41 @@ def _fit_bounds_call(boundary_bbox: tuple[float, float, float, float] | None) ->
     )
 
 
-def _layer_definitions(entry: MapEntry, source: str) -> str:
+# Thin at country zoom, readable at street zoom, where an event page is read.
+_LINE_WIDTH = "['interpolate', ['linear'], ['zoom'], 6, 0.8, 10, 1.4, 14, 2.5]"
+_POINT_RADIUS = "['interpolate', ['linear'], ['zoom'], 6, 3, 12, 4, 16, 6]"
+
+
+class LayerDefinitions(NamedTuple):
+    fill: str
+    line: str
+    point: str
+
+
+_LAYER_KINDS = LayerDefinitions._fields
+
+
+def _layer_ids(entry: MapEntry) -> list[str]:
+    return [f"{entry.key}-{kind}" for kind in _LAYER_KINDS]
+
+
+def _layer_definitions(entry: MapEntry, source: str) -> LayerDefinitions:
     common = f"source: '{source}', 'source-layer': {_js_literal(entry.source_layer)}"
     color = _js_literal(entry.color)
-    definitions: list[str] = [
-        f"{{ id: {_js_literal(f'{entry.key}-fill')}, type: 'fill', {common},"
+    fill_id, line_id, point_id = (_js_literal(layer_id) for layer_id in _layer_ids(entry))
+    return LayerDefinitions(
+        fill=f"{{ id: {fill_id}, type: 'fill', {common},"
         f" filter: {_filter(entry, 'Polygon')},"
         f" paint: {{ 'fill-color': {color}, 'fill-opacity': 0.5,"
         f" 'fill-outline-color': {color} }} }}",
-        f"{{ id: {_js_literal(f'{entry.key}-line')}, type: 'line', {common},"
+        line=f"{{ id: {line_id}, type: 'line', {common},"
         f" filter: {_filter(entry, 'LineString')},"
-        f" paint: {{ 'line-color': {color}, 'line-width': 1.3 }} }}",
-        f"{{ id: {_js_literal(f'{entry.key}-point')}, type: 'circle', {common},"
+        f" paint: {{ 'line-color': {color}, 'line-width': {_LINE_WIDTH} }} }}",
+        point=f"{{ id: {point_id}, type: 'circle', {common},"
         f" filter: {_filter(entry, 'Point')},"
-        f" paint: {{ 'circle-color': {color}, 'circle-radius': 3,"
-        f" 'circle-stroke-width': 0.5, 'circle-stroke-color': '#ffffff' }} }}",
-    ]
-    separator: str = ",\n      "
-    return separator.join(definitions)
+        f" paint: {{ 'circle-color': {color}, 'circle-radius': {_POINT_RADIUS},"
+        f" 'circle-stroke-width': 1, 'circle-stroke-color': '#1a1a1a' }} }}",
+    )
 
 
 def _filter(entry: MapEntry, geometry: str) -> str:
@@ -334,13 +384,18 @@ def _render_legend(entries: list[MapEntry], *, show_aoi: bool = False) -> str:
         "</label></li>"
         for entry in entries
     )
-    return (
-        '<details class="legend" open>'
-        f"<summary>Layers ({len(entries)})</summary>"
+    actions = (
         '<div class="legend-actions">'
         '<button type="button" data-all="on">Select all</button>'
         '<button type="button" data-all="off">Clear all</button>'
         "</div>"
+        if len(entries) > 1
+        else ""
+    )
+    return (
+        '<details class="legend" open>'
+        f"<summary>Layers ({len(entries)})</summary>"
+        f"{actions}"
         f"<ul>{items}</ul>"
         "</details>"
     )

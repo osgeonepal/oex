@@ -86,5 +86,6 @@ Each zip contains:
 - `config.yaml`: snapshot of the category that produced this dataset
 - `metadata.json` (when `output.metadata` or `output.report.enabled` is on): the
   layer as a STAC Item, carrying feature count, geometry types, its footprint
-  (the simplified export boundary, or the data's bbox), and per-column null
-  share, distinct count and top values
+  (the simplified export boundary, or the data's bbox) with a bbox that also holds
+  features crossing the boundary, and per-column null share, distinct count and top
+  values

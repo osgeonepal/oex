@@ -293,12 +293,19 @@ def _render_source_mix(metadata: MetadataReport) -> str:
     if source_column is None or len(source_column.top_values) <= 1:
         return ""
     total = metadata.feature_count or 1
-    rows = []
-    for entry in source_column.top_values:
-        count = int(entry.get("count", 0))
-        rows.append(
-            _share_row(escape(_stringify_value(entry.get("value"))), count, count / total * 100.0)
-        )
+    shown = [
+        (escape(_stringify_value(entry.get("value"))), int(entry.get("count", 0)))
+        for entry in source_column.top_values
+    ]
+    # The rest of the tagged features and the untagged ones, so the shares add up to 100%.
+    other_sources_count = (
+        metadata.feature_count - source_column.null_count - sum(count for _, count in shown)
+    )
+    shown += [
+        ("Other sources", other_sources_count),
+        ("No source tag", source_column.null_count),
+    ]
+    rows = [_share_row(label, count, count / total * 100.0) for label, count in shown if count]
     return _table("Source mix", ["Source", "Features", "Share", ""], rows)
 
 
@@ -324,6 +331,19 @@ def _render_admin_coverage(metadata: MetadataReport) -> str:
         if empty
         else ""
     )
+    country_pcode_column = next(
+        (column for column in pcode_columns if column.name == "adm0_pcode"), None
+    )
+    # The boundary buffer reaches into neighbours, and those features carry no admin codes.
+    if country_pcode_column is not None and country_pcode_column.null_count:
+        outside_count = country_pcode_column.null_count
+        outside_phrase = (
+            "1 feature is" if outside_count == 1 else f"{format_int(outside_count)} features are"
+        )
+        note += (
+            f'<p class="note">{outside_phrase} outside every admin area, for example across a border, '
+            "so they have no admin codes.</p>"
+        )
     return _table("Admin coverage", ["Level", "Tagged", ""], rows) + note
 
 

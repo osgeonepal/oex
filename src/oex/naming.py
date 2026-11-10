@@ -4,7 +4,7 @@ import re
 from collections.abc import Iterable
 
 from oex.config.schema import CategoryConfig, RootConfig
-from oex.sources.labels import SOURCE_LABELS
+from oex.sources.labels import SOURCE_LABELS, short_label
 
 
 def slugify(value: str) -> str:
@@ -47,6 +47,10 @@ ASSET_TITLES = {
 
 def category_label(category: CategoryConfig) -> str:
     return category.hdx.title or _title_case_category(category.name)
+
+
+def layer_label(category: CategoryConfig, source_name: str) -> str:
+    return f"{category_label(category)} ({short_label(source_name)})"
 
 
 def _title_case_category(name: str) -> str:

@@ -199,6 +199,37 @@ def test_the_combined_tileset_merges_only_configured_tiled_layers(
     assert {(layer.source, layer.category) for layer in fake_pmtiles_build} == expected
 
 
+def test_the_combined_tileset_leaves_out_a_source_turned_off(
+    tmp_path: Path,
+    point_table: duckdb.DuckDBPyConnection,
+    make_exporter: MakeExporter,
+    fake_pmtiles_build: list[TileLayer],
+) -> None:
+    """Its staged layers stay in the bucket, but its files leave the dataset."""
+    category = CategoryConfig(name="buildings")
+    cfg = _combined_cfg(tmp_path, [category], s3=S3Config(enabled=True, bucket="b", prefix="p"))
+    cfg.source["overture"].enabled = False
+    exporter = make_exporter(cfg, "osm")
+    out_root = tmp_path / "npl" / "osm"
+    (out_root / "_layers").mkdir(parents=True)
+    parquet = write_geoparquet(point_table, "t", out_root / "_layers" / "buildings.parquet")
+    built_ok = [
+        BuiltCategory(
+            result=CategoryResult(name="buildings", status="ok"),
+            category=category,
+            geoparquet_path=parquet,
+        )
+    ]
+    staged = [("overture", "buildings", "https://s3/p/NPL/_layers/overture/buildings.parquet")]
+
+    with patch("oex.exporter.list_layer_urls", return_value=staged):
+        exporter._build_combined_tiles(built_ok, out_root, "hotosm_npl")
+
+    assert {(layer.source, layer.category) for layer in fake_pmtiles_build} == {
+        ("osm", "buildings")
+    }
+
+
 @pytest.mark.parametrize(
     ("cfg", "expected"),
     [

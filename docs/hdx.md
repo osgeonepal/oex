@@ -7,7 +7,7 @@ HDX push is **off by default**. You can use `oex` purely as a downloader.
 ```yaml
 hdx:
   push: true
-  site: prod                           # or 'demo'
+  site: prod                           # or a test site: stage, dev, demo
   api_key: ${oc.env:HDX_API_KEY}
   owner_org: your-org-slug
   maintainer: your-username
@@ -46,6 +46,8 @@ For each category that succeeds:
 3. The dataset's time period is set to the source snapshot date, or runs from
    `hdx.time_period_start` (YYYY-MM-DD) to the snapshot date when that is set. A category's
    `temporal.column`, when the data has it, sets the period from the data's own dates instead.
+   When more than one source publishes into a dataset, the period is widened to cover the
+   period in the STAC Collection of every other source the config turns on.
 
 HDX lists a dataset's resources in a fixed order: the Data Quality Report (the overview
 page on a combined dataset) first, then the downloads by format (GeoPackage, Shapefile,
@@ -53,6 +55,23 @@ GeoJSON, KML, GeoParquet, PMTiles), with OSM before Overture and points, lines, 
 within a format, then the STAC Collections. A combined dataset keeps each category's files
 together, in `categories` order. Resources oex does not recognise follow, by name. Every
 publish, date refresh and `oex-cli metadata` update applies this order.
+
+A dataset holds one resource per file. A file is known by its filename; a staged
+GeoParquet is known by its source folder and filename, `_layers/<source>/<slug>.parquet`.
+When a publish writes a file, it deletes any other resource holding the same file at
+another location, for example after `output.s3.prefix` changes. Other sources' files and
+resources with other filenames stay. A report page lists each category and source once,
+and refuses to build when a dataset holds two STAC Collections for the same category and
+source.
+
+The config decides which sources a dataset holds. When `source.osm.enabled` or
+`source.overture.enabled` is `false`, every publish and date refresh deletes that source's
+files and STAC Collection from the dataset, and leaves its layers out of the combined map
+and the related-dataset links. Only files oex named for a category in the config count;
+files added by hand stay. A source left on keeps its files when its run fails
+or does not run, and the `file` source is never removed this way. A config that publishes a
+source it turns off is refused before the run starts. Two configs that publish into one
+dataset need the same `source` settings, or each publish removes the other's files.
 
 Per-category metadata comes from each category's `hdx:` block:
 
@@ -113,6 +132,11 @@ the Tasking Manager layout:
 ```
 TM/hotosm_project_1/buildings/polygons/hotosm_project_1_buildings_polygons_shp.zip
 ```
+
+`name_include_source: false` needs a single source. Both sources are enabled by default,
+so set `source.osm.enabled` or `source.overture.enabled` to `false`, or the config fails to
+load, because both runs would write the same filenames. This holds for `oex-cli osm` and
+`oex-cli overture` too.
 
 `nest_by_geometry` needs `split_by_geometry`. Without it one artifact holds every
 geometry type and cannot sit under a single segment, so the run fails when it starts,
@@ -266,11 +290,13 @@ is fetched at view time, so repoint it to pin a version or serve it from your ow
 host.
 
 `related_datasets: true` adds a line under the title of each per-category page linking the
-area's other category datasets on HDX. It needs `hdx.push`, since without it no dataset page
-is published to link to. The About section of every page links the HDX dataset the layer is
-published to, and each layer's STAC Item carries the same link as `rel="via"`. With
-`related_datasets` on, each per-category STAC Collection also links the area's other category
-Collections as `rel="related"`.
+area's other category datasets on HDX. It needs `hdx.push` and `output.s3.enabled`: a
+category is linked only when its STAC Collection is in the bucket when the run starts, so an
+empty layer, or one published for the first time in this run, gets no link until a later run.
+The About section of every page links the HDX dataset the layer is published to, and each
+layer's STAC Item carries the same link as `rel="via"`. With `related_datasets` on, each
+per-category STAC Collection also links the area's other category Collections in the bucket
+as `rel="related"`.
 
 `output.stac.catalog: true` keeps a STAC catalog tree on S3 up to date. Each run links the
 Collections it published into an area catalog at `{prefix}/{folder or ISO3}/catalog.json` and
@@ -407,6 +433,10 @@ With `hdx.push: false` you still get the format zips, the per-layer GeoParquet,
 each layer's `_item.json`, the Collection in `_metadata.json`, the tilesets, and,
 under `hdx.combine`, the merged tileset plus the `_overview.html` page.
 
+With `output.s3.enabled`, a per-category run uploads its zips and STAC files to the
+bucket. A combined run uploads only the per-layer GeoParquet. It uploads its zips when
+it publishes to HDX, so its STAC files and catalog links wait for that run too.
+
 ```bash
 oex-cli osm VEN --config examples/hot-eq-ven.yaml --no-hdx-push --no-s3
 ```
@@ -431,7 +461,7 @@ other source put there, which is knowledge only HDX holds.
 
 ## Before publishing to production
 
-- Always run with `hdx.site: demo` first against the HDX demo instance
-  before pointing at `prod`.
+- Always run against an HDX test site first, such as `hdx.site: stage` or `dev`,
+  before pointing at `prod`. `hdx.site` takes any site name hdx-python-api defines.
 - `oex` writes the zips to disk regardless of `hdx.push`, so a failed
   upload never costs you the export work.

@@ -26,14 +26,18 @@ from oex.hdx_publisher import (
     ExtraResource,
     HdxPublisher,
     PublishContext,
+    TurnedOffSources,
     _apply_custom_viz,
     _hdx_publish_with_retry,
     _is_transient_hdx_error,
     _reuse_resource_ids,
+    published_collections,
     related_dataset_links,
 )
 from oex.report import SourceMetadata
 from oex.stac import LayerAssets, build_collection, build_item, item_href, to_payload
+
+NOTHING_TURNED_OFF = TurnedOffSources(frozenset(), "hotosm_npl", frozenset({"buildings"}))
 
 
 def test_is_transient_recognises_retry_and_429() -> None:
@@ -458,7 +462,10 @@ def test_the_dataset_page_describes_every_layer_on_the_dataset_not_just_this_run
     cfg = RootConfig(
         iso3="VEN",
         key="demo_eq",
-        hdx=HdxConfig(combine=True, combined=CombinedHdx(name="demo_eq_ven")),
+        hdx=HdxConfig(
+            combine=True,
+            combined=CombinedHdx(name="demo_eq_ven", title="Venezuela Earthquake 2026, Merida"),
+        ),
         output=OutputConfig(s3=S3Config(enabled=True, bucket="example-bucket", region="us-east-1")),
         categories=[
             CategoryConfig(name="Buildings"),
@@ -485,6 +492,8 @@ def test_the_dataset_page_describes_every_layer_on_the_dataset_not_just_this_run
     }
     fresh = MagicMock()
     fresh.get_resources.return_value = resources
+    page = MagicMock(data={})
+    page.get.return_value = None
 
     captured: dict = {}
 
@@ -501,7 +510,7 @@ def test_the_dataset_page_describes_every_layer_on_the_dataset_not_just_this_run
         patch("hdx.data.dataset.Dataset.read_from_hdx", return_value=fresh),
         patch("oex.hdx_publisher._download_json", side_effect=lambda url: fetched[url]),
         patch("oex.report.page.render_dataset_page", side_effect=fake_render),
-        patch.object(HdxPublisher, "_make_resource_for_path", return_value=MagicMock(data={})),
+        patch.object(HdxPublisher, "_make_resource_for_path", return_value=page) as make,
         patch.object(HdxPublisher, "_set_customviz_after_upload"),
         patch("oex.hdx_publisher._hdx_publish_with_retry"),
     ):
@@ -513,6 +522,8 @@ def test_the_dataset_page_describes_every_layer_on_the_dataset_not_just_this_run
             publish_context=ctx,
         )
 
+    # An event names its area in the title; the country alone would misdescribe it.
+    assert "for Venezuela Earthquake 2026, Merida:" in make.call_args.kwargs["description"]
     layers = captured["layers"]
     assert [layer.key for layer in layers] == [
         "buildings-osm",
@@ -665,7 +676,13 @@ def test_updating_a_dataset_carries_ids_over_before_hdx_matches_by_name(
     seen: list[str | None] = []
     dataset.update_in_hdx.side_effect = lambda **_: seen.append(new[0].get("id"))
     with patch("hdx.data.dataset.Dataset.read_from_hdx", return_value=existing):
-        bare_publisher._create_or_update(dataset, "hotosm_npl_buildings", remove_additional=False)
+        bare_publisher._create_or_update(
+            dataset,
+            "hotosm_npl_buildings",
+            remove_additional=False,
+            source_name="osm",
+            turned_off=NOTHING_TURNED_OFF,
+        )
     assert seen == ["tiles"]
 
 
@@ -689,13 +706,17 @@ def test_each_source_keeps_its_own_geoparquet_resource() -> None:
     assert renamed[0]["id"] == "osm"
 
 
-def test_a_file_uploaded_to_hdx_is_matched_by_its_name_before_it_has_a_url() -> None:
+@pytest.mark.usefixtures("hdx_demo_configuration")
+def test_a_file_uploaded_to_hdx_is_matched_by_its_name_before_it_has_a_url(
+    tmp_path: Path,
+) -> None:
     """Without S3 the file goes to HDX's own store, and the URL only exists after upload."""
+    from hdx.data.resource import Resource
 
-    class Pending(dict):
-        def get_file_to_upload(self) -> str:
-            return "/tmp/out/hotosm_npl_buildings_osm.pmtiles"
-
+    tiles = tmp_path / "hotosm_npl_buildings_osm.pmtiles"
+    tiles.write_bytes(b"tiles")
+    pending = Resource({"name": "Buildings (OSM), Vector Tiles (PMTiles)"})
+    pending.set_file_to_upload(str(tiles))
     existing = [
         {
             "id": "tiles",
@@ -703,7 +724,7 @@ def test_a_file_uploaded_to_hdx_is_matched_by_its_name_before_it_has_a_url() -> 
             "url": "https://data.humdata.org/dataset/x/resource/y/download/hotosm_npl_buildings_osm.pmtiles",
         }
     ]
-    new = [Pending(name="Buildings (OSM), Vector Tiles (PMTiles)")]
+    new = [pending]
     _reuse_resource_ids(new, existing)
     assert new[0]["id"] == "tiles"
 
@@ -728,13 +749,51 @@ def _grid_cfg(*, push: bool, s3: bool, related: bool = True) -> RootConfig:
 
 def test_related_datasets_link_hdx_and_only_when_published_there() -> None:
     buildings = CategoryConfig(name="buildings")
-    assert related_dataset_links(_grid_cfg(push=True, s3=True), buildings) == [
+    every = frozenset({("roads", "osm"), ("health_facilities", "overture")})
+    assert related_dataset_links(_grid_cfg(push=True, s3=True), buildings, every) == [
         ("Roads", "https://data.humdata.org/dataset/hotosm_npl_roads"),
         ("Health Facilities", "https://data.humdata.org/dataset/hotosm_npl_health_facilities"),
     ]
     # Without HDX no dataset page is published anywhere, so a link would be a dead end.
-    assert related_dataset_links(_grid_cfg(push=False, s3=True), buildings) == []
-    assert related_dataset_links(_grid_cfg(push=True, s3=True, related=False), buildings) == []
+    assert related_dataset_links(_grid_cfg(push=False, s3=True), buildings, every) == []
+    assert (
+        related_dataset_links(_grid_cfg(push=True, s3=True, related=False), buildings, every) == []
+    )
+
+
+def test_a_category_with_nothing_published_gets_no_related_link() -> None:
+    roads_only = frozenset({("roads", "osm")})
+    links = related_dataset_links(
+        _grid_cfg(push=True, s3=True), CategoryConfig(name="buildings"), roads_only
+    )
+    assert links == [("Roads", "https://data.humdata.org/dataset/hotosm_npl_roads")]
+
+
+def test_published_collections_are_read_from_the_area_folder_of_the_bucket() -> None:
+    keys = frozenset(
+        {
+            "ISO3/NPL/roads/hotosm_npl_roads_osm_metadata.json",
+            "ISO3/NPL/health_facilities/hotosm_npl_health_facilities_overture_metadata.json",
+            "ISO3/NPL/buildings/hotosm_npl_buildings_osm_gpkg.zip",
+        }
+    )
+    with patch("oex.hdx_publisher.list_area_keys", return_value=keys):
+        published = published_collections(_grid_cfg(push=True, s3=True))
+    assert published == {("roads", "osm"), ("health_facilities", "overture")}
+
+
+def test_a_source_turned_off_is_not_offered_as_a_related_dataset() -> None:
+    """Its files leave each dataset at the next publish, so a link would lead to nothing."""
+    keys = frozenset(
+        {
+            "ISO3/NPL/roads/hotosm_npl_roads_osm_metadata.json",
+            "ISO3/NPL/health_facilities/hotosm_npl_health_facilities_overture_metadata.json",
+        }
+    )
+    cfg = _grid_cfg(push=True, s3=True)
+    cfg.source["overture"].enabled = False
+    with patch("oex.hdx_publisher.list_area_keys", return_value=keys):
+        assert published_collections(cfg) == {("roads", "osm")}
 
 
 def test_a_purging_update_keeps_the_report_the_same_publish_rebuilds(
@@ -793,6 +852,8 @@ def test_a_purging_update_keeps_the_report_the_same_publish_rebuilds(
             dataset,
             "hotosm_npl_buildings",
             remove_additional=True,
+            source_name="osm",
+            turned_off=NOTHING_TURNED_OFF,
             keep_files=frozenset({"hotosm_npl_buildings_report.html"}),
         )
     assert sent == [[None, "report"]]
@@ -829,3 +890,40 @@ def test_a_renamed_page_keeps_its_hdx_resource(
             s3_config=None,
         )
     assert sent == [[("report", "Buildings, Data Quality Report")]]
+
+
+def test_without_s3_there_are_no_collections_to_check_so_nothing_is_linked() -> None:
+    buildings = CategoryConfig(name="buildings")
+    every = frozenset({("roads", "osm")})
+    assert related_dataset_links(_grid_cfg(push=True, s3=False), buildings, every) == []
+    with patch("oex.hdx_publisher.list_area_keys", side_effect=AssertionError("listed S3")):
+        assert published_collections(_grid_cfg(push=True, s3=False)) == frozenset()
+
+
+@pytest.mark.parametrize(
+    ("folder", "listed_prefix"), [("", "ISO3/NPL/"), ("npl_flood", "ISO3/npl_flood/")]
+)
+def test_the_area_listing_reads_the_folder_the_artifacts_are_written_to(
+    monkeypatch: pytest.MonkeyPatch, folder: str, listed_prefix: str
+) -> None:
+    import boto3
+    from botocore.stub import Stubber
+
+    from oex.s3 import artifact_key, list_area_keys
+
+    # Static credentials stop botocore asking the EC2 metadata endpoint for them.
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    client = boto3.client("s3", region_name="us-east-1")
+    written = artifact_key("ISO3", "npl", "roads", "x_metadata.json", folder=folder)
+    stub = Stubber(client)
+    stub.add_response(
+        "list_objects_v2",
+        {"Contents": [{"Key": written}], "IsTruncated": False},
+        {"Bucket": "bucket", "Prefix": listed_prefix},
+    )
+    s3_config = S3Config(
+        enabled=True, bucket="bucket", prefix="ISO3", region="us-east-1", folder=folder
+    )
+    with stub, patch("boto3.client", return_value=client):
+        assert list_area_keys(s3_config, "npl") == {written}

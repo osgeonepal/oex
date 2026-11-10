@@ -2,6 +2,7 @@
 edge-matched schema, with no network.
 """
 
+from dataclasses import replace
 from pathlib import Path
 
 import duckdb
@@ -180,7 +181,8 @@ def test_tag_table_assigns_pcodes_by_centroid(
     assert by_id[1] == (1, "NPL", "Nepal", "NP01", "Province NW", "NP0101", "NW Upper")
     assert by_id[2] == (2, "NPL", "Nepal", "NP01", "Province NW", "NP0102", "NW Lower")
     assert by_id[3] == (3, "NPL", "Nepal", "NP02", "Province SE", "NP0201", "SE")
-    assert by_id[4] == (4, "NPL", "Nepal", None, None, None, None)
+    # Outside every admin area, so it is not claimed for the country either.
+    assert by_id[4] == (4, None, None, None, None, None, None)
     # Polygon centroid (1.5, 8.5) lands in NW Upper.
     assert by_id[5] == (5, "NPL", "Nepal", "NP01", "Province NW", "NP0101", "NW Upper")
 
@@ -521,7 +523,7 @@ def test_a_border_cell_with_equal_neighbours_in_two_areas_always_gets_the_lower_
         """
         CREATE TABLE admin_cells AS
         WITH rings AS (
-            SELECT list_filter(h3_grid_disk(cell, 1), neighbour -> neighbour <> cell) AS ring
+            SELECT list_filter(h3_grid_disk(cell, 1), lambda neighbour: neighbour <> cell) AS ring
             FROM feature_cells
         )
         SELECT 'NP0202' AS pcode, 'Later' AS name, UNNEST(ring[1:2]) AS cell FROM rings
@@ -531,3 +533,33 @@ def test_a_border_cell_with_equal_neighbours_in_two_areas_always_gets_the_lower_
     )
 
     assert _assigned_pcodes(conn, "admin_cells") == {"NP0201"}
+
+
+def test_a_feature_matched_only_at_a_deeper_level_keeps_its_country(
+    tmp_path: Path,
+    conn: duckdb.DuckDBPyConnection,
+    admin_cache: dict[int, PcodeCacheEntry],
+) -> None:
+    """Edge-matched levels can disagree at the border; any matched level places the feature."""
+    adm2_path = tmp_path / "adm2_with_gap.parquet"
+    _write_admin_parquet(
+        conn,
+        target=adm2_path,
+        level=2,
+        rows=[
+            {
+                "iso_3": "NPL",
+                "adm2_src": "NP0301",
+                "adm2_name": "Beyond the provinces",
+                "adm0_src": "NPL",
+                "adm0_name": "Nepal",
+                "wkt": "POLYGON((20 20, 25 20, 25 25, 20 25, 20 20))",
+            }
+        ],
+    )
+    cache = {1: admin_cache[1], 2: replace(admin_cache[2], path=adm2_path)}
+    conn.execute("CREATE TABLE gap AS SELECT 1 AS id, ST_Point(22.0, 22.0) AS geom")
+    tag_table(conn, table="gap", iso3="NPL", cache_entries=cache, levels=[1, 2])
+    assert conn.execute("SELECT adm0_pcode, adm1_pcode, adm2_pcode FROM gap").fetchall() == [
+        ("NPL", None, "NP0301")
+    ]

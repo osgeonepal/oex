@@ -253,8 +253,12 @@ class _FakeDataset(dict):
     def get_resources(self) -> list[dict[str, str]]:
         return self._resources
 
-    def set_time_period(self, *_dates: object) -> None:
+    def set_time_period(self, start: datetime, end: datetime | None = None) -> None:
         self.calls.append("set_time_period")
+        self.period = {"startdate": start, "enddate": end or start}
+
+    def get_time_period(self) -> dict:
+        return self.period
 
     def update_in_hdx(self, **_options: object) -> None:
         self.calls.append("update_in_hdx")
@@ -266,6 +270,11 @@ class _FakeDataset(dict):
 
     def add_update_resource(self, resource: dict) -> None:
         self._resources.append({"id": str(len(self._resources)), **resource})
+
+    def delete_resource(self, resource: dict) -> bool:
+        self.calls.append("delete_resource")
+        self._resources = [held for held in self._resources if held is not resource]
+        return True
 
     def names(self) -> list[str]:
         return [resource["name"] for resource in self._resources]
@@ -315,14 +324,52 @@ def test_refreshing_the_date_reorders_resources_after_the_update(
 ) -> None:
     cfg = RootConfig(iso3="NPL", key="hot", categories=[CategoryConfig(name="Roads")])
     dataset = _FakeDataset(list(reversed(ORDERED_RESOURCES)))
-    with patch("hdx.data.dataset.Dataset.read_from_hdx", return_value=dataset):
+    overture = {
+        "extent": {"temporal": {"interval": [["2026-04-15T00:00:00Z", "2026-04-15T00:00:00Z"]]}}
+    }
+    with (
+        patch("hdx.data.dataset.Dataset.read_from_hdx", return_value=dataset),
+        patch("oex.hdx_publisher._download_json", return_value=overture),
+    ):
         bare_publisher.refresh_metadata(
             cfg,
             cfg.categories[0],
             PublishContext(snapshot_date=datetime(2026, 5, 1, tzinfo=UTC), source_name="osm"),
         )
-    assert dataset.calls == ["set_time_period", "update_in_hdx", "reorder_resources"]
+    # The period is set from this source, then widened over the Overture Collection.
+    assert dataset.calls == [
+        "set_time_period",
+        "set_time_period",
+        "update_in_hdx",
+        "reorder_resources",
+    ]
+    assert dataset.period["startdate"] == datetime(2026, 4, 15, tzinfo=UTC)
     assert dataset.names() == [name for name, _ in ORDERED_RESOURCES]
+
+
+def test_refreshing_the_date_removes_the_files_of_a_source_turned_off(
+    bare_publisher: HdxPublisher,
+) -> None:
+    """A dataset whose data is unchanged still follows its config."""
+    cfg = RootConfig(iso3="NPL", key="hot", categories=[CategoryConfig(name="Roads")])
+    cfg.source["overture"].enabled = False
+    dataset = _FakeDataset(ORDERED_RESOURCES)
+    with (
+        patch("hdx.data.dataset.Dataset.read_from_hdx", return_value=dataset),
+        patch("oex.hdx_publisher._download_json") as download,
+    ):
+        bare_publisher.refresh_metadata(
+            cfg,
+            cfg.categories[0],
+            PublishContext(snapshot_date=datetime(2026, 5, 1, tzinfo=UTC), source_name="osm"),
+        )
+    assert download.call_count == 0
+    # Buildings is not a category of this config, so its GeoParquet is not this dataset's file.
+    assert [name for name, _ in ORDERED_RESOURCES if name not in dataset.names()] == [
+        "Roads (Overture), GeoPackage",
+        "Roads (Overture), KML",
+        "Roads (Overture), STAC Collection",
+    ]
 
 
 def test_only_layers_on_a_shared_tileset_filter_it_by_category_and_source(
@@ -335,6 +382,8 @@ def test_only_layers_on_a_shared_tileset_filter_it_by_category_and_source(
     cfg.categories = [CategoryConfig(name="buildings")]
     (own,) = _page_layers(cfg, published, None)
     (shared,) = _page_layers(cfg, published, ("all.pmtiles", "all"))
+    # A single-source layer names its source, as its HDX resources do.
+    assert own.label == "Buildings (OSM)"
     assert own.match_key is None
     assert shared.match_key == "buildings|osm"
 

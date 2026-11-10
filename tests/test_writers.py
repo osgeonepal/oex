@@ -56,9 +56,8 @@ def test_kml_writer_writes_a_placemark_per_feature(
     assert len(files) == 1
     assert files[0].name == "demo.kml"
     assert files[0].stat().st_size > 0
-    body = files[0].read_text(encoding="utf-8")
-    assert "<kml" in body
-    assert body.count("<Placemark>") == 2
+    assert "<kml" in files[0].read_text(encoding="utf-8")
+    assert _read_back_names(conn_with_table, files[0]) == ["A", "B"]
 
 
 def test_shp_writer_splits_by_geometry_and_keeps_polygon_and_multipolygon_together(
@@ -190,6 +189,25 @@ def test_the_combined_tileset_tags_each_feature_with_its_category_and_source(
         for f in _decoded_features(out, 8)
     )
     assert tagged == [("buildings", "overture", None), ("roads", "osm", "ra")]
+
+
+def test_a_combined_tileset_of_layers_without_names_still_tiles(
+    spatial_conn: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
+    from oex.writers import TileLayer, build_combined_pmtiles, write_geoparquet
+
+    spatial_conn.execute(
+        "CREATE TABLE buildings AS SELECT 'yes' AS building, ST_Point(83.6, 28.6) AS geom"
+    )
+    path = write_geoparquet(spatial_conn, "buildings", tmp_path / "buildings.parquet")
+    out = tmp_path / "combined.pmtiles"
+    layers = [TileLayer(path=str(path), category="buildings", source="osm")]
+    build_combined_pmtiles(spatial_conn, layers, out, min_zoom=0, max_zoom=8, max_extra_zooms=4)
+    tagged = [
+        (feature["properties"]["category"], feature["properties"].get("name"))
+        for feature in _decoded_features(out, 8)
+    ]
+    assert tagged == [("buildings", None)]
 
 
 @pytest.fixture
@@ -439,6 +457,29 @@ def _top_zoom(path: Path) -> int:
 
     with path.open("rb") as handle:
         return Reader(MmapSource(handle)).header()["max_zoom"]
+
+
+def test_every_point_is_kept_below_the_top_zoom(
+    spatial_conn: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
+    """A country-wide view of a few hundred health facilities shows all of them."""
+    from oex.writers import write_pmtiles
+
+    spatial_conn.execute(
+        "CREATE TABLE sites AS SELECT i AS id, "
+        "ST_Point(88.8 + (i % 20) * 0.1, 26.8 + (i // 20) * 0.1) AS geom FROM range(400) t(i)"
+    )
+    out = write_pmtiles(
+        spatial_conn,
+        "sites",
+        tmp_path / "sites.pmtiles",
+        layer="sites",
+        min_zoom=4,
+        max_zoom=12,
+        max_extra_zooms=0,
+    )
+    ids = {feature["properties"]["id"] for feature in _decoded_features(out, 6)}
+    assert len(ids) == 400
 
 
 def test_every_feature_survives_at_the_top_zoom(

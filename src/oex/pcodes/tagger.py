@@ -568,13 +568,15 @@ def _combine_slim_levels(
         for level in requested
         for column in (f"p{level}.adm{level}_pcode", f"p{level}.adm{level}_name")
     )
+    any_level = ", ".join(f"p{level}.adm{level}_pcode" for level in requested)
+    in_any_admin_area = f"coalesce({any_level}) IS NOT NULL"
     conn.execute(f"DROP TABLE IF EXISTS {slim_table}")
     conn.execute(
         f"""
         CREATE TABLE {slim_table} AS
         SELECT p{first_level}._rid,
-               ?::VARCHAR AS adm0_pcode,
-               ?::VARCHAR AS adm0_name,
+               CASE WHEN {in_any_admin_area} THEN ?::VARCHAR END AS adm0_pcode,
+               CASE WHEN {in_any_admin_area} THEN ?::VARCHAR END AS adm0_name,
                {level_columns}
         FROM {slim_level_tables[first_level]} AS p{first_level}
         {join_clauses}

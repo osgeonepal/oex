@@ -218,7 +218,7 @@ def _collections_split(table_name: str) -> str:
     tippecanoe's FlatGeobuf reader needs. Rows without a geometry have nothing to draw."""
     parts = (
         f"CASE WHEN ST_GeometryType({GEOMETRY_COLUMN}) = 'GEOMETRYCOLLECTION' "
-        f"THEN list_transform(ST_Dump({GEOMETRY_COLUMN}), part -> part.geom) "
+        f"THEN list_transform(ST_Dump({GEOMETRY_COLUMN}), lambda part: part.geom) "
         f"ELSE [{GEOMETRY_COLUMN}] END"
     )
     return (
@@ -259,6 +259,8 @@ def write_pmtiles(
                 f"--maximum-zoom={int(max_zoom)}",
                 "--temporary-directory=.",
                 "--drop-densest-as-needed",
+                # Keeps every point below the base zoom; dense tiles still drop to fit.
+                "--drop-rate=1",
                 # Alone this both enables and caps extension; with the uncapped flag it is ignored.
                 f"--extend-zooms-if-still-dropping-maximum={int(max_extra_zooms)}",
                 "--no-tiny-polygon-reduction-at-maximum-zoom",
@@ -397,7 +399,7 @@ def build_combined_pmtiles(
                 f"DESCRIBE SELECT * FROM read_parquet({sql_string(layer.path)})"
             ).fetchall()
         }
-        name_expr = "name" if "name" in column_names else "NULL"
+        name_expr = "name" if "name" in column_names else "NULL::VARCHAR"
         selects.append(
             f"SELECT {sql_string(layer.category)} AS category, "
             f"{sql_string(layer.source)} AS source, "

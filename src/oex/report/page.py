@@ -69,7 +69,8 @@ a.dl-btn:focus-visible, select.fmt:focus-visible { outline: 2px solid var(--acce
 @media (max-width: 480px) {
   .kpis { grid-template-columns: 1fr; }
   .ds-head h1 { font-size: 18px; }
-  .legend { left: 8px; right: 8px; bottom: 8px; max-height: 45%; }
+  .legend { left: 8px; right: auto; top: 8px; bottom: auto; max-width: calc(100% - 60px);
+            max-height: 45%; }
   .legend li { white-space: normal; }
   a.dl-btn, select.fmt { font-size: 13px; padding: 8px 12px; }
   select.fmt { max-width: none; flex: 1; }
@@ -86,7 +87,7 @@ document.querySelectorAll('select.fmt').forEach((select) => {
 });
 const mapTab = document.getElementById('view-map');
 // The map is laid out while its view is hidden, so it needs its size back when shown.
-if (mapTab) mapTab.addEventListener('change', () => map.resize());
+if (mapTab) mapTab.addEventListener('change', () => { map.resize(); frameMap(); });
 </script>
 """
 
@@ -198,8 +199,10 @@ def _header(title: str, layers: list[PageLayer]) -> str:
     """Counts, then each source with its snapshot, then each licence once."""
     total = sum(layer.source.metadata.feature_count for layer in layers)
     count = f"<b>{len(layers)}</b> layers &middot; " if len(layers) > 1 else ""
+    # A live snapshot is a timestamp; the day is what the header needs, About keeps the rest.
     snapshots = dict.fromkeys(
-        f"{long_label(layer.source.source_name)} {layer.source.snapshot_label}" for layer in layers
+        f"{long_label(layer.source.source_name)} {layer.source.snapshot_label.split('T', 1)[0]}"
+        for layer in layers
     )
     licences = dict.fromkeys(
         (layer.source.license_label, layer.source.license_url) for layer in layers

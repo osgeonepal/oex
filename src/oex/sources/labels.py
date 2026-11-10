@@ -9,6 +9,10 @@ SOURCE_LABELS = {
 }
 
 
+# The sources a config turns on and off with `source.<name>.enabled`, in run order.
+RUN_SOURCES = ("osm", "overture")
+
+
 def short_label(name: str) -> str:
     return SOURCE_LABELS.get(name, (name.title(), name.title()))[0]
 

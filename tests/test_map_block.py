@@ -1,6 +1,7 @@
 """The shared map component emits the JavaScript both report pages depend on."""
 
 import json
+import re
 
 import pytest
 
@@ -166,6 +167,11 @@ def test_the_legend_can_turn_every_layer_on_or_off_at_once() -> None:
     assert 'data-all="on"' in html and 'data-all="off"' in html
 
 
+def test_a_legend_of_one_layer_has_no_select_all_or_clear_all() -> None:
+    html = render_map([_entry("a")], None)
+    assert "data-all" not in html
+
+
 def test_hovering_names_the_feature_before_a_click_opens_it() -> None:
     html = render_map([_entry()], None)
     assert "map.on('mousemove'" in html
@@ -200,3 +206,28 @@ def test_feature_attributes_reach_the_popup_as_text_not_markup() -> None:
     assert "row.insertCell().textContent = value;" in html
     assert ".setHTML(" not in html
     assert "innerHTML" not in html
+
+
+def test_every_layers_points_and_lines_draw_above_every_layers_polygons() -> None:
+    """A campus polygon from one layer must not hide the roads and points of another."""
+    script = _script(render_map(_entries(), None))
+    order = [match.group(1) for match in re.finditer(r'id: "[^"]+-(fill|line|point)"', script)]
+    assert order == ["fill", "fill", "line", "line", "point", "point"]
+
+
+def test_a_long_legend_starts_closed_on_phones_and_a_short_one_stays_open() -> None:
+    long_legend = render_map([_entry(name) for name in "abcd"], None)
+    short_legend = render_map([_entry(name) for name in "abc"], None)
+    assert "matchMedia('(max-width: 480px)')" in long_legend
+    assert "matchMedia" not in short_legend
+
+
+def test_smaller_point_layers_draw_above_larger_ones_so_they_stay_clickable() -> None:
+    """Overture puts every health facility in its points of interest too, at the same spot."""
+    entries = [
+        MapEntry("health", "Health", "#111111", "https://x/a.pmtiles", "a", feature_count=24),
+        MapEntry("poi", "POI", "#222222", "https://x/a.pmtiles", "a", feature_count=578),
+    ]
+    script = _script(render_map(entries, None))
+    points = re.findall(r'id: "([^"]+)-point"', script)
+    assert points == ["poi", "health"]

@@ -691,3 +691,17 @@ def test_the_item_carries_the_layer_fingerprint():
     layer = _layer()
     layer.content_hash = "3f2a"
     assert build_item(layer, _cfg()).properties["oex:content_hash"] == "3f2a"
+
+
+def test_the_item_bbox_grows_to_hold_features_that_cross_the_boundary():
+    """Roads and rivers are kept whole past the border; a search by bbox must still find the
+    files that hold them, while the footprint stays the boundary itself."""
+    triangle = {
+        "type": "Polygon",
+        "coordinates": [[[88.6, 26.6], [92.2, 26.6], [90.4, 28.4], [88.6, 26.6]]],
+    }
+    item = build_item(
+        _layer(footprint=json.dumps(triangle), bbox=(88.7, 26.44, 92.28, 28.2)), _cfg()
+    )
+    assert item.geometry == triangle
+    assert item.bbox == [88.6, 26.44, 92.28, 28.4]

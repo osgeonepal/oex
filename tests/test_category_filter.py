@@ -98,7 +98,7 @@ def test_predicate_escapes_single_quotes_in_values() -> None:
 
 
 def _matching_ids(predicate: str) -> list[int]:
-    rows = duckdb.sql(
+    rows = duckdb.execute(
         "SELECT id FROM (VALUES "
         "(1, MAP {'highway': 'primary'}), "
         "(2, MAP {'building': 'yes'}), "

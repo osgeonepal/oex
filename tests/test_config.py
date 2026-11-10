@@ -171,6 +171,26 @@ def test_an_unsupported_per_category_format_is_rejected(tmp_path: Path) -> None:
         load_config(path)
 
 
+@pytest.mark.parametrize(
+    ("overture_enabled", "refused"), [(True, True), (False, False)], ids=["both", "osm only"]
+)
+def test_filenames_without_a_source_are_refused_when_two_sources_run(
+    tmp_path: Path, overture_enabled: bool, refused: bool
+) -> None:
+    """Both runs would write the same filenames and replace each other's files."""
+    path = tmp_path / "c.yaml"
+    path.write_text(
+        "iso3: NPL\noutput:\n  s3:\n    name_include_source: false\n"
+        f"source:\n  osm:\n    enabled: true\n  overture:\n    enabled: {str(overture_enabled).lower()}\n",
+        encoding="utf-8",
+    )
+    if refused:
+        with pytest.raises(ConfigError, match="name_include_source"):
+            load_config(path)
+    else:
+        assert load_config(path).output.s3.name_include_source is False
+
+
 def test_pcode_tagging_without_iso3_is_refused(tmp_path: Path) -> None:
     """It looks up one country's admin boundaries, so it cannot run without the country."""
     path = tmp_path / "c.yaml"

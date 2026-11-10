@@ -40,7 +40,9 @@ from oex.hdx_publisher import (
     dataset_title,
     hdx_dataset_url,
     links_related_datasets,
+    published_collections,
     related_dataset_links,
+    turned_off_sources,
 )
 from oex.logging_setup import get_logger
 from oex.metadata import MetadataReport, TemporalReport, compute_metadata, temporal_bounds
@@ -50,6 +52,7 @@ from oex.naming import (
     category_label,
     combined_dataset_name,
     layer_dataset_name,
+    layer_label,
     resource_prefix,
     slugify,
 )
@@ -243,6 +246,7 @@ class Exporter:
         self._pcode_tag_semaphore = threading.Semaphore(1)
         self._adaptive_workers, self._adaptive_memory_gb = adaptive_parallel_resources()
         self._staged_collections: list[tuple[str, str]] = []
+        self._published: frozenset[tuple[str, str]] = frozenset()
 
     @property
     def _worker_count(self) -> int:
@@ -300,6 +304,7 @@ class Exporter:
 
         boundary = resolve_boundary(self._cfg.iso3, self._cfg.boundary)
         bbox = boundary.bbox
+        self._published = published_collections(self._cfg)
         logger.info(
             "[%s/%s] boundary: %s bbox=(%.4f, %.4f, %.4f, %.4f)",
             area_id,
@@ -375,6 +380,11 @@ class Exporter:
             raise ValueError("config.iso3 or config.output.s3.folder is required")
         if not self._cfg.categories:
             raise ValueError("config.categories is empty")
+        if self._cfg.hdx.push and self._runner.name in turned_off_sources(self._cfg).names:
+            raise ValueError(
+                f"source.{self._runner.name}.enabled is false: a publish removes the files "
+                "of every source the config turns off, so this run would remove its own"
+            )
         if self._want_metadata():
             for category in self._cfg.categories:
                 license_href(category.hdx.license, category.hdx.license_url)
@@ -948,6 +958,7 @@ class Exporter:
             temporal_min=temporal_min,
             temporal_max=temporal_max,
             boundary_bbox=job.boundary.bbox,
+            published=self._published,
         )
         dataset_name = publisher.publish(
             self._cfg,
@@ -1001,7 +1012,7 @@ class Exporter:
         palette = self._cfg.output.report.palette or DEFAULT_PALETTE
         return PageLayer(
             key=f"{slug}-{self._runner.name}",
-            label=category_label(category),
+            label=layer_label(category, self._runner.name),
             color=palette[index % len(palette)],
             source=source_metadata,
             downloads=downloads,
@@ -1033,7 +1044,7 @@ class Exporter:
                 boundary_geojson=boundary_geojson,
                 map_assets=self._cfg.output.report.map_assets,
                 dataset_url=self._hdx_url(self._published_dataset_name(category)),
-                related=related_dataset_links(self._cfg, category),
+                related=related_dataset_links(self._cfg, category, self._published),
             ),
             encoding="utf-8",
         )
@@ -1256,14 +1267,22 @@ class Exporter:
             ),
             path,
         )
-        self._stage_metadata(path, COMBINED_SLUG)
-        self._staged_collections.append(
-            (self._collection_title(layers), href_or_filename(self._cfg, COMBINED_SLUG, path.name))
-        )
+        if self._stage_metadata(path, COMBINED_SLUG):
+            self._staged_collections.append(
+                (
+                    self._collection_title(layers),
+                    href_or_filename(self._cfg, COMBINED_SLUG, path.name),
+                )
+            )
         return path
 
     def _artifact_url(self, path: Path | None, category_slug: str) -> str | None:
         return asset_href(self._cfg, category_slug, path.name) if path else None
+
+    def _stages_stac(self) -> bool:
+        """STAC goes to the bucket only when the files it links to go there too; a combined
+        run uploads its files only when it publishes to HDX."""
+        return self._cfg.output.s3.enabled and (self._cfg.hdx.push or not self._cfg.hdx.combine)
 
     def _want_metadata(self) -> bool:
         """The report is rendered from the layer metadata, so asking for it asks for both."""
@@ -1279,8 +1298,8 @@ class Exporter:
             write_json(
                 self._collection_for([layer], collection_id, collection_slug), collection_path
             )
-            self._stage_metadata(collection_path, collection_slug)
-            self._staged_collections.append((self._collection_title([layer]), collection_href))
+            if self._stage_metadata(collection_path, collection_slug):
+                self._staged_collections.append((self._collection_title([layer]), collection_href))
         return item_path
 
     def _layer_collection(self, layer: LayerAssets) -> tuple[str, str, str]:
@@ -1377,7 +1396,7 @@ class Exporter:
                 ),
             )
             for other in self._cfg.categories
-            if other.name != category.name
+            if other.name != category.name and (other.name, self._runner.name) in self._published
         ]
 
     def _collection_title(self, layers: list[LayerAssets]) -> str:
@@ -1392,15 +1411,16 @@ class Exporter:
             return layers[0].category.hdx.notes
         return self._cfg.hdx.combined.notes or self._collection_title(layers)
 
-    def _stage_metadata(self, path: Path, category_slug: str) -> None:
+    def _stage_metadata(self, path: Path, category_slug: str) -> bool:
         """Items are linked from the Collection rather than listed on HDX, so they go
         straight to the bucket the Collection points at."""
+        if not self._stages_stac():
+            return False
         s3_config = self._cfg.output.s3
-        if not s3_config.enabled:
-            return
         bucket, prefix, region, endpoint_url, acl = resolve_with_bucket(s3_config)
         key = category_artifact_key(s3_config, prefix, self._cfg.iso3, category_slug, path.name)
         s3_upload(path, bucket=bucket, key=key, region=region, endpoint_url=endpoint_url, acl=acl)
+        return True
 
     def _build_combined_tiles(
         self, built_ok: list[BuiltCategory], out_root: Path, hdx_dataset_name: str
@@ -1428,9 +1448,19 @@ class Exporter:
             and tiles_on(slugify(built.category.name), self._runner.name)
         ]
         if self._cfg.output.s3.enabled:
+            turned_off = turned_off_sources(self._cfg).names
             for source, slug, url in list_layer_urls(
                 self._cfg.output.s3, self._cfg.iso3, exclude_source=self._runner.name
             ):
+                if source in turned_off:
+                    logger.info(
+                        "[%s/%s] combine: skipping staged layer %s/%s, source turned off",
+                        self._cfg.iso3.upper(),
+                        self._runner.name,
+                        source,
+                        slug,
+                    )
+                    continue
                 # The staging area is never pruned, so it outlives categories this
                 # config dropped. Merging them bloats the tileset with unlabelled data.
                 if slug not in order:

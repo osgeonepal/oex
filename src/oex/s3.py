@@ -33,6 +33,11 @@ def resolve_with_bucket(s3_config: S3Config) -> tuple[str, str, str, str | None,
     return resolved
 
 
+def area_prefix(prefix: str, iso3: str, folder: str) -> str:
+    """Keys are nested by area: `folder`, else iso3."""
+    return "/".join(part.strip("/") for part in (prefix, folder or iso3.upper()) if part)
+
+
 def artifact_key(
     prefix: str,
     iso3: str,
@@ -43,9 +48,9 @@ def artifact_key(
     nest_by_category: bool = True,
     geometry: str = "",
 ) -> str:
-    """Object key nested by area (`folder`, else iso3), then optionally by category and by a
-    points/lines/polygons `geometry` segment."""
-    segments = [prefix, folder or iso3.upper()]
+    """Object key nested by area, then optionally by category and by a points/lines/polygons
+    `geometry` segment."""
+    segments = [area_prefix(prefix, iso3, folder)]
     if nest_by_category:
         segments.append(category_slug)
     if geometry:
@@ -111,6 +116,21 @@ def list_layer_urls(
             url = public_url(bucket=bucket, key=key, region=region, endpoint_url=endpoint_url)
             layers.append((source, slug, url))
     return layers
+
+
+def list_area_keys(s3_config: S3Config, iso3: str) -> frozenset[str]:
+    import boto3
+
+    bucket, prefix, region, endpoint_url, _ = resolve_with_bucket(s3_config)
+    area = area_prefix(prefix, iso3, s3_config.folder)
+    client = boto3.client("s3", region_name=region or None, endpoint_url=endpoint_url)
+    return frozenset(
+        listed["Key"]
+        for page in client.get_paginator("list_objects_v2").paginate(
+            Bucket=bucket, Prefix=f"{area}/"
+        )
+        for listed in page.get("Contents", [])
+    )
 
 
 def public_url(*, bucket: str, key: str, region: str, endpoint_url: str | None) -> str:

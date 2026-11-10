@@ -450,11 +450,23 @@ def _extent(items: list[pystac.Item]) -> pystac.Extent:
 
 
 def _footprint(layer: LayerAssets) -> tuple[dict[str, Any] | None, list[float] | None]:
-    if layer.footprint:
-        geometry = json.loads(layer.footprint)
-        # West exceeds east for an outline crossing 180 degrees, as RFC 7946 section 5.2 asks.
-        return geometry, antimeridian.bbox(geometry)
+    """The export boundary, with a bbox widened to hold the data: features crossing the
+    boundary are kept whole, and a search by bbox must still find their files."""
     data_bbox = layer.source_metadata.metadata.bbox
+    if layer.footprint:
+        boundary = json.loads(layer.footprint)
+        # West exceeds east for an outline crossing 180 degrees, as RFC 7946 section 5.2 asks.
+        west, south, east, north = antimeridian.bbox(boundary)
+        # Over 180 degrees the data's longitudes span the globe, so they cannot widen it.
+        if not data_bbox or west > east:
+            return boundary, [west, south, east, north]
+        data_west, data_south, data_east, data_north = data_bbox
+        return boundary, [
+            min(west, data_west),
+            min(south, data_south),
+            max(east, data_east),
+            max(north, data_north),
+        ]
     if not data_bbox:
         return None, None
     return _geometry(tuple(data_bbox)), list(data_bbox)

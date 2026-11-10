@@ -19,5 +19,5 @@ def test_the_source_tag_survives_into_the_country_parquet(tmp_path: Path) -> Non
 
     OsmRunner()._build_country_parquet(cfg, PBF, parquet, tmp_path, engine="planet")
 
-    row = duckdb.sql(f"SELECT tags['name'], tags['source'] FROM '{parquet}'").fetchone()
+    row = duckdb.execute(f"SELECT tags['name'], tags['source'] FROM '{parquet}'").fetchone()
     assert row == ("Test Hospital", "Bing")

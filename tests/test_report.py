@@ -1,6 +1,8 @@
 """The sections a dataset page shows for each layer."""
 
 import json
+import re
+from dataclasses import replace
 
 from oex.metadata import ColumnReport, MetadataReport, TemporalReport
 from oex.palette import DEFAULT_PALETTE
@@ -534,6 +536,17 @@ def test_admin_tagging_reports_the_deepest_tagged_level() -> None:
     assert '<i class="well" style="width:75.00%">' in html
 
 
+def test_source_mix_shares_cover_every_feature() -> None:
+    """Two of three tagged values are listed and a quarter is untagged, so both get rows."""
+    top = [{"value": "Bing", "count": 50}, {"value": "survey", "count": 20}]
+    meta = _meta(columns=[ColumnReport("source", "VARCHAR", 25, 25.0, 3, top)])
+    html = render_report({"osm": _source(metadata=meta)})
+    mix = html.split("<h2>Source mix</h2>", 1)[1].split("</table>", 1)[0]
+    shares = [float(share) for share in re.findall(r'<td class="num">([0-9.]+)%</td>', mix)]
+    assert "<td>Other sources</td>" in mix and "<td>No source tag</td>" in mix
+    assert sum(shares) == 100.0
+
+
 def test_source_column_stays_listed_when_the_mix_does_not_cover_it() -> None:
     """Untagged features fall outside the mix, so the column's own fill still matters."""
     partial = [{"value": "OSM", "count": 50}, {"value": "Microsoft", "count": 30}]
@@ -548,3 +561,29 @@ def test_geometry_table_starts_at_one_percent_of_other_types() -> None:
     assert "Geometry types" not in render_report({"overture": _source(metadata=edge)})
     over = _meta(geometry_types={"POLYGON": 98, "POINT": 2}, feature_count=100)
     assert "Geometry types" in render_report({"overture": _source(metadata=over)})
+
+
+def test_the_header_dates_a_live_snapshot_by_its_day_and_about_keeps_the_time() -> None:
+    live = replace(_source("osm", metadata=_meta()), snapshot_label="2026-11-09T16:41:50Z")
+    html = render_report({"osm": live})
+    header = html.split('<div class="ds-head">', 1)[1].split("</div>", 1)[0]
+    assert "2026-11-09" in header and "T16:41" not in header
+    assert "2026-11-09T16:41:50Z" in html.split("About this data", 1)[1]
+
+
+def test_admin_coverage_says_why_features_outside_the_country_are_untagged() -> None:
+    meta = _meta(
+        columns=[
+            ColumnReport("adm0_pcode", "VARCHAR", 62, 62.0, 1, []),
+            ColumnReport("adm1_pcode", "VARCHAR", 62, 62.0, 3, []),
+        ]
+    )
+    html = render_report({"overture": _source(metadata=meta)})
+    coverage = html.split("<h2>Admin coverage</h2>", 1)[1].split("<h2>", 1)[0]
+    assert "62 features are outside every admin area" in coverage
+
+
+def test_one_feature_outside_the_admin_areas_is_counted_in_the_singular() -> None:
+    meta = _meta(columns=[ColumnReport("adm0_pcode", "VARCHAR", 1, 1.0, 1, [])])
+    html = render_report({"overture": _source(metadata=meta)})
+    assert "1 feature is outside every admin area" in html

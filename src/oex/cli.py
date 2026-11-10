@@ -17,6 +17,7 @@ from oex.logging_setup import get_logger, setup_logging
 from oex.osm.runner import OsmRunner
 from oex.overture.runner import OvertureRunner
 from oex.sources.file import FileRunner
+from oex.sources.labels import RUN_SOURCES
 
 app = typer.Typer(
     add_completion=False,
@@ -202,7 +203,6 @@ def _summarise(results: list[ExportResult]) -> int:
 
 
 _RUNNERS = {"osm": OsmRunner, "overture": OvertureRunner, "file": FileRunner}
-_SOURCE_ORDER = ("osm", "overture")
 
 
 def _load_with_overrides(yaml_path: Path | None, overrides: dict[str, object]) -> RootConfig:
@@ -223,7 +223,7 @@ def _run_one(
 def _enabled_sources(yaml_path: Path | None, overrides: dict[str, object]) -> list[str]:
     """Return the runnable source names in run order, honouring CLI overrides."""
     cfg = _load_with_overrides(yaml_path, overrides)
-    return [name for name in _SOURCE_ORDER if name in cfg.source and cfg.source[name].enabled]
+    return [name for name in RUN_SOURCES if name in cfg.source and cfg.source[name].enabled]
 
 
 def _resolve_args(

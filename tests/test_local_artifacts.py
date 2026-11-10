@@ -311,12 +311,26 @@ def test_pushing_to_hdx_without_s3_is_refused(make_exporter: MakeExporter, tmp_p
         make_exporter(cfg, "osm").run()
 
 
+def test_publishing_a_source_the_config_turns_off_is_refused(
+    make_exporter: MakeExporter, tmp_path: Path
+) -> None:
+    """A publish removes the files of every source turned off, which would include its own."""
+    cfg = _combined_cfg(tmp_path)
+    cfg.hdx.push = True
+    cfg.output.s3 = S3Config(enabled=True, bucket="example-bucket")
+    cfg.source["overture"].enabled = False
+
+    with pytest.raises(ValueError, match="source.overture.enabled is false"):
+        make_exporter(cfg, "overture").run()
+
+
 def test_an_items_file_is_staged_at_the_key_the_collection_links_to(
     make_exporter: MakeExporter, make_source_metadata: MakeSourceMetadata, tmp_path: Path
 ) -> None:
     """The Collection links each Item by URL; if the upload key and that URL disagree,
     every layer of the dataset is a 404 and nothing in the run notices."""
     cfg = _combined_cfg(tmp_path)
+    cfg.hdx.push = True
     cfg.output.s3 = S3Config(
         enabled=True, bucket="example-bucket", prefix="ISO3", region="us-east-1"
     )
@@ -377,13 +391,31 @@ def test_a_local_run_writes_the_collection_that_ties_its_layers_together(
     ]
 
 
-def test_a_run_without_hdx_stages_the_collection_the_items_point_at(
-    make_exporter: MakeExporter, make_source_metadata: MakeSourceMetadata, tmp_path: Path
+@pytest.mark.parametrize(
+    ("push", "expected"),
+    [
+        (
+            True,
+            [
+                "ISO3/NPL/buildings/hotosm_npl_buildings_overture_item.json",
+                "ISO3/NPL/combined/hotosm_npl_overture_metadata.json",
+            ],
+        ),
+        (False, []),
+    ],
+    ids=["publish stages the Item and its Collection", "a check run stages neither"],
+)
+def test_a_combined_run_stages_stac_only_when_it_publishes_the_files_stac_links_to(
+    make_exporter: MakeExporter,
+    make_source_metadata: MakeSourceMetadata,
+    tmp_path: Path,
+    push: bool,
+    expected: list[str],
 ) -> None:
-    """S3 on and push off publishes Items whose root and collection links name the
-    Collection, so a Collection that never reaches the bucket makes all of them 404."""
+    """A combined run uploads its zips only on publish, so STAC staged by a check run would
+    list downloads that 404."""
     cfg = _combined_cfg(tmp_path)
-    cfg.hdx.push = False
+    cfg.hdx.push = push
     cfg.output.s3 = S3Config(
         enabled=True, bucket="example-bucket", prefix="ISO3", region="us-east-1"
     )
@@ -398,11 +430,35 @@ def test_a_run_without_hdx_stages_the_collection_the_items_point_at(
         )
         exporter._write_combined_metadata(built, out_root, "hotosm_npl")
 
-    staged = [call.kwargs["key"] for call in upload.call_args_list]
-    assert staged == [
+    assert [call.kwargs["key"] for call in upload.call_args_list] == expected
+    # The catalog links every staged Collection, so one left unstaged must not be linked.
+    assert len(exporter._staged_collections) == (1 if push else 0)
+
+
+def test_a_per_category_run_without_hdx_stages_stac_with_the_zips_it_uploads(
+    make_exporter: MakeExporter, make_source_metadata: MakeSourceMetadata, tmp_path: Path
+) -> None:
+    """A per-category run puts its zips in the bucket without push, so its STAC goes there too."""
+    cfg = _combined_cfg(tmp_path)
+    cfg.hdx.combine = False
+    cfg.output.s3 = S3Config(
+        enabled=True, bucket="example-bucket", prefix="ISO3", region="us-east-1"
+    )
+    exporter = make_exporter(cfg, "overture")
+    out_root = tmp_path / "npl" / "overture"
+    (out_root / "_layers").mkdir(parents=True)
+    layer = _layer_assets(cfg, out_root, "buildings", make_source_metadata)
+
+    with patch("oex.exporter.s3_upload") as upload:
+        exporter._write_layer_metadata(
+            layer, out_root, out_root / "hotosm_npl_buildings_overture_metadata.json"
+        )
+
+    assert [call.kwargs["key"] for call in upload.call_args_list] == [
         "ISO3/NPL/buildings/hotosm_npl_buildings_overture_item.json",
-        "ISO3/NPL/combined/hotosm_npl_overture_metadata.json",
+        "ISO3/NPL/buildings/hotosm_npl_buildings_overture_metadata.json",
     ]
+    assert len(exporter._staged_collections) == 1
 
 
 def test_a_combined_runs_category_page_links_the_combined_hdx_dataset(
@@ -474,6 +530,7 @@ def test_each_category_collection_links_the_other_categories_of_its_area(
         dataset_name=layer_dataset_name(cfg, cfg.categories[0]),
     )
     collection_path = out_root / "collection.json"
+    exporter._published = frozenset({("roads", "osm")})
     with patch.object(Exporter, "_stage_metadata"):
         exporter._write_layer_metadata(layer, out_root, collection_path)
     links = json.loads(collection_path.read_text(encoding="utf-8"))["links"]
@@ -483,6 +540,13 @@ def test_each_category_collection_links_the_other_categories_of_its_area(
             "https://bucket.s3.amazonaws.com/ISO3/NPL/roads/hotosm_npl_roads_osm_metadata.json",
         )
     ]
+    # Roads published nothing yet, so a link would name a Collection that does not exist.
+    exporter._published = frozenset()
+    with patch.object(Exporter, "_stage_metadata"):
+        exporter._write_layer_metadata(layer, out_root, collection_path)
+    links = json.loads(collection_path.read_text(encoding="utf-8"))["links"]
+    assert not [link for link in links if link["rel"] == "related"]
+    exporter._published = frozenset({("roads", "osm")})
     cfg.output.report.related_datasets = False
     with patch.object(Exporter, "_stage_metadata"):
         exporter._write_layer_metadata(layer, out_root, collection_path)
