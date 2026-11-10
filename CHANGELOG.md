@@ -64,6 +64,13 @@ and is auto-managed by [commitizen](https://commitizen-tools.github.io/commitize
 
 - **config**: config fix
 
+## v0.4.25 (2026-11-10)
+
+### Fix
+
+- **updated**: add udpated time to stac and fix the updates only based in stac
+- **stac**: update new layers based on stac value
+
 ## v0.4.24 (2026-11-10)
 
 ### Fix
