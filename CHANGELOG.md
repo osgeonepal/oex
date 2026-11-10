@@ -64,6 +64,12 @@ and is auto-managed by [commitizen](https://commitizen-tools.github.io/commitize
 
 - **config**: config fix
 
+## v0.4.23 (2026-11-10)
+
+### Fix
+
+- **dev**: add hdx other servers
+
 ## v0.4.22 (2026-11-09)
 
 ### Fix
