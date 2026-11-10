@@ -147,6 +147,21 @@ def _upsert(store: CatalogStore, key: str, fresh: dict, children: list[tuple[str
     raise CatalogConflictError(f"{key}: still changing after {_WRITE_ATTEMPTS} attempts")
 
 
+def stamp_updated(store: CatalogStore, key: str, moment: str) -> bool:
+    """Sets the document's `updated` property; False when nothing is stored at `key`."""
+    for attempt in range(_WRITE_ATTEMPTS):
+        document, version = store.read(key)
+        if document is None:
+            return False
+        document["properties"]["updated"] = moment
+        try:
+            store.write(key, document, version)
+            return True
+        except CatalogConflictError:
+            time.sleep(min(2**attempt, 30) * random.uniform(0.5, 1.5))
+    raise CatalogConflictError(f"{key}: still changing after {_WRITE_ATTEMPTS} attempts")
+
+
 def _with_children(document: dict, children: list[tuple[str, str]]) -> dict:
     links = [link for link in document["links"] if link["rel"] != "child"]
     by_href = {link["href"]: link for link in document["links"] if link["rel"] == "child"}

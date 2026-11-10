@@ -19,7 +19,13 @@ from oex.catalog import layout as catalog_layout
 from oex.config.schema import CategoryConfig, RootConfig, license_label
 from oex.logging_setup import get_logger
 from oex.metadata import GEOMETRY_COLUMN, MetadataReport
-from oex.naming import ASSET_TITLES, category_label, slugify, split_artifact_filename
+from oex.naming import (
+    ASSET_TITLES,
+    category_label,
+    layer_dataset_name,
+    slugify,
+    split_artifact_filename,
+)
 from oex.report import SourceMetadata
 from oex.s3 import category_artifact_key, public_url
 from oex.s3 import resolve as s3_resolve
@@ -114,6 +120,13 @@ def item_filename(dataset_name: str, source_name: str) -> str:
 
 def collection_filename(dataset_name: str, source_name: str) -> str:
     return f"{dataset_name}_{source_name}_metadata.json"
+
+
+def published_item_key(cfg: RootConfig, category: CategoryConfig, source_name: str) -> str:
+    """Where a layer's Item sits in the bucket, beside the artifacts it describes."""
+    filename = item_filename(layer_dataset_name(cfg, category), source_name)
+    _, prefix, _, _, _ = s3_resolve(cfg.output.s3)
+    return category_artifact_key(cfg.output.s3, prefix, cfg.iso3, slugify(category.name), filename)
 
 
 def partition_of(filename: str, category_slug: str) -> str:

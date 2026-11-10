@@ -394,7 +394,7 @@ class OsmRunner(SourceRunner):
                 "or pass --download-if-missing on the CLI."
             )
         if osm_config.auto_download_planet:
-            planet_pbf = _refresh_planet_pbf(osm_config, planet_pbf)
+            planet_pbf = refresh_planet_pbf(osm_config, planet_pbf)
 
         if not osm_config.snapshot or osm_config.snapshot == "latest":
             _refuse_stale_planet(planet_pbf, cfg.frequency)
@@ -673,7 +673,7 @@ class OsmRunner(SourceRunner):
             ) from exc
 
 
-def _refresh_planet_pbf(osm_config: OsmSourceConfig, planet_pbf: Path) -> Path:
+def refresh_planet_pbf(osm_config: OsmSourceConfig, planet_pbf: Path) -> Path:
     """Download the planet when it is missing or older than pbf_url's, under a lock so
     concurrent runs share one download."""
     with _download_lock(planet_pbf):

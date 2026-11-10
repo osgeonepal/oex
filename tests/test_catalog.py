@@ -2,7 +2,7 @@ import pystac
 import pystac.validation
 import pytest
 
-from oex.catalog import CatalogConflictError, layout, link_collections
+from oex.catalog import CatalogConflictError, layout, link_collections, stamp_updated
 from oex.config.schema import RootConfig
 
 ROOT = "https://bucket.s3.amazonaws.com/ISO3/catalog.json"
@@ -176,3 +176,32 @@ def test_an_activation_registers_under_its_group_and_the_group_under_the_root():
     assert [link["href"] for link in area["links"] if link["rel"] == "parent"] == [group]
     _link(_cfg(), store, [("Roads of Nepal", ROADS)], area_title="Nepal")
     assert [title for title, _ in _children(store, "ISO3/catalog.json")] == ["Activations", "Nepal"]
+
+
+ITEM_KEY = "ISO3/NPL/roads/hotosm_npl_roads_osm_item.json"
+
+
+def test_a_stamp_survives_a_rival_write_and_keeps_its_change(monkeypatch):
+    """The rival's change must not be lost, nor the stamp dropped, when both write at once."""
+    monkeypatch.setattr("oex.catalog.time.sleep", lambda _: None)
+    store = MemoryStore()
+    store.documents[ITEM_KEY] = ({"properties": {"created": "2026-11-04T06:45:47Z"}}, "v0")
+
+    def rival(s):
+        document, version = s.read(ITEM_KEY)
+        s.documents[ITEM_KEY] = ({"properties": {**document["properties"], "x": 1}}, "rival")
+
+    store.meddle = rival
+    assert stamp_updated(store, ITEM_KEY, "2026-12-01T02:30:00Z")
+    properties = store.read(ITEM_KEY)[0]["properties"]
+    assert properties == {
+        "created": "2026-11-04T06:45:47Z",
+        "x": 1,
+        "updated": "2026-12-01T02:30:00Z",
+    }
+
+
+def test_there_is_nothing_to_stamp_before_a_first_publish():
+    store = MemoryStore()
+    assert not stamp_updated(store, ITEM_KEY, "2026-12-01T02:30:00Z")
+    assert store.writes == 0

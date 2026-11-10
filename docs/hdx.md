@@ -186,8 +186,9 @@ It needs `output.metadata` (or `output.report.enabled`), `output.s3.enabled` and
 off for a run. A layer without a published Item, for example on its first run, is exported
 and uploaded, and so is one whose HDX dataset is missing. The Item of an unchanged layer
 keeps the snapshot date and `created` time of the run that built its files, and its
-`updated` time is set to the run that confirmed it, so a scheduler can read from the
-catalog when each layer was last published or confirmed.
+`updated` time is set to the run that confirmed it. A layer that comes back empty gets the
+same `updated` time once its HDX dates are refreshed. A scheduler can then read from the
+Items when each layer was last published or confirmed.
 
 ## One dataset for all categories
 

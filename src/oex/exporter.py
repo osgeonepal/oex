@@ -19,7 +19,7 @@ import pystac
 from hdx.data.hdxobject import HDXError
 
 from oex.boundary import Boundary, resolve_boundary
-from oex.catalog import CatalogConflictError, S3CatalogStore, link_collections
+from oex.catalog import CatalogConflictError, S3CatalogStore, link_collections, stamp_updated
 from oex.catalog import layout as catalog_layout
 from oex.config.schema import (
     CategoryConfig,
@@ -69,7 +69,6 @@ from oex.preflight import check_tile_builder, check_writable_paths
 from oex.report import SourceMetadata
 from oex.report.page import PageLayer, downloads_from_assets, render_dataset_page
 from oex.s3 import build_layer_key, category_artifact_key, list_layer_urls, resolve_with_bucket
-from oex.s3 import resolve as s3_resolve
 from oex.s3 import upload as s3_upload
 from oex.sources.base import CategorySkippedError, SourceQuery, SourceRunner
 from oex.sources.labels import long_label
@@ -86,6 +85,7 @@ from oex.stac import (
     item_href,
     license_href,
     partition_of,
+    published_item_key,
     to_payload,
     write_json,
 )
@@ -696,7 +696,9 @@ class Exporter:
         logger.info("%s empty: no features within boundary", job.log_prefix)
         if job.publisher is not None and not self._cfg.hdx.combine:
             try:
-                self._refresh_dataset_dates(job.category, job.query, job.publisher)
+                refreshed = self._refresh_dataset_dates(job.category, job.query, job.publisher)
+                if refreshed is not None and self._stages_stac():
+                    self._stamp_published_item(job.category)
             except HDXError:
                 # An empty layer has nothing to re-export, so a failed refresh only leaves
                 # the older date in place.
@@ -720,7 +722,8 @@ class Exporter:
         if refreshed is None:
             logger.info("%s has no HDX dataset to refresh; exporting", job.log_prefix)
             return None
-        self._stamp_published_item(job.category)
+        if not self._stamp_published_item(job.category):
+            raise CatalogConflictError(f"{job.category.name}: Item removed during the refresh")
         if self._state is not None:
             self._state.mark_built(
                 job.slug,
@@ -1621,29 +1624,20 @@ class Exporter:
             ),
         }
 
-    def _published_item_key(self, category: CategoryConfig) -> str:
-        filename = item_filename(layer_dataset_name(self._cfg, category), self._runner.name)
-        s3_config = self._cfg.output.s3
-        _, prefix, _, _, _ = s3_resolve(s3_config)
-        return category_artifact_key(
-            s3_config, prefix, self._cfg.iso3, slugify(category.name), filename
-        )
-
     def _published_content_hash(self, category: CategoryConfig) -> str | None:
         """None before a layer's first publish, so the layer is exported and uploaded."""
-        item, _ = S3CatalogStore(self._cfg).read(self._published_item_key(category))
+        key = published_item_key(self._cfg, category, self._runner.name)
+        item, _ = S3CatalogStore(self._cfg).read(key)
         return None if item is None else item.get("properties", {}).get("oex:content_hash")
 
-    def _stamp_published_item(self, category: CategoryConfig) -> None:
-        """An unchanged layer keeps its Item, so `updated` is what tells a reader of the
-        catalog that this run confirmed it."""
-        store = S3CatalogStore(self._cfg)
-        key = self._published_item_key(category)
-        item, version = store.read(key)
-        if item is None:
-            raise CatalogConflictError(key)
-        item["properties"]["updated"] = pystac.utils.datetime_to_str(datetime.now(UTC))
-        store.write(key, item, version)
+    def _stamp_published_item(self, category: CategoryConfig) -> bool:
+        """A layer this run confirmed without rebuilding keeps its Item, so `updated` is what
+        tells a reader of the catalog when it was last checked."""
+        return stamp_updated(
+            S3CatalogStore(self._cfg),
+            published_item_key(self._cfg, category, self._runner.name),
+            pystac.utils.datetime_to_str(datetime.now(UTC)),
+        )
 
     def _refresh_dataset_dates(
         self,

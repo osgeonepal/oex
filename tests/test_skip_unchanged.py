@@ -144,6 +144,15 @@ BOUNDARY = Boundary(
 
 PUBLISHED_ITEM = {"properties": {"oex:content_hash": "new", "created": "2026-11-04T06:45:47Z"}}
 
+FAR_AWAY = Boundary(
+    iso3="NPL",
+    bbox=(0.0, 0.0, 1.0, 1.0),
+    geojson=json.dumps(
+        {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]}
+    ),
+    source="test",
+)
+
 
 def _process(
     cfg: RootConfig,
@@ -284,18 +293,27 @@ def test_an_hdx_error_while_refreshing_an_empty_layer_keeps_it_empty(tmp_path):
     publisher = MagicMock()
     publisher.refresh_metadata.side_effect = HDXError("HDX unavailable")
     exporter = Exporter(_cfg(tmp_path), _runner())
-    far_away = Boundary(
-        iso3="NPL",
-        bbox=(0.0, 0.0, 1.0, 1.0),
-        geojson=json.dumps(
-            {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]}
-        ),
-        source="test",
-    )
 
     built = exporter._process_category(
-        exporter._cfg.categories[0], far_away, tmp_path / "out", publisher
+        exporter._cfg.categories[0], FAR_AWAY, tmp_path / "out", publisher
     )
 
     assert built.result.status == "empty"
     publisher.refresh_metadata.assert_called_once()
+
+
+@pytest.mark.parametrize(("on_hdx", "stamped"), [("hotosm_npl_schools", True), (None, False)])
+def test_a_layer_that_turned_empty_stamps_its_item_once_hdx_is_refreshed(tmp_path, on_hdx, stamped):
+    """Its old Item would otherwise read as overdue on every scheduled run."""
+    publisher = MagicMock()
+    publisher.refresh_metadata.return_value = on_hdx
+    exporter = Exporter(_cfg(tmp_path), _runner())
+
+    with patch("oex.exporter.S3CatalogStore") as store:
+        store.return_value.read.return_value = (copy.deepcopy(PUBLISHED_ITEM), "etag-1")
+        built = exporter._process_category(
+            exporter._cfg.categories[0], FAR_AWAY, tmp_path / "out", publisher
+        )
+
+    assert built.result.status == "empty"
+    assert store.return_value.write.called is stamped
