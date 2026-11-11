@@ -113,8 +113,9 @@ _OVERTURE_THEME_LICENSES: dict[str, str | LayerLicense] = {
     "buildings": "hdx-odc-odbl",
     "divisions": "hdx-odc-odbl",
     "transportation": "hdx-odc-odbl",
+    # An SPDX expression would read better, but the STAC 1.1 schema accepts one bare id.
     "places": LayerLicense(
-        "CDLA-Permissive-2.0 AND Apache-2.0 AND CC0-1.0",
+        _NO_SPDX,
         "CDLA Permissive 2.0, Apache 2.0 or CC0 1.0, by place provider",
         _OVERTURE_ATTRIBUTION,
     ),

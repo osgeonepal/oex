@@ -710,11 +710,7 @@ def test_the_item_bbox_grows_to_hold_features_that_cross_the_boundary():
 @pytest.mark.parametrize(
     ("theme", "license_id", "href"),
     [
-        (
-            "places",
-            "CDLA-Permissive-2.0 AND Apache-2.0 AND CC0-1.0",
-            "https://docs.overturemaps.org/attribution/",
-        ),
+        ("places", "other", "https://docs.overturemaps.org/attribution/"),
         ("buildings", "ODbL-1.0", "https://spdx.org/licenses/ODbL-1.0.html"),
     ],
 )
@@ -758,3 +754,11 @@ def test_each_source_of_a_combined_dataset_has_its_own_collection_id():
         "hot_flood_npl_overture",
         "hot_flood_npl",
     )
+
+
+@pytest.mark.network
+def test_a_collection_mixing_osm_and_overture_places_satisfies_the_stac_spec():
+    """The STAC 1.1 schema takes one bare licence id, never an SPDX expression."""
+    places = _layer("education_facilities", source="overture")
+    places.category.overture.theme = "places"
+    _collection(_layer("education_facilities"), places).validate()
