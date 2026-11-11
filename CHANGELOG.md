@@ -64,6 +64,12 @@ and is auto-managed by [commitizen](https://commitizen-tools.github.io/commitize
 
 - **config**: config fix
 
+## v0.4.26 (2026-11-11)
+
+### Fix
+
+- **stac**: fix stac license in places
+
 ## v0.4.25 (2026-11-10)
 
 ### Fix
