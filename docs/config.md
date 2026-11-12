@@ -225,14 +225,14 @@ source:
 
 When enabled, every feature gets six extra columns:
 
-| Column        | Example value     | What it is                          |
-| ------------- | ----------------- | ----------------------------------- |
-| `adm0_pcode`  | `NPL`             | ISO3 country code                   |
-| `adm0_name`   | `Nepal`           | Country name                        |
-| `adm1_pcode`  | `NP-BA`           | First subdivision pcode             |
-| `adm1_name`   | `Bagmati`         | First subdivision name              |
-| `adm2_pcode`  | `NP-BA-KA`        | Second subdivision pcode            |
-| `adm2_name`   | `Kathmandu`       | Second subdivision name             |
+| Column       | Example value | What it is                                                                   |
+| ------------ | ------------- | ---------------------------------------------------------------------------- |
+| `adm0_pcode` | `NPL`         | Country or unit code, such as `PSE_1`; the ISO3 code when fieldmaps has none |
+| `adm0_name`  | `Nepal`       | Country or unit name; empty for a split country without coded levels         |
+| `adm1_pcode` | `NP-BA`       | First subdivision pcode                                                      |
+| `adm1_name`  | `Bagmati`     | First subdivision name                                                       |
+| `adm2_pcode` | `NP-BA-KA`    | Second subdivision pcode                                                     |
+| `adm2_name`  | `Kathmandu`   | Second subdivision name                                                      |
 
 `adm3` and `adm4` follow the same pattern. A level the country has no coded boundaries for
 is left out. A feature outside every admin area, such as one the boundary buffer brings in

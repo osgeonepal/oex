@@ -123,14 +123,10 @@ def write_country_admin_parquets(
 
 
 def _read_adm0(conn: duckdb.DuckDBPyConnection, source_table: str) -> tuple[str | None, str | None]:
-    row = conn.execute(
-        f"""
-        SELECT CASE WHEN count(DISTINCT adm0_pcode) = 1 THEN any_value(adm0_pcode) END,
-               string_agg(DISTINCT adm0_name, ' / ' ORDER BY adm0_name)
-        FROM {source_table}
-        """
-    ).fetchone()
-    return (row[0], row[1]) if row else (None, None)
+    rows = conn.execute(
+        f"SELECT DISTINCT adm0_pcode, adm0_name FROM {source_table} LIMIT 2"
+    ).fetchall()
+    return (rows[0][0], rows[0][1]) if len(rows) == 1 else (None, None)
 
 
 def _prepare_admin_tables(
@@ -590,8 +586,14 @@ def _combine_slim_levels(
         f"ON u{level}.pcode = p{level}.adm{level}_pcode"
         for level in coded_levels
     )
-    unit_code = ", ".join(f"u{level}.adm0_pcode" for level in coded_levels)
-    unit_name = ", ".join(f"u{level}.adm0_name" for level in coded_levels)
+    matched_unit_code, matched_unit_name = (
+        "CASE "
+        + " ".join(
+            f"WHEN u{level}.pcode IS NOT NULL THEN u{level}.{column}" for level in coded_levels
+        )
+        + " END"
+        for column in ("adm0_pcode", "adm0_name")
+    )
     any_level = ", ".join(f"p{level}.adm{level}_pcode" for level in requested)
     in_any_admin_area = f"coalesce({any_level}) IS NOT NULL"
     conn.execute(f"DROP TABLE IF EXISTS {slim_table}")
@@ -599,9 +601,9 @@ def _combine_slim_levels(
         f"""
         CREATE TABLE {slim_table} AS
         SELECT p{first_level}._rid,
-               CASE WHEN {in_any_admin_area} THEN coalesce({unit_code}, ?::VARCHAR) END
+               CASE WHEN {in_any_admin_area} THEN coalesce({matched_unit_code}, ?::VARCHAR) END
                    AS adm0_pcode,
-               coalesce({unit_name}) AS adm0_name,
+               {matched_unit_name} AS adm0_name,
                {level_columns}
         FROM {slim_level_tables[first_level]} AS p{first_level}
         {join_clauses}

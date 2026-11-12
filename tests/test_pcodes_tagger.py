@@ -603,7 +603,7 @@ def test_a_country_whose_levels_are_all_uncoded_still_gets_its_country_on_every_
     )
 
 
-def test_each_feature_in_a_country_split_into_units_gets_its_own_unit_and_the_iso3_code_when_the_unit_has_none(
+def test_split_country_features_get_their_unit_or_iso3_when_uncoded(
     tmp_path: Path,
     conn: duckdb.DuckDBPyConnection,
 ) -> None:
@@ -641,4 +641,105 @@ def test_each_feature_in_a_country_split_into_units_gets_its_own_unit_and_the_is
     assert conn.execute("SELECT id, adm0_pcode, adm0_name FROM split ORDER BY id").fetchall() == [
         (1, "PSE_1", "West Bank"),
         (2, "PSE", "Gaza"),
+    ]
+
+
+def test_a_pcode_repeated_across_polygons_tags_each_feature_once(
+    tmp_path: Path,
+    conn: duckdb.DuckDBPyConnection,
+) -> None:
+    path = tmp_path / "adm1_repeated.parquet"
+    _write_admin_parquet(
+        conn,
+        target=path,
+        level=1,
+        rows=[
+            {
+                "iso_3": "KOR",
+                "adm1_src": "KR01",
+                "adm1_name": "Region",
+                "adm0_src": "KOR",
+                "adm0_name": "Korea",
+                "wkt": wkt,
+            }
+            for wkt in (
+                "POLYGON((0 0, 5 0, 5 10, 0 10, 0 0))",
+                "POLYGON((5 0, 10 0, 10 10, 5 10, 5 0))",
+            )
+        ],
+    )
+    cache = {1: PcodeCacheEntry(level=1, path=path, upstream_date="t", upstream_url="")}
+    conn.execute("CREATE TABLE repeated AS SELECT 1 AS id, ST_Point(2.5, 5.0) AS geom")
+
+    tag_table(conn, table="repeated", iso3="KOR", cache_entries=cache, levels=[1])
+
+    assert conn.execute("SELECT id, adm0_pcode, adm1_pcode FROM repeated").fetchall() == [
+        (1, "KOR", "KR01")
+    ]
+
+
+def test_a_split_country_without_coded_levels_gets_the_iso3_code_and_no_invented_name(
+    tmp_path: Path,
+    conn: duckdb.DuckDBPyConnection,
+) -> None:
+    path = tmp_path / "adm1_split_uncoded.parquet"
+    _write_admin_parquet(
+        conn,
+        target=path,
+        level=1,
+        rows=[
+            {
+                "iso_3": "SHN",
+                "adm1_src": None,
+                "adm1_name": None,
+                "adm0_src": source,
+                "adm0_name": name,
+                "wkt": wkt,
+            }
+            for source, name, wkt in (
+                ("SHN_1", "Saint Helena (UK)", "POLYGON((0 0, 5 0, 5 10, 0 10, 0 0))"),
+                ("SHN_2", "Tristan da Cunha (UK)", "POLYGON((5 0, 10 0, 10 10, 5 10, 5 0))"),
+            )
+        ],
+    )
+    cache = {1: PcodeCacheEntry(level=1, path=path, upstream_date="t", upstream_url="")}
+    conn.execute("CREATE TABLE split AS SELECT 1 AS id, ST_Point(2.5, 5.0) AS geom")
+
+    tag_table(conn, table="split", iso3="SHN", cache_entries=cache, levels=[1])
+
+    assert conn.execute("SELECT adm0_pcode, adm0_name FROM split").fetchall() == [("SHN", None)]
+
+
+def test_a_feature_takes_its_adm0_code_and_name_from_the_shallowest_matched_level(
+    tmp_path: Path,
+    conn: duckdb.DuckDBPyConnection,
+) -> None:
+    cache = {}
+    for level, source, unit_code, unit_name in (
+        (1, "A1", None, "Unit One"),
+        (2, "A2", "X_2", "Unit Two"),
+    ):
+        path = tmp_path / f"adm{level}_units.parquet"
+        _write_admin_parquet(
+            conn,
+            target=path,
+            level=level,
+            rows=[
+                {
+                    "iso_3": "XXX",
+                    f"adm{level}_src": source,
+                    f"adm{level}_name": source,
+                    "adm0_src": unit_code,
+                    "adm0_name": unit_name,
+                    "wkt": "POLYGON((0 0, 10 0, 10 10, 0 10, 0 0))",
+                }
+            ],
+        )
+        cache[level] = PcodeCacheEntry(level=level, path=path, upstream_date="t", upstream_url="")
+    conn.execute("CREATE TABLE levels AS SELECT 1 AS id, ST_Point(5.0, 5.0) AS geom")
+
+    tag_table(conn, table="levels", iso3="XXX", cache_entries=cache, levels=[1, 2])
+
+    assert conn.execute("SELECT adm0_pcode, adm0_name FROM levels").fetchall() == [
+        ("XXX", "Unit One")
     ]
