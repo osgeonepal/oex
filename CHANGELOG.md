@@ -64,6 +64,12 @@ and is auto-managed by [commitizen](https://commitizen-tools.github.io/commitize
 
 - **config**: config fix
 
+## v0.4.29 (2026-11-12)
+
+### Fix
+
+- **pcodes**: select distinct pcodes from table
+
 ## v0.4.28 (2026-11-12)
 
 ### Fix
