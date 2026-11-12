@@ -64,6 +64,12 @@ and is auto-managed by [commitizen](https://commitizen-tools.github.io/commitize
 
 - **config**: config fix
 
+## v0.4.28 (2026-11-12)
+
+### Fix
+
+- **tagger**: fill in pcode if they are null from adm0 fieldmaps
+
 ## v0.4.27 (2026-11-12)
 
 ### Fix
