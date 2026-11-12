@@ -64,6 +64,12 @@ and is auto-managed by [commitizen](https://commitizen-tools.github.io/commitize
 
 - **config**: config fix
 
+## v0.4.27 (2026-11-12)
+
+### Fix
+
+- **null**: fixes  null feature handling
+
 ## v0.4.26 (2026-11-11)
 
 ### Fix
