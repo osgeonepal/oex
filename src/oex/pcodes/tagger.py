@@ -191,10 +191,11 @@ def _add_null_pcode_columns(
     table: str,
     requested_levels: list[int],
     adm0_pcode: str,
+    adm0_name: str | None,
 ) -> None:
     conn.execute(f"ALTER TABLE {table} ADD COLUMN adm0_pcode VARCHAR")
-    conn.execute(f"UPDATE {table} SET adm0_pcode = ?", [adm0_pcode])
     conn.execute(f"ALTER TABLE {table} ADD COLUMN adm0_name VARCHAR")
+    conn.execute(f"UPDATE {table} SET adm0_pcode = ?, adm0_name = ?", [adm0_pcode, adm0_name])
     for level in requested_levels:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN adm{level}_pcode VARCHAR")
         conn.execute(f"ALTER TABLE {table} ADD COLUMN adm{level}_name VARCHAR")
@@ -214,6 +215,7 @@ def _add_null_columns_without_admin_data(
         table=table,
         requested_levels=requested_levels,
         adm0_pcode=iso3,
+        adm0_name=None,
     )
     _drop_tables(conn, list(admin_tables.values()))
     logger.warning(
@@ -662,6 +664,24 @@ def tag_table(
     )
     # fieldmaps fills a level the country lacks with uncoded copies of the level above.
     levels_absent += [level for level in levels_with_data if level not in coded_levels]
+    if not coded_levels:
+        _add_null_pcode_columns(
+            conn,
+            table=table,
+            requested_levels=requested,
+            adm0_pcode=adm0_pcode,
+            adm0_name=adm0_name,
+        )
+        _drop_tables(conn, list(admin_tables.values()))
+        _drop_level_columns(conn, table=table, levels=levels_absent)
+        logger.info("[pcodes] ISO3=%s has no coded admin levels; tagging adm0 only", iso3_upper)
+        return PcodeTagReport(
+            iso3=iso3_upper,
+            levels_tagged=[],
+            levels_empty=requested,
+            adm0_pcode=adm0_pcode,
+            adm0_name=adm0_name,
+        )
     h3_tables = _build_h3_lookups(
         conn,
         table=table,

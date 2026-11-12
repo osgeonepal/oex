@@ -209,9 +209,14 @@ def test_a_prefer_one_source_selects_loads(tmp_path) -> None:
     assert load_config(config).categories[0].transliterate[0].prefer == "name_en"
 
 
-@pytest.mark.parametrize(("text", "latin"), [("北京", "Bei Jing"), ("🙂", None)])
-def test_a_transliteration_is_trimmed_and_an_empty_one_is_missing(text, latin) -> None:
-    """unidecode pads CJK text and drops emoji to nothing."""
-    from oex.translit.engine import _to_latin
-
-    assert _to_latin(text) == latin
+def test_a_transliteration_is_trimmed_and_one_that_comes_out_empty_is_null(
+    conn: duckdb.DuckDBPyConnection,
+) -> None:
+    conn.execute(
+        "CREATE TABLE features AS SELECT * FROM (VALUES (1, '北京'), (2, '🙂'), (3, NULL)) t(id, name)"
+    )
+    transliterate_table(
+        conn, table="features", rules=[TransliterateRule(target="name_latin", source="name")]
+    )
+    rows = conn.execute("SELECT id, name_latin FROM features ORDER BY id").fetchall()
+    assert rows == [(1, "Bei Jing"), (2, None), (3, None)]

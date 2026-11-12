@@ -561,3 +561,43 @@ def test_a_feature_matched_only_at_a_deeper_level_keeps_its_country(
     assert conn.execute("SELECT adm0_pcode, adm1_pcode, adm2_pcode FROM gap").fetchall() == [
         ("NPL", None, "NP0301")
     ]
+
+
+def test_a_country_whose_levels_are_all_uncoded_still_gets_its_country_on_every_feature(
+    tmp_path: Path,
+    conn: duckdb.DuckDBPyConnection,
+) -> None:
+    cache = {}
+    for level in (1, 2):
+        path = tmp_path / f"adm{level}_uncoded.parquet"
+        _write_admin_parquet(
+            conn,
+            target=path,
+            level=level,
+            rows=[
+                {
+                    "iso_3": "ATA",
+                    f"adm{level}_src": None,
+                    f"adm{level}_name": None,
+                    "adm0_src": "ATA",
+                    "adm0_name": "Antarctica",
+                    "wkt": "POLYGON((0 0, 10 0, 10 10, 0 10, 0 0))",
+                }
+            ],
+        )
+        cache[level] = PcodeCacheEntry(level=level, path=path, upstream_date="t", upstream_url="")
+    _make_features_table(conn, "features")
+
+    report = tag_table(conn, table="features", iso3="ATA", cache_entries=cache, levels=[1, 2])
+
+    columns = {name for name, *_ in conn.execute("DESCRIBE features").fetchall()}
+    assert not {"adm1_pcode", "adm1_name", "adm2_pcode", "adm2_name"} & columns
+    assert conn.execute("SELECT DISTINCT adm0_pcode, adm0_name FROM features").fetchall() == [
+        ("ATA", "Antarctica")
+    ]
+    assert (report.levels_tagged, report.levels_empty, report.adm0_pcode, report.adm0_name) == (
+        [],
+        [1, 2],
+        "ATA",
+        "Antarctica",
+    )

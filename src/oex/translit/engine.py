@@ -3,6 +3,7 @@
 from typing import TYPE_CHECKING
 
 import duckdb
+from duckdb.func import FunctionNullHandling
 from unidecode import unidecode
 
 from oex.logging_setup import get_logger
@@ -28,7 +29,10 @@ def _ensure_udf(conn: duckdb.DuckDBPyConnection) -> None:
         "SELECT 1 FROM duckdb_functions() WHERE function_name = ?", [_UDF_NAME]
     ).fetchone()
     if registered is None:
-        conn.create_function(_UDF_NAME, _to_latin, ["VARCHAR"], "VARCHAR")
+        # A UDF that can return NULL needs SPECIAL: https://duckdb.org/docs/2.0/clients/python/function.html
+        conn.create_function(
+            _UDF_NAME, _to_latin, ["VARCHAR"], "VARCHAR", null_handling=FunctionNullHandling.SPECIAL
+        )
 
 
 def _require_varchar(table: str, column: str, schema: dict[str, str], role: str) -> None:
