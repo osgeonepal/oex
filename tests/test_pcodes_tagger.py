@@ -601,3 +601,44 @@ def test_a_country_whose_levels_are_all_uncoded_still_gets_its_country_on_every_
         "ATA",
         "Antarctica",
     )
+
+
+def test_each_feature_in_a_country_split_into_units_gets_its_own_unit_and_the_iso3_code_when_the_unit_has_none(
+    tmp_path: Path,
+    conn: duckdb.DuckDBPyConnection,
+) -> None:
+    path = tmp_path / "adm1_split.parquet"
+    _write_admin_parquet(
+        conn,
+        target=path,
+        level=1,
+        rows=[
+            {
+                "iso_3": "PSE",
+                "adm1_src": "PS01",
+                "adm1_name": "West Bank",
+                "adm0_src": "PSE_1",
+                "adm0_name": "West Bank",
+                "wkt": "POLYGON((0 0, 5 0, 5 10, 0 10, 0 0))",
+            },
+            {
+                "iso_3": "PSE",
+                "adm1_src": "PS02",
+                "adm1_name": "Gaza Strip",
+                "adm0_src": None,
+                "adm0_name": "Gaza",
+                "wkt": "POLYGON((5 0, 10 0, 10 10, 5 10, 5 0))",
+            },
+        ],
+    )
+    cache = {1: PcodeCacheEntry(level=1, path=path, upstream_date="t", upstream_url="")}
+    conn.execute(
+        "CREATE TABLE split AS SELECT * FROM (VALUES (1, ST_Point(2.5, 5.0)), (2, ST_Point(7.5, 5.0))) t(id, geom)"
+    )
+
+    tag_table(conn, table="split", iso3="PSE", cache_entries=cache, levels=[1])
+
+    assert conn.execute("SELECT id, adm0_pcode, adm0_name FROM split ORDER BY id").fetchall() == [
+        (1, "PSE_1", "West Bank"),
+        (2, "PSE", "Gaza"),
+    ]

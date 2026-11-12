@@ -124,11 +124,13 @@ def write_country_admin_parquets(
 
 def _read_adm0(conn: duckdb.DuckDBPyConnection, source_table: str) -> tuple[str | None, str | None]:
     row = conn.execute(
-        f"SELECT adm0_pcode, adm0_name FROM {source_table} WHERE adm0_pcode IS NOT NULL LIMIT 1"
+        f"""
+        SELECT CASE WHEN count(DISTINCT adm0_pcode) = 1 THEN any_value(adm0_pcode) END,
+               string_agg(DISTINCT adm0_name, ' / ' ORDER BY adm0_name)
+        FROM {source_table}
+        """
     ).fetchone()
-    if row is None:
-        return None, None
-    return (row[0], row[1])
+    return (row[0], row[1]) if row else (None, None)
 
 
 def _prepare_admin_tables(
@@ -565,8 +567,9 @@ def _combine_slim_levels(
     table: str,
     requested: list[int],
     slim_level_tables: dict[int, str],
-    adm0_pcode: str,
-    adm0_name: str | None,
+    admin_tables: dict[int, str],
+    coded_levels: list[int],
+    iso3: str,
 ) -> str:
     """Join the per-level tables into one slim pcode table; returns its name."""
     slim_table = _slim_pcode_table_name(table)
@@ -580,6 +583,15 @@ def _combine_slim_levels(
         for level in requested
         for column in (f"p{level}.adm{level}_pcode", f"p{level}.adm{level}_name")
     )
+    # fieldmaps splits some countries into several adm0 units (PSE_1 West Bank, PSE_2 Gaza).
+    unit_joins = "\n".join(
+        f"LEFT JOIN (SELECT DISTINCT ON (pcode) pcode, adm0_pcode, adm0_name "
+        f"FROM {admin_tables[level]} ORDER BY pcode, adm0_pcode, adm0_name) AS u{level} "
+        f"ON u{level}.pcode = p{level}.adm{level}_pcode"
+        for level in coded_levels
+    )
+    unit_code = ", ".join(f"u{level}.adm0_pcode" for level in coded_levels)
+    unit_name = ", ".join(f"u{level}.adm0_name" for level in coded_levels)
     any_level = ", ".join(f"p{level}.adm{level}_pcode" for level in requested)
     in_any_admin_area = f"coalesce({any_level}) IS NOT NULL"
     conn.execute(f"DROP TABLE IF EXISTS {slim_table}")
@@ -587,13 +599,15 @@ def _combine_slim_levels(
         f"""
         CREATE TABLE {slim_table} AS
         SELECT p{first_level}._rid,
-               CASE WHEN {in_any_admin_area} THEN ?::VARCHAR END AS adm0_pcode,
-               CASE WHEN {in_any_admin_area} THEN ?::VARCHAR END AS adm0_name,
+               CASE WHEN {in_any_admin_area} THEN coalesce({unit_code}, ?::VARCHAR) END
+                   AS adm0_pcode,
+               coalesce({unit_name}) AS adm0_name,
                {level_columns}
         FROM {slim_level_tables[first_level]} AS p{first_level}
         {join_clauses}
+        {unit_joins}
         """,
-        [adm0_pcode, adm0_name],
+        [iso3],
     )
     _drop_tables(conn, list(slim_level_tables.values()))
     return slim_table
@@ -714,8 +728,9 @@ def tag_table(
         table=table,
         requested=requested,
         slim_level_tables=slim_level_tables,
-        adm0_pcode=adm0_pcode,
-        adm0_name=adm0_name,
+        admin_tables=admin_tables,
+        coded_levels=coded_levels,
+        iso3=iso3_upper,
     )
     _rejoin_and_swap(
         conn, table=table, slim_table=slim_table, geom_column=geom_column, requested=requested
