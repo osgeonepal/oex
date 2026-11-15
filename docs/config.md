@@ -413,7 +413,7 @@ where the fingerprint covers the boundary and the filter set.
 `osmium extract --strategy=complete_ways`, then runs quackosm once with
 the union of all category tag filters and `keep_all_tags=True`. Per-category
 extraction at query time is a tag-predicate WHERE on the resulting
-`<cache_dir>/planet/<iso3>/<snapshot>/country-<fingerprint>.parquet`. Requires the
+`<cache_dir>/planet/<iso3 or s3 folder>/<snapshot>/country-<fingerprint>.parquet`. Requires the
 `osmium-tool` binary on PATH (one-time `dnf install osmium-tool` /
 `apt install osmium-tool` / `brew install osmium-tool`).
 
@@ -423,7 +423,7 @@ territories) or stays unreachable after its requests are retried.
 
 `postpass`: sends one SQL query per OSM table, three per run, to Geofabrik's Postpass API,
 which serves a minutely-updated OSM database, and writes the rows to
-`<cache_dir>/postpass/<iso3>/country-<fingerprint>.parquet`. No download and no
+`<cache_dir>/postpass/<iso3 or s3 folder>/country-<fingerprint>.parquet`. No download and no
 local PBF. Postpass caps how much area one query may cover, so
 `postpass_max_area_sq_km` (default 2000) fails the run before submitting a
 boundary that is too large rather than waiting for the server to refuse it.
@@ -431,7 +431,7 @@ Suited to event-sized areas, not to whole countries.
 
 `rawdata`: submits one job per run to the HOT Raw Data API, polls it to
 completion, and reads the returned GeoJSON into
-`<cache_dir>/rawdata/<iso3>/country-<fingerprint>.parquet`. The snapshot label
+`<cache_dir>/rawdata/<iso3 or s3 folder>/country-<fingerprint>.parquet`. The snapshot label
 is the mirror's own `lastUpdated` time, so it records when the data was
 current rather than when the run happened. Slower than Postpass because the
 work is queued, but it takes the same filters and has no area cap.

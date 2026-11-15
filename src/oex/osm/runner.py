@@ -284,16 +284,20 @@ class OsmRunner(SourceRunner):
     ) -> None:
         """Shared path for the live engines. Always refetches, since freshness is the reason to
         use one."""
-        if not cfg.iso3:
-            raise ValueError(f"osm.engine={engine} requires `iso3` in the config")
+        identity = dataset_identity(cfg)
+        if not identity:
+            raise ValueError(
+                f"osm.engine={engine} requires `iso3`, or `output.s3.folder` when the "
+                "export has no country code"
+            )
 
         boundary = resolve_boundary(cfg.iso3, cfg.boundary)
         self._check_area(engine, osm_config, boundary.geojson)
         union_filter = union_tag_filter(cfg.categories)
-        snapshot_dir = Path(osm_config.cache_dir) / engine / cfg.iso3.lower()
+        snapshot_dir = Path(osm_config.cache_dir) / engine / identity
         country_parquet = snapshot_dir / f"country-{_parquet_fingerprint(cfg, clip=True)}.parquet"
 
-        logger.info("%s fetch for %s: %d filter keys", engine, cfg.iso3.upper(), len(union_filter))
+        logger.info("%s fetch for %s: %d filter keys", engine, identity, len(union_filter))
         snapshot = fetch(
             boundary_geojson=boundary.geojson,
             tag_filter=union_filter,

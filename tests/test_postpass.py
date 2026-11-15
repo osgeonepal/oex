@@ -237,3 +237,56 @@ def test_a_closed_line_with_an_area_key_is_written_as_a_polygon(tmp_path) -> Non
         "way/3": "POLYGON",
         "way/4": "LINESTRING",
     }
+
+
+class _FetchReachedError(Exception):
+    pass
+
+
+def _project_config_text(tmp_path: Path, folder: str) -> str:
+    return f"""
+key: ""
+boundary:
+  geom: '{SQUARE}'
+output:
+  s3:
+    folder: "{folder}"
+source:
+  osm:
+    engine: postpass
+    cache_dir: {tmp_path / "osm"}
+categories:
+  - name: buildings
+    osm:
+      enabled: true
+      filter:
+        building: true
+"""
+
+
+def test_an_export_without_a_country_caches_its_fetch_under_its_s3_folder(
+    load_yaml_config, tmp_path: Path, monkeypatch
+) -> None:
+    fetched: list[Path] = []
+
+    def record_fetch(**kwargs):
+        fetched.append(kwargs["out_path"])
+        raise _FetchReachedError
+
+    monkeypatch.setattr("oex.osm.runner.fetch_country_parquet", record_fetch)
+    cfg = load_yaml_config(_project_config_text(tmp_path, "hotosm_project_7"))
+    with pytest.raises(_FetchReachedError):
+        OsmRunner().prepare(cfg)
+    assert fetched[0].parent == tmp_path / "osm" / "postpass" / "hotosm_project_7"
+
+
+def test_an_export_with_neither_a_country_nor_an_s3_folder_is_refused(
+    load_yaml_config, tmp_path: Path, monkeypatch
+) -> None:
+    def refuse_fetch(**_kwargs):
+        raise _FetchReachedError
+
+    monkeypatch.setattr("oex.osm.runner.fetch_country_parquet", refuse_fetch)
+    cfg = load_yaml_config(_project_config_text(tmp_path, ""))
+    with pytest.raises(ValueError, match="output.s3.folder"):
+        OsmRunner().prepare(cfg)
