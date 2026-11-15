@@ -64,6 +64,12 @@ and is auto-managed by [commitizen](https://commitizen-tools.github.io/commitize
 
 - **config**: config fix
 
+## v0.4.31 (2026-11-15)
+
+### Fix
+
+- **boundaries**: added fix for geoboundaries with fieldmaps boundary support
+
 ## v0.4.30 (2026-11-15)
 
 ### Fix
