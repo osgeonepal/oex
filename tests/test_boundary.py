@@ -296,7 +296,10 @@ def test_fieldmaps_joins_every_unit_of_the_country_and_leaves_an_enclaved_one_ou
     assert boundary.bbox == (0, 0, 11, 4)
     assert not outline.contains(Point(1.5, 1.5))
     assert outline.area == pytest.approx(16)
-    assert boundary.source == "fieldmaps adm0 OSM intl 2025-07-29"
+    assert (
+        boundary.source
+        == "FieldMaps, U.S. Department of State, OpenStreetMap (adm0 intl, 2025-07-29)"
+    )
 
 
 def test_fieldmaps_rows_without_a_release_date_are_refused(fieldmaps_parquet) -> None:

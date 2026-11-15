@@ -135,7 +135,7 @@ def _fetch_fieldmaps(iso3: str, url: str) -> Boundary:
         iso3=iso3.upper(),
         bbox=_bbox_from_geometry(geometry),
         geojson=json.dumps(geometry),
-        source=f"fieldmaps adm0 OSM intl {release}",
+        source=f"FieldMaps, U.S. Department of State, OpenStreetMap (adm0 intl, {release})",
     )
 
 
