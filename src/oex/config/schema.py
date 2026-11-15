@@ -153,7 +153,9 @@ class ParallelConfig:
 @dataclass
 class BoundaryConfig:
     geom: str | None = None
+    source: str = "geoboundaries"
     geoboundaries_level: str = "ADM0"
+    fieldmaps_url: str = "https://data.fieldmaps.io/adm0/osm/intl/adm0_polygons.parquet"
     buffer_meters: float = 0.0
     # Simplification tolerance applied before and after the buffer, to keep it fast and small.
     simplify_meters: float = 0.0

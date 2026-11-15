@@ -1,4 +1,4 @@
-"""Country boundary resolution: user-supplied geom or geoBoundaries ADM0."""
+"""Country boundary resolution: user-supplied geom, geoBoundaries or fieldmaps ADM0."""
 
 import hashlib
 import json
@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import antimeridian
+import duckdb
 import requests
 import shapely
 from pyproj import CRS, Geod, Transformer
@@ -23,6 +24,8 @@ _GEOBOUNDARIES_RELEASE = "gbOpen"
 _GEOBOUNDARIES_URL_TEMPLATE = (
     f"https://www.geoboundaries.org/api/current/{_GEOBOUNDARIES_RELEASE}/{{iso3}}/{{level}}/"
 )
+
+BOUNDARY_SOURCES = ("geoboundaries", "fieldmaps")
 
 WORLD_GEOJSON: dict[str, Any] = {
     "type": "Polygon",
@@ -49,7 +52,7 @@ def area_sq_km(geometry: dict[str, Any]) -> float:
 
 
 _boundary_cache_lock = threading.Lock()
-_boundary_cache: dict[tuple[str, str, str, str, str, str], Boundary] = {}
+_boundary_cache: dict[tuple[str, ...], Boundary] = {}
 
 
 def _bbox_from_geometry(geometry: dict[str, Any]) -> tuple[float, float, float, float]:
@@ -109,6 +112,30 @@ def _fetch_geoboundaries(iso3: str, level: str) -> Boundary:
         bbox=bbox,
         geojson=json.dumps(geometry),
         source=f"geoBoundaries {_GEOBOUNDARIES_RELEASE} {level}",
+    )
+
+
+def _fetch_fieldmaps(iso3: str, url: str) -> Boundary:
+    logger.info("Reading fieldmaps adm0 for %s: %s", iso3.upper(), url)
+    with duckdb.connect() as conn:
+        conn.execute("INSTALL spatial; LOAD spatial; INSTALL httpfs; LOAD httpfs")
+        rows = conn.execute(
+            "SELECT ST_AsWKB(geometry), wld_update FROM read_parquet(?) WHERE iso_3 = ?",
+            [url, iso3.upper()],
+        ).fetchall()
+    if not rows:
+        raise ValueError(f"fieldmaps has no adm0 for {iso3.upper()} in {url}")
+    releases = [row[1] for row in rows if row[1] is not None]
+    if not releases:
+        raise ValueError(f"fieldmaps rows for {iso3.upper()} in {url} have no wld_update date")
+    outline = shapely.union_all(shapely.from_wkb([bytes(row[0]) for row in rows]))
+    geometry = json.loads(shapely.to_geojson(outline))
+    release = max(releases)
+    return Boundary(
+        iso3=iso3.upper(),
+        bbox=_bbox_from_geometry(geometry),
+        geojson=json.dumps(geometry),
+        source=f"fieldmaps adm0 OSM intl {release}",
     )
 
 
@@ -197,12 +224,19 @@ def resolve_boundary(iso3: str, boundary_config: BoundaryConfig) -> Boundary:
             f"boundary.simplify_meters must be >= 0 and below half of buffer_meters; "
             f"got simplify_meters={boundary_config.simplify_meters}, buffer_meters={boundary_config.buffer_meters}"
         )
+    if boundary_config.source not in BOUNDARY_SOURCES:
+        raise ValueError(
+            f"boundary.source must be one of {list(BOUNDARY_SOURCES)}; "
+            f"got {boundary_config.source!r}"
+        )
     # Without boundary.geom in the key, two configs with different user geometries for
     # one country share an entry and the second exports the first one's area.
     key = (
         iso3.upper(),
+        boundary_config.source,
         _GEOBOUNDARIES_RELEASE,
         boundary_config.geoboundaries_level,
+        boundary_config.fieldmaps_url,
         f"buf{boundary_config.buffer_meters:g}",
         f"simplify{boundary_config.simplify_meters:g}",
         hashlib.sha256((boundary_config.geom or "").encode()).hexdigest(),
@@ -217,6 +251,8 @@ def resolve_boundary(iso3: str, boundary_config: BoundaryConfig) -> Boundary:
             boundary = _world_boundary(iso3)
         else:
             boundary = _from_user_geom(iso3, boundary_config.geom)
+    elif boundary_config.source == "fieldmaps":
+        boundary = _fetch_fieldmaps(iso3, boundary_config.fieldmaps_url)
     else:
         boundary = _fetch_geoboundaries(iso3, boundary_config.geoboundaries_level)
 

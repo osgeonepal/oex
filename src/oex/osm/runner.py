@@ -92,6 +92,9 @@ def _parquet_fingerprint(cfg: RootConfig, *, clip: bool) -> str:
             "buffer": boundary.buffer_meters,
             "simplify": boundary.simplify_meters,
         }
+        # Added only off the default so the parquets cached under geoBoundaries keep their keys.
+        if boundary.source != "geoboundaries":
+            clip_key |= {"source": boundary.source, "fieldmaps_url": boundary.fieldmaps_url}
     payload = json.dumps(
         {
             "clip": clip_key,

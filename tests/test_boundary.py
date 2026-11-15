@@ -1,8 +1,7 @@
-"""Boundary resolution from user-supplied geometry."""
-
 import json
 import math
 
+import duckdb
 import pytest
 from shapely.geometry import Point, mapping, shape
 
@@ -264,3 +263,73 @@ def test_every_part_of_a_multipolygon_counts() -> None:
         ],
     }
     assert area_sq_km(two_squares) == pytest.approx(2 * 12308.78, abs=0.02)
+
+
+@pytest.fixture
+def fieldmaps_parquet(tmp_path) -> str:
+    path = tmp_path / "adm0_polygons.parquet"
+    conn = duckdb.connect()
+    conn.execute("INSTALL spatial; LOAD spatial")
+    conn.execute(
+        f"""
+        COPY (
+            SELECT iso_3, wld_update, ST_GeomFromText(wkt) AS geometry FROM (VALUES
+                ('AAA', DATE '2025-07-29',
+                 'POLYGON((0 0, 4 0, 4 4, 0 4, 0 0), (1 1, 2 1, 2 2, 1 2, 1 1))'),
+                ('AAA', DATE '2025-07-29', 'POLYGON((10 0, 11 0, 11 1, 10 1, 10 0))'),
+                ('BBB', DATE '2025-07-29', 'POLYGON((1 1, 2 1, 2 2, 1 2, 1 1))'),
+                ('DDD', NULL, 'POLYGON((20 0, 21 0, 21 1, 20 1, 20 0))')
+            ) AS rows(iso_3, wld_update, wkt)
+        ) TO '{path}' (FORMAT parquet)
+        """
+    )
+    return str(path)
+
+
+def test_fieldmaps_joins_every_unit_of_the_country_and_leaves_an_enclaved_one_out(
+    fieldmaps_parquet,
+) -> None:
+    boundary = resolve_boundary(
+        "aaa", BoundaryConfig(source="fieldmaps", fieldmaps_url=fieldmaps_parquet)
+    )
+    outline = shape(json.loads(boundary.geojson))
+    assert boundary.bbox == (0, 0, 11, 4)
+    assert not outline.contains(Point(1.5, 1.5))
+    assert outline.area == pytest.approx(16)
+    assert boundary.source == "fieldmaps adm0 OSM intl 2025-07-29"
+
+
+def test_fieldmaps_rows_without_a_release_date_are_refused(fieldmaps_parquet) -> None:
+    with pytest.raises(ValueError, match="no wld_update date"):
+        resolve_boundary("DDD", BoundaryConfig(source="fieldmaps", fieldmaps_url=fieldmaps_parquet))
+
+
+def test_the_boundary_cache_keeps_sources_apart(fieldmaps_parquet, monkeypatch) -> None:
+    resolve_boundary("AAA", BoundaryConfig(source="fieldmaps", fieldmaps_url=fieldmaps_parquet))
+
+    def refuse_network(*_args, **_kwargs):
+        raise ConnectionError("geoBoundaries reached")
+
+    monkeypatch.setattr("oex.boundary.requests.get", refuse_network)
+    with pytest.raises(ConnectionError, match="geoBoundaries reached"):
+        resolve_boundary(
+            "AAA", BoundaryConfig(source="geoboundaries", fieldmaps_url=fieldmaps_parquet)
+        )
+
+
+def test_a_country_missing_from_fieldmaps_is_refused(fieldmaps_parquet) -> None:
+    with pytest.raises(ValueError, match="fieldmaps has no adm0 for CCC"):
+        resolve_boundary("CCC", BoundaryConfig(source="fieldmaps", fieldmaps_url=fieldmaps_parquet))
+
+
+def test_an_inline_geom_wins_over_the_fieldmaps_source(tmp_path) -> None:
+    square = {"type": "Polygon", "coordinates": [[[5, 5], [6, 5], [6, 6], [5, 6], [5, 5]]]}
+    cfg = BoundaryConfig(
+        geom=json.dumps(square), source="fieldmaps", fieldmaps_url=str(tmp_path / "absent.parquet")
+    )
+    assert resolve_boundary("AAA", cfg).source == "user-provided"
+
+
+def test_an_unknown_boundary_source_is_refused() -> None:
+    with pytest.raises(ValueError, match="boundary.source"):
+        resolve_boundary("AAA", BoundaryConfig(source="naturalearth"))

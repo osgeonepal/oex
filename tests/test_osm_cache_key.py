@@ -23,7 +23,7 @@ _WIDER = json.dumps(
 )
 
 
-def _cfg(geom: str, filters: dict) -> RootConfig:
+def _cfg(geom: str | None, filters: dict) -> RootConfig:
     return RootConfig(
         iso3="NPL",
         key="demo",
@@ -65,3 +65,27 @@ def test_boundary_cache_does_not_confuse_two_geometries_for_one_country() -> Non
     wide = resolve_boundary("NPL", BoundaryConfig(geom=_WIDER))
     assert narrow.bbox != wide.bbox
     assert narrow.bbox == (85.30, 27.68, 85.36, 27.73)
+
+
+def test_switching_the_boundary_source_builds_a_fresh_parquet() -> None:
+    geoboundaries = _cfg(None, {"building": True})
+    fieldmaps = _cfg(None, {"building": True})
+    fieldmaps.boundary.source = "fieldmaps"
+    assert _parquet_fingerprint(geoboundaries, clip=True) != _parquet_fingerprint(
+        fieldmaps, clip=True
+    )
+
+
+def test_a_different_fieldmaps_file_builds_a_fresh_parquet() -> None:
+    default = _cfg(None, {"building": True})
+    other = _cfg(None, {"building": True})
+    default.boundary.source = other.boundary.source = "fieldmaps"
+    other.boundary.fieldmaps_url = "https://example.org/adm0.parquet"
+    assert _parquet_fingerprint(default, clip=True) != _parquet_fingerprint(other, clip=True)
+
+
+def test_the_fieldmaps_file_does_not_touch_a_geoboundaries_parquet_key() -> None:
+    default = _cfg(None, {"building": True})
+    other = _cfg(None, {"building": True})
+    other.boundary.fieldmaps_url = "https://example.org/adm0.parquet"
+    assert _parquet_fingerprint(default, clip=True) == _parquet_fingerprint(other, clip=True)
