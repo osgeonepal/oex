@@ -64,6 +64,199 @@ and is auto-managed by [commitizen](https://commitizen-tools.github.io/commitize
 
 - **config**: config fix
 
+## v0.4.33 (2026-11-15)
+
+### Fix
+
+- **attribute**: fix fieldmaps attribut citing
+
+## v0.4.31 (2026-11-15)
+
+### Fix
+
+- **boundaries**: added fix for geoboundaries with fieldmaps boundary support
+
+## v0.4.30 (2026-11-15)
+
+### Fix
+
+- **test**: postpass config
+
+## v0.4.29 (2026-11-12)
+
+### Fix
+
+- **pcodes**: select distinct pcodes from table
+
+## v0.4.28 (2026-11-12)
+
+### Fix
+
+- **tagger**: fill in pcode if they are null from adm0 fieldmaps
+
+## v0.4.27 (2026-11-12)
+
+### Fix
+
+- **null**: fixes  null feature handling
+
+## v0.4.26 (2026-11-11)
+
+### Fix
+
+- **stac**: fix stac license in places
+
+## v0.4.25 (2026-11-10)
+
+### Fix
+
+- **updated**: add udpated time to stac and fix the updates only based in stac
+- **stac**: update new layers based on stac value
+
+## v0.4.24 (2026-11-10)
+
+### Fix
+
+- **hdx**: added updated timestamp to exporter
+
+## v0.4.23 (2026-11-10)
+
+### Fix
+
+- **dev**: add hdx other servers
+
+## v0.4.22 (2026-11-09)
+
+### Fix
+
+- **pcodes**: fix pcode tagging after the h3 tag
+- **fix**: skip unchanged
+
+### Refactor
+
+- **redability**: refactors full repo with clear cut function definitions
+
+## v0.4.21 (2026-11-04)
+
+### Fix
+
+- **simplify**: fix simplify and bufffer
+
+## v0.4.20 (2026-11-03)
+
+### Fix
+
+- **pcode**: fix pcode matching
+
+## v0.4.19 (2026-11-02)
+
+### Fix
+
+- **simplication**: add simplication feature and buffer for countries
+- **lint**: fix lint issues
+
+## v0.4.18 (2026-10-20)
+
+### Fix
+
+- **oexcli**: added oexcli with sharede configuration
+
+## v0.4.17 (2026-10-20)
+
+### Fix
+
+- **enhance**: enhances retry download ,fixes export time , fixes memory limit
+
+## v0.4.16 (2026-10-06)
+
+### Feat
+
+- **theme**: add theme section , add report with map and data enabled ,add also support for the fileformats
+
+## v0.4.15 (2026-09-12)
+
+### Fix
+
+- **fix**: fallback engine
+- **kml**: fix kml lat lon reverse bug
+
+## v0.4.14 (2026-09-06)
+
+### Fix
+
+- **feat**: add geoparquet support and also external dataset support
+- **osm**: add osm source
+
+## v0.4.13 (2026-09-03)
+
+### Fix
+
+- **raw**: fix rawdata api bundle
+- **update**: remove update note
+
+## v0.4.12 (2026-08-29)
+
+### Fix
+
+- **summary**: fixes summary to be passed form config
+- **ordering**: add ordering to datasets
+- **boundary**: add boundary support in html report
+
+## v0.4.11 (2026-08-28)
+
+### Fix
+
+- **onthefly**: postpass support
+
+## v0.4.10 (2026-08-13)
+
+### Fix
+
+- **oex**: cpu limit
+
+## v0.4.9 (2026-08-10)
+
+### Fix
+
+- **hdx**: fix hdx pipeline when data is empty
+
+## v0.4.8 (2026-08-09)
+
+### Fix
+
+- **latest**: fix the cache stale based on date
+
+## v0.4.7 (2026-08-06)
+
+### Fix
+
+- **tm**: fix tm export
+
+## v0.4.6 (2026-08-06)
+
+### Fix
+
+- **osm**: optional iso3
+
+## v0.4.5 (2026-08-06)
+
+### Fix
+
+- **chore**: add tm export example config
+- **tm**: fixes tm path
+
+## v0.4.4 (2026-07-27)
+
+### Fix
+
+- **fix**: map full screen and combo report on hdx
+
+## v0.4.32 (2026-11-15)
+
+### Fix
+
+- **attribute**: fix fieldmaps attribut citing
+
 ## v0.4.31 (2026-11-15)
 
 ### Fix
