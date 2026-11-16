@@ -156,6 +156,7 @@ class BoundaryConfig:
     source: str = "geoboundaries"
     geoboundaries_level: str = "ADM0"
     fieldmaps_url: str = "https://data.fieldmaps.io/adm0/osm/intl/adm0_polygons.parquet"
+    fieldmaps_join_disputed: bool = True
     buffer_meters: float = 0.0
     # Simplification tolerance applied before and after the buffer, to keep it fast and small.
     simplify_meters: float = 0.0

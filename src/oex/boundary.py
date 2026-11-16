@@ -115,7 +115,15 @@ def _fetch_geoboundaries(iso3: str, level: str) -> Boundary:
     )
 
 
-def _fetch_fieldmaps(iso3: str, url: str) -> Boundary:
+def _disputed_areas_of(
+    country: list[BaseGeometry], disputed: list[tuple[bytes, str | None]], iso3: str
+) -> list[BaseGeometry]:
+    parts = shapely.STRtree(shapely.get_parts(country))
+    areas = [(shapely.from_wkb(bytes(wkb)), group) for wkb, group in disputed]
+    return [area for area, group in areas if group == iso3 or len(parts.query(area, "intersects"))]
+
+
+def _fetch_fieldmaps(iso3: str, url: str, join_disputed: bool) -> Boundary:
     logger.info("Reading fieldmaps adm0 for %s: %s", iso3.upper(), url)
     with duckdb.connect() as conn:
         conn.execute("INSTALL spatial; LOAD spatial; INSTALL httpfs; LOAD httpfs")
@@ -123,12 +131,22 @@ def _fetch_fieldmaps(iso3: str, url: str) -> Boundary:
             "SELECT ST_AsWKB(geometry), wld_update FROM read_parquet(?) WHERE iso_3 = ?",
             [url, iso3.upper()],
         ).fetchall()
+        disputed = (
+            conn.execute(
+                "SELECT ST_AsWKB(geometry), iso_3_grp FROM read_parquet(?) "
+                "WHERE status_nm = 'Sovereignty unsettled'",
+                [url],
+            ).fetchall()
+            if join_disputed
+            else []
+        )
     if not rows:
         raise ValueError(f"fieldmaps has no adm0 for {iso3.upper()} in {url}")
     releases = [row[1] for row in rows if row[1] is not None]
     if not releases:
         raise ValueError(f"fieldmaps rows for {iso3.upper()} in {url} have no wld_update date")
-    outline = shapely.union_all(shapely.from_wkb([bytes(row[0]) for row in rows]))
+    country = list(shapely.from_wkb([bytes(row[0]) for row in rows]))
+    outline = shapely.union_all([*country, *_disputed_areas_of(country, disputed, iso3.upper())])
     geometry = json.loads(shapely.to_geojson(outline))
     release = max(releases)
     return Boundary(
@@ -237,6 +255,7 @@ def resolve_boundary(iso3: str, boundary_config: BoundaryConfig) -> Boundary:
         _GEOBOUNDARIES_RELEASE,
         boundary_config.geoboundaries_level,
         boundary_config.fieldmaps_url,
+        f"disputed{boundary_config.fieldmaps_join_disputed}",
         f"buf{boundary_config.buffer_meters:g}",
         f"simplify{boundary_config.simplify_meters:g}",
         hashlib.sha256((boundary_config.geom or "").encode()).hexdigest(),
@@ -252,7 +271,9 @@ def resolve_boundary(iso3: str, boundary_config: BoundaryConfig) -> Boundary:
         else:
             boundary = _from_user_geom(iso3, boundary_config.geom)
     elif boundary_config.source == "fieldmaps":
-        boundary = _fetch_fieldmaps(iso3, boundary_config.fieldmaps_url)
+        boundary = _fetch_fieldmaps(
+            iso3, boundary_config.fieldmaps_url, boundary_config.fieldmaps_join_disputed
+        )
     else:
         boundary = _fetch_geoboundaries(iso3, boundary_config.geoboundaries_level)
 

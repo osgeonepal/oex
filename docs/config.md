@@ -34,6 +34,7 @@ boundary:
   source: geoboundaries
   geoboundaries_level: ADM0
   fieldmaps_url: https://data.fieldmaps.io/adm0/osm/intl/adm0_polygons.parquet
+  fieldmaps_join_disputed: true
   buffer_meters: 0                 # outward buffer in metres (0 = off)
   simplify_meters: 0               # simplification before and after the buffer (0 = off)
 ```
@@ -43,7 +44,9 @@ takes the geoBoundaries gbOpen boundary at `geoboundaries_level` for the ISO3.
 `source: fieldmaps` reads the ISO3's rows from `fieldmaps_url`. The default is the
 [fieldmaps adm0](https://fieldmaps.io/data/adm0) OSM International file: OpenStreetMap
 coastlines, U.S. Department of State (LSIB) borders, and disputed areas as the UN Clear
-Map shows them.
+Map shows them. With `fieldmaps_join_disputed: true`, a disputed area (`status_nm`
+"Sovereignty unsettled") joins every country it touches and the country fieldmaps groups
+it under (`iso_3_grp`). With `false`, country exports leave disputed areas out.
 
 `buffer_meters` is an outward buffer applied to whatever boundary you end up
 with, measured in metres on the ground: the geometry is buffered in an

@@ -89,3 +89,11 @@ def test_the_fieldmaps_file_does_not_touch_a_geoboundaries_parquet_key() -> None
     other = _cfg(None, {"building": True})
     other.boundary.fieldmaps_url = "https://example.org/adm0.parquet"
     assert _parquet_fingerprint(default, clip=True) == _parquet_fingerprint(other, clip=True)
+
+
+def test_turning_off_disputed_areas_builds_a_fresh_parquet() -> None:
+    joined = _cfg(None, {"building": True})
+    alone = _cfg(None, {"building": True})
+    joined.boundary.source = alone.boundary.source = "fieldmaps"
+    alone.boundary.fieldmaps_join_disputed = False
+    assert _parquet_fingerprint(joined, clip=True) != _parquet_fingerprint(alone, clip=True)

@@ -273,13 +273,22 @@ def fieldmaps_parquet(tmp_path) -> str:
     conn.execute(
         f"""
         COPY (
-            SELECT iso_3, wld_update, ST_GeomFromText(wkt) AS geometry FROM (VALUES
-                ('AAA', DATE '2025-07-29',
+            SELECT iso_3, iso_3_grp, status_nm, wld_update, ST_GeomFromText(wkt) AS geometry
+            FROM (VALUES
+                ('AAA', 'AAA', 'Member State', DATE '2025-07-29',
                  'POLYGON((0 0, 4 0, 4 4, 0 4, 0 0), (1 1, 2 1, 2 2, 1 2, 1 1))'),
-                ('AAA', DATE '2025-07-29', 'POLYGON((10 0, 11 0, 11 1, 10 1, 10 0))'),
-                ('BBB', DATE '2025-07-29', 'POLYGON((1 1, 2 1, 2 2, 1 2, 1 1))'),
-                ('DDD', NULL, 'POLYGON((20 0, 21 0, 21 1, 20 1, 20 0))')
-            ) AS rows(iso_3, wld_update, wkt)
+                ('AAA', 'AAA', 'Member State', DATE '2025-07-29',
+                 'POLYGON((10 0, 11 0, 11 1, 10 1, 10 0))'),
+                ('BBB', 'BBB', 'Member State', DATE '2025-07-29',
+                 'POLYGON((1 1, 2 1, 2 2, 1 2, 1 1))'),
+                ('DDD', 'DDD', 'Member State', NULL, 'POLYGON((20 0, 21 0, 21 1, 20 1, 20 0))'),
+                ('XTO', 'XTO', 'Sovereignty unsettled', DATE '2025-07-29',
+                 'POLYGON((4 0, 6 0, 6 4, 4 4, 4 0))'),
+                ('XIS', 'AAA', 'Sovereignty unsettled', DATE '2025-07-29',
+                 'POLYGON((30 0, 31 0, 31 1, 30 1, 30 0))'),
+                ('XFA', 'XFA', 'Sovereignty unsettled', DATE '2025-07-29',
+                 'POLYGON((40 0, 41 0, 41 1, 40 1, 40 0))')
+            ) AS rows(iso_3, iso_3_grp, status_nm, wld_update, wkt)
         ) TO '{path}' (FORMAT parquet)
         """
     )
@@ -293,13 +302,25 @@ def test_fieldmaps_joins_every_unit_of_the_country_and_leaves_an_enclaved_one_ou
         "aaa", BoundaryConfig(source="fieldmaps", fieldmaps_url=fieldmaps_parquet)
     )
     outline = shape(json.loads(boundary.geojson))
-    assert boundary.bbox == (0, 0, 11, 4)
     assert not outline.contains(Point(1.5, 1.5))
-    assert outline.area == pytest.approx(16)
+    assert outline.contains(Point(10.5, 0.5))
     assert (
         boundary.source
         == "FieldMaps, U.S. Department of State, OpenStreetMap (adm0 intl, 2025-07-29)"
     )
+
+
+def test_fieldmaps_adds_the_disputed_areas_the_country_touches_or_is_grouped_with(
+    fieldmaps_parquet,
+) -> None:
+    boundary = resolve_boundary(
+        "AAA", BoundaryConfig(source="fieldmaps", fieldmaps_url=fieldmaps_parquet)
+    )
+    outline = shape(json.loads(boundary.geojson))
+    assert outline.contains(Point(5, 2))
+    assert outline.contains(Point(30.5, 0.5))
+    assert not outline.contains(Point(40.5, 0.5))
+    assert boundary.bbox == (0, 0, 31, 4)
 
 
 def test_fieldmaps_rows_without_a_release_date_are_refused(fieldmaps_parquet) -> None:
@@ -336,3 +357,21 @@ def test_an_inline_geom_wins_over_the_fieldmaps_source(tmp_path) -> None:
 def test_an_unknown_boundary_source_is_refused() -> None:
     with pytest.raises(ValueError, match="boundary.source"):
         resolve_boundary("AAA", BoundaryConfig(source="naturalearth"))
+
+
+def test_the_boundary_cache_keeps_the_disputed_switch_apart(fieldmaps_parquet) -> None:
+    joined = BoundaryConfig(source="fieldmaps", fieldmaps_url=fieldmaps_parquet)
+    alone = BoundaryConfig(
+        source="fieldmaps", fieldmaps_url=fieldmaps_parquet, fieldmaps_join_disputed=False
+    )
+    resolve_boundary("AAA", joined)
+    assert not shape(json.loads(resolve_boundary("AAA", alone).geojson)).contains(Point(5, 2))
+
+
+def test_fieldmaps_leaves_disputed_areas_out_when_joining_is_off(fieldmaps_parquet) -> None:
+    cfg = BoundaryConfig(
+        source="fieldmaps", fieldmaps_url=fieldmaps_parquet, fieldmaps_join_disputed=False
+    )
+    outline = shape(json.loads(resolve_boundary("AAA", cfg).geojson))
+    assert not outline.contains(Point(5, 2))
+    assert not outline.contains(Point(30.5, 0.5))
