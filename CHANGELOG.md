@@ -64,6 +64,12 @@ and is auto-managed by [commitizen](https://commitizen-tools.github.io/commitize
 
 - **config**: config fix
 
+## v0.4.34 (2026-11-16)
+
+### Fix
+
+- **config**: added config knob for disputed areas join
+
 ## v0.4.33 (2026-11-15)
 
 ### Fix
