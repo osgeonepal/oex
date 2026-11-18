@@ -64,6 +64,12 @@ and is auto-managed by [commitizen](https://commitizen-tools.github.io/commitize
 
 - **config**: config fix
 
+## v0.4.35 (2026-11-18)
+
+### Fix
+
+- **geom**: fixes geom breaking in url
+
 ## v0.4.34 (2026-11-16)
 
 ### Fix
