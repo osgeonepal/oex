@@ -1,5 +1,6 @@
 """Config loading and validation."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -268,3 +269,17 @@ def test_apply_overrides_keeps_a_value_with_a_colon_as_a_string():
 def test_overrides_given_as_a_dotlist_fail_with_a_clear_message():
     with pytest.raises(TypeError, match="overrides must map dotted keys"):
         load_config(None, ["iso3=SDN"])  # ty: ignore[invalid-argument-type]
+
+
+def test_a_geom_written_as_yaml_is_kept_as_geojson_text(tmp_path: Path) -> None:
+    path = tmp_path / "event.yaml"
+    path.write_text(
+        "iso3: NPL\nboundary:\n  geom:\n    type: Polygon\n"
+        "    coordinates: [[[84, 28], [85, 28], [85, 29], [84, 28]]]\n"
+    )
+    cfg = load_config(path)
+    assert cfg.boundary.geom is not None
+    assert json.loads(cfg.boundary.geom) == {
+        "type": "Polygon",
+        "coordinates": [[[84, 28], [85, 28], [85, 29], [84, 28]]],
+    }

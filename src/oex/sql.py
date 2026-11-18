@@ -1,9 +1,13 @@
 """SQL the exporter assembles to materialise each category."""
 
+from typing import TYPE_CHECKING
+
 import duckdb
 
-from oex.boundary import Boundary
 from oex.logging_setup import get_logger
+
+if TYPE_CHECKING:
+    from oex.boundary import Boundary
 
 logger = get_logger(__name__)
 
@@ -24,7 +28,7 @@ def build_select_clause(select_fields: list[str]) -> str:
     return ",\n       ".join([*select_fields, "geometry AS geom"])
 
 
-def build_where_clause(boundary: Boundary, where_conditions: list[str], bbox_mode: str) -> str:
+def build_where_clause(boundary: "Boundary", where_conditions: list[str], bbox_mode: str) -> str:
     """`bbox_mode="bbox"` prunes on Overture's own bbox struct; `"geom"` derives it from the
     geometry for the OSM cache."""
     minx, miny, maxx, maxy = boundary.bbox

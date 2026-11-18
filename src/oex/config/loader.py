@@ -1,5 +1,6 @@
 """Layered YAML config: bundled defaults < user YAML < dotted-key overrides."""
 
+import json
 import os
 import re
 from collections.abc import Iterator, Mapping
@@ -75,6 +76,7 @@ def load_config(
     _set_overrides(merged, overrides or {})
 
     OmegaConf.resolve(merged)
+    _geom_object_to_text(merged)
 
     schema = OmegaConf.structured(RootConfig)
     typed = cast(DictConfig, OmegaConf.merge(schema, merged))
@@ -93,6 +95,12 @@ def load_config(
 
 
 _HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _geom_object_to_text(merged: DictConfig) -> None:
+    geom = OmegaConf.select(merged, "boundary.geom")
+    if isinstance(geom, DictConfig):
+        merged.boundary.geom = json.dumps(OmegaConf.to_container(geom))
 
 
 def _validate_theme(cfg: RootConfig) -> None:

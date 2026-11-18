@@ -1,11 +1,14 @@
+import functools
 import json
 import math
+import threading
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 import duckdb
 import pytest
 from shapely.geometry import Point, mapping, shape
 
-from oex.boundary import area_sq_km, resolve_boundary
+from oex.boundary import area_sq_km, read_geometry, resolve_boundary
 from oex.config.schema import BoundaryConfig
 
 
@@ -375,3 +378,110 @@ def test_fieldmaps_leaves_disputed_areas_out_when_joining_is_off(fieldmaps_parqu
     outline = shape(json.loads(resolve_boundary("AAA", cfg).geojson))
     assert not outline.contains(Point(5, 2))
     assert not outline.contains(Point(30.5, 0.5))
+
+
+def _square(x: float, y: float, size: float = 1) -> list:
+    return [[[x, y], [x + size, y], [x + size, y + size], [x, y + size], [x, y]]]
+
+
+def _features(*geometries: dict) -> dict:
+    return {
+        "type": "FeatureCollection",
+        "features": [{"type": "Feature", "properties": {}, "geometry": g} for g in geometries],
+    }
+
+
+def test_features_drawn_apart_merge_into_one_multipolygon() -> None:
+    first = {"type": "MultiPolygon", "coordinates": [_square(0, 0), _square(2, 0)]}
+    second = {"type": "MultiPolygon", "coordinates": [_square(10, 5)]}
+    geometry = read_geometry(json.dumps(_features(first, second)))
+    assert geometry["type"] == "MultiPolygon"
+    assert len(geometry["coordinates"]) == 3
+    boundary = resolve_boundary("ABC", BoundaryConfig(geom=json.dumps(_features(first, second))))
+    assert boundary.bbox == (0, 0, 11, 6)
+
+
+def test_a_point_among_the_features_is_refused() -> None:
+    polygon = {"type": "Polygon", "coordinates": _square(0, 0)}
+    point = {"type": "Point", "coordinates": [5, 5]}
+    with pytest.raises(ValueError, match="only polygons; it has Point"):
+        read_geometry(json.dumps(_features(polygon, point)))
+
+
+def _projected_geopackage(path) -> None:
+    conn = duckdb.connect()
+    conn.execute("INSTALL spatial; LOAD spatial; SET geometry_always_xy = true")
+    conn.execute(
+        f"""
+        COPY (SELECT ST_Transform(ST_GeomFromText(wkt), 'OGC:CRS84', 'EPSG:3857',
+                                  always_xy := true) AS geom
+              FROM (VALUES ('POLYGON((10 10, 11 10, 11 11, 10 11, 10 10))'),
+                           ('POLYGON((20 10, 21 10, 21 11, 20 11, 20 10))')) AS t(wkt))
+        TO '{path}' (FORMAT GDAL, DRIVER 'GPKG', SRS 'EPSG:3857')
+        """
+    )
+
+
+def test_a_projected_file_is_read_back_in_lon_lat(tmp_path) -> None:
+    path = tmp_path / "area.gpkg"
+    _projected_geopackage(path)
+    geometry = read_geometry(str(path))
+    assert geometry["type"] == "MultiPolygon"
+    assert shape(geometry).bounds == pytest.approx((10, 10, 21, 11), abs=1e-6)
+
+
+def test_a_url_is_downloaded_and_read(tmp_path) -> None:
+    polygon = {"type": "Polygon", "coordinates": _square(30, 30)}
+    (tmp_path / "area.geojson").write_text(json.dumps(_features(polygon)))
+    handler = functools.partial(SimpleHTTPRequestHandler, directory=str(tmp_path))
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/area.geojson"
+        boundary = resolve_boundary("ABC", BoundaryConfig(geom=url))
+    finally:
+        server.shutdown()
+    assert boundary.bbox == (30, 30, 31, 31)
+
+
+def test_a_location_that_cannot_be_read_is_refused(tmp_path) -> None:
+    with pytest.raises(ValueError, match="could not be read"):
+        read_geometry(str(tmp_path / "missing.geojson"))
+
+
+_BOWTIE = {"type": "Polygon", "coordinates": [[[0, 0], [1, 1], [1, 0], [0, 1], [0, 0]]]}
+
+
+def test_one_invalid_shape_passes_through_as_drawn() -> None:
+    drawn = {
+        "type": "MultiPolygon",
+        "coordinates": [_BOWTIE["coordinates"], _square(0.5, 0.5)],
+    }
+    assert read_geometry(json.dumps(drawn)) == drawn
+
+
+def test_features_that_cannot_be_merged_name_the_boundary() -> None:
+    other = {"type": "Polygon", "coordinates": _square(0.5, 0.5)}
+    with pytest.raises(ValueError, match="could not be merged, one is invalid"):
+        read_geometry(json.dumps(_features(_BOWTIE, other)))
+
+
+def test_a_single_feature_with_surrounding_whitespace_is_read() -> None:
+    feature = {
+        "type": "Feature",
+        "properties": {},
+        "geometry": {"type": "Polygon", "coordinates": _square(5, 5)},
+    }
+    assert read_geometry(f"\n  {json.dumps(feature)}\n")["type"] == "Polygon"
+
+
+def test_a_collection_without_features_is_refused() -> None:
+    with pytest.raises(ValueError, match="holds no geometry"):
+        read_geometry(json.dumps(_features()))
+
+
+def test_a_file_without_a_crs_is_refused(tmp_path) -> None:
+    path = tmp_path / "area.csv"
+    path.write_text('WKT\n"POLYGON((0 0,1 0,1 1,0 1,0 0))"\n')
+    with pytest.raises(ValueError, match="declares no CRS"):
+        read_geometry(str(path))

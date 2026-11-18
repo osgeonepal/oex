@@ -5,6 +5,7 @@ import json
 import threading
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 import antimeridian
 import duckdb
@@ -17,6 +18,8 @@ from shapely.ops import transform
 
 from oex.config.schema import BoundaryConfig
 from oex.logging_setup import get_logger
+from oex.sources.file import declared_crs, geometry_expr, layer_names
+from oex.sql import sql_string
 
 logger = get_logger(__name__)
 
@@ -77,16 +80,6 @@ def _bbox_from_geometry(geometry: dict[str, Any]) -> tuple[float, float, float, 
     return (min(longitudes), min(latitudes), max(longitudes), max(latitudes))
 
 
-def _featurecollection_to_geometry(feature_collection: dict[str, Any]) -> dict[str, Any]:
-    # ST_GeomFromGeoJSON accepts a single geometry or a GeometryCollection,
-    # not a FeatureCollection.
-    features = feature_collection.get("features", [])
-    geometries = [feature["geometry"] for feature in features if feature.get("geometry")]
-    if len(geometries) == 1:
-        return geometries[0]
-    return {"type": "GeometryCollection", "geometries": geometries}
-
-
 def _fetch_geoboundaries(iso3: str, level: str) -> Boundary:
     url = _GEOBOUNDARIES_URL_TEMPLATE.format(iso3=iso3.upper(), level=level)
     logger.info("Fetching boundary metadata: %s", url)
@@ -100,12 +93,7 @@ def _fetch_geoboundaries(iso3: str, level: str) -> Boundary:
     logger.info("Downloading boundary geometry: %s", geojson_url)
     geometry_response = requests.get(geojson_url, timeout=180)
     geometry_response.raise_for_status()
-    parsed = geometry_response.json()
-    geometry = (
-        _featurecollection_to_geometry(parsed)
-        if parsed.get("type") == "FeatureCollection"
-        else parsed
-    )
+    geometry = read_geometry(geometry_response.text)
     bbox = _bbox_from_geometry(geometry)
     return Boundary(
         iso3=iso3.upper(),
@@ -166,20 +154,77 @@ def _world_boundary(iso3: str) -> Boundary:
     )
 
 
-def _from_user_geom(iso3: str, geometry_json: str) -> Boundary:
-    parsed = json.loads(geometry_json)
-    geometry = (
-        _featurecollection_to_geometry(parsed)
-        if parsed.get("type") == "FeatureCollection"
-        else parsed
-    )
-    bbox = _bbox_from_geometry(geometry)
+def _from_user_geom(iso3: str, geom: str) -> Boundary:
+    geometry = read_geometry(geom)
     return Boundary(
         iso3=iso3.upper(),
-        bbox=bbox,
+        bbox=_bbox_from_geometry(geometry),
         geojson=json.dumps(geometry),
         source="user-provided",
     )
+
+
+def read_geometry(geom: str) -> dict[str, Any]:
+    """Inline GeoJSON, or a file or URL GDAL reads, merged into one Polygon or MultiPolygon."""
+    text = geom.strip()
+    parts = _inline_geojson_parts(text) if text.startswith("{") else _spatial_file_parts(text)
+    if not parts:
+        raise ValueError(f"boundary holds no geometry: {_preview(text)}")
+    not_polygonal = sorted(
+        {part.geom_type for part in parts if part.geom_type not in ("Polygon", "MultiPolygon")}
+    )
+    if not_polygonal:
+        raise ValueError(
+            f"boundary must hold only polygons; it has {', '.join(not_polygonal)}: {_preview(text)}"
+        )
+    if len(parts) == 1:
+        return json.loads(shapely.to_geojson(parts[0]))
+    try:
+        merged = shapely.union_all(parts)
+    except shapely.errors.GEOSException as error:
+        raise ValueError(
+            f"boundary features could not be merged, one is invalid ({error}): {_preview(text)}"
+        ) from error
+    return json.loads(shapely.to_geojson(merged))
+
+
+def _inline_geojson_parts(text: str) -> list[BaseGeometry]:
+    parsed = json.loads(text)
+    if parsed.get("type") == "FeatureCollection":
+        geometries = [feature.get("geometry") for feature in parsed.get("features", [])]
+    elif parsed.get("type") == "Feature":
+        geometries = [parsed.get("geometry")]
+    else:
+        geometries = [parsed]
+    return [shape(geometry) for geometry in geometries if geometry]
+
+
+def _spatial_file_parts(location: str) -> list[BaseGeometry]:
+    logger.info("Reading boundary: %s", location)
+    with duckdb.connect() as conn:
+        conn.execute("INSTALL spatial; LOAD spatial")
+        if urlparse(location).scheme == "s3":
+            conn.execute("INSTALL httpfs; LOAD httpfs")
+        layers = layer_names(conn, location)
+        if not layers:
+            raise ValueError(f"boundary {location} could not be read")
+        if len(layers) > 1:
+            raise ValueError(
+                f"boundary {location} holds {len(layers)} layers {sorted(layers)}; "
+                "give a file with one"
+            )
+        crs = declared_crs(conn, location)
+        if crs is None:
+            raise ValueError(f"boundary {location} declares no CRS")
+        rows = conn.execute(
+            f"SELECT ST_AsWKB({geometry_expr(crs)}) "
+            f"FROM ST_Read({sql_string(location)}) WHERE geom IS NOT NULL"
+        ).fetchall()
+    return list(shapely.from_wkb([bytes(row[0]) for row in rows]))
+
+
+def _preview(text: str) -> str:
+    return text if len(text) <= 80 else f"{text[:77]}..."
 
 
 def _projection_centre(geometry: BaseGeometry) -> Point:

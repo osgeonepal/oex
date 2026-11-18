@@ -30,7 +30,7 @@ already names a partitioned subset, so `where` is the only filter.
 
 ```yaml
 boundary:
-  geom: null                       # optional inline GeoJSON (string)
+  geom: null                       # optional area: GeoJSON, a file or a URL
   source: geoboundaries
   geoboundaries_level: ADM0
   fieldmaps_url: https://data.fieldmaps.io/adm0/osm/intl/adm0_polygons.parquet
@@ -39,14 +39,24 @@ boundary:
   simplify_meters: 0               # simplification before and after the buffer (0 = off)
 ```
 
-If `geom` is set (a GeoJSON string), it overrides `source`. `source: geoboundaries`
-takes the geoBoundaries gbOpen boundary at `geoboundaries_level` for the ISO3.
-`source: fieldmaps` reads the ISO3's rows from `fieldmaps_url`. The default is the
-[fieldmaps adm0](https://fieldmaps.io/data/adm0) OSM International file: OpenStreetMap
-coastlines, U.S. Department of State (LSIB) borders, and disputed areas as the UN Clear
-Map shows them. With `fieldmaps_join_disputed: true`, a disputed area (`status_nm`
-"Sovereignty unsettled") joins every country it touches and the country fieldmaps groups
-it under (`iso_3_grp`). With `false`, country exports leave disputed areas out.
+If `geom` is set, it overrides `source`. It takes:
+
+- GeoJSON, as text or as a YAML mapping: a geometry, a Feature or a FeatureCollection.
+- A file path or URL in any format GDAL reads, such as GeoJSON, GeoPackage or KML. A file
+  in another CRS is reprojected to lon/lat.
+- `world`, the whole planet.
+
+Every feature is merged into one Polygon or MultiPolygon, so areas drawn apart, such as
+several cities, export together. A point or line among them stops the run.
+
+`source: geoboundaries` takes the geoBoundaries gbOpen boundary at `geoboundaries_level`
+for the ISO3. `source: fieldmaps` reads the ISO3's rows from `fieldmaps_url`. The default
+is the [fieldmaps adm0](https://fieldmaps.io/data/adm0) OSM International file:
+OpenStreetMap coastlines, U.S. Department of State (LSIB) borders, and disputed areas as
+the UN Clear Map shows them. With `fieldmaps_join_disputed: true`, a disputed area
+(`status_nm` "Sovereignty unsettled") joins every country it touches and the country
+fieldmaps groups it under (`iso_3_grp`). With `false`, country exports leave disputed
+areas out.
 
 `buffer_meters` is an outward buffer applied to whatever boundary you end up
 with, measured in metres on the ground: the geometry is buffered in an
