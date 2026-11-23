@@ -64,6 +64,12 @@ and is auto-managed by [commitizen](https://commitizen-tools.github.io/commitize
 
 - **config**: config fix
 
+## v0.4.36 (2026-11-23)
+
+### Fix
+
+- **boundary**: fixes geometry
+
 ## v0.4.35 (2026-11-18)
 
 ### Fix
