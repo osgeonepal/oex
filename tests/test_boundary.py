@@ -485,3 +485,25 @@ def test_a_file_without_a_crs_is_refused(tmp_path) -> None:
     path.write_text('WKT\n"POLYGON((0 0,1 0,1 1,0 1,0 0))"\n')
     with pytest.raises(ValueError, match="declares no CRS"):
         read_geometry(str(path))
+
+
+@pytest.mark.parametrize(
+    "text",
+    ['{"type":"Polygon"}', '{"type":"Blob","coordinates":[]}', '{"type": "Polygon",'],
+)
+def test_malformed_geojson_is_refused_as_a_boundary_error(text) -> None:
+    with pytest.raises(ValueError, match="boundary is not valid GeoJSON"):
+        read_geometry(text)
+
+
+def test_a_collection_of_polygons_is_merged_like_separate_features() -> None:
+    collection = {
+        "type": "GeometryCollection",
+        "geometries": [
+            {"type": "Polygon", "coordinates": _square(0, 0)},
+            {"type": "Polygon", "coordinates": _square(5, 0)},
+        ],
+    }
+    geometry = read_geometry(json.dumps(collection))
+    assert geometry["type"] == "MultiPolygon"
+    assert shape(geometry).bounds == (0, 0, 6, 1)

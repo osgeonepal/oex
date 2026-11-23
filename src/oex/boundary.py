@@ -168,6 +168,11 @@ def read_geometry(geom: str) -> dict[str, Any]:
     """Inline GeoJSON, or a file or URL GDAL reads, merged into one Polygon or MultiPolygon."""
     text = geom.strip()
     parts = _inline_geojson_parts(text) if text.startswith("{") else _spatial_file_parts(text)
+    parts = [
+        piece
+        for part in parts
+        for piece in (shapely.get_parts(part) if part.geom_type == "GeometryCollection" else [part])
+    ]
     if not parts:
         raise ValueError(f"boundary holds no geometry: {_preview(text)}")
     not_polygonal = sorted(
@@ -189,14 +194,23 @@ def read_geometry(geom: str) -> dict[str, Any]:
 
 
 def _inline_geojson_parts(text: str) -> list[BaseGeometry]:
-    parsed = json.loads(text)
-    if parsed.get("type") == "FeatureCollection":
-        geometries = [feature.get("geometry") for feature in parsed.get("features", [])]
-    elif parsed.get("type") == "Feature":
-        geometries = [parsed.get("geometry")]
-    else:
-        geometries = [parsed]
-    return [shape(geometry) for geometry in geometries if geometry]
+    try:
+        parsed = json.loads(text)
+        if parsed.get("type") == "FeatureCollection":
+            geometries = [feature.get("geometry") for feature in parsed.get("features", [])]
+        elif parsed.get("type") == "Feature":
+            geometries = [parsed.get("geometry")]
+        else:
+            geometries = [parsed]
+        return [shape(geometry) for geometry in geometries if geometry]
+    except (
+        ValueError,
+        KeyError,
+        TypeError,
+        AttributeError,
+        shapely.errors.GeometryTypeError,
+    ) as error:
+        raise ValueError(f"boundary is not valid GeoJSON ({error}): {_preview(text)}") from error
 
 
 def _spatial_file_parts(location: str) -> list[BaseGeometry]:
